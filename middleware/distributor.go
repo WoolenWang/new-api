@@ -119,13 +119,10 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 
-		// P2P Channel Risk Control Check (Phase 1)
+		// P2P Channel Concurrency Tracking (Phase 1)
+		// Note: Risk control checks (quota, rate limits) are now performed during channel selection
+		// Here we only track concurrency and request counts for the selected P2P channel
 		if channel != nil && channel.OwnerUserId != 0 {
-			err := model.CheckChannelRiskControl(channel)
-			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("渠道风控检查失败: %s", err.Error()))
-				return
-			}
 			// Increment concurrency counter before processing request
 			model.IncrementChannelConcurrency(channel.Id)
 			// Increment request counter

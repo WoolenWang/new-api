@@ -12,6 +12,11 @@ import (
 // baseUrl: CLIProxyAPI service base URL (e.g., "http://localhost:8081")
 // apiKey: CLIProxyAPI service API key
 // accountHint: The credential identifier to delete
+//
+// API Endpoint: DELETE /api/credentials/{account_hint}
+// Note: This endpoint uses RESTful path parameters instead of the originally
+// proposed /v0/management/auth-files?name= query parameter approach.
+// This is the agreed-upon interface between NewAPI and CLIProxyAPI.
 func DeleteCredential(baseUrl, apiKey, accountHint string) error {
 	if accountHint == "" {
 		return fmt.Errorf("account_hint is empty, cannot delete credential")

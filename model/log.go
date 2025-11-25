@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,8 @@ const (
 	LogTypeSystem  = 4
 	LogTypeError   = 5
 	LogTypeRefund  = 6
+	LogTypeShare   = 7  // P2P channel sharing revenue
+	LogTypeExchange = 8 // Quota exchange operations
 )
 
 func formatUserLogs(logs []*Log) {
@@ -205,14 +208,33 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		channel, err := GetChannelById(params.ChannelId, false)
 		if err == nil && channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
 			// This is a shared channel from another user
-			// Calculate sharing revenue (10% of consumed quota)
-			shareRevenue := params.Quota / 10
+			// Calculate sharing revenue using configurable ShareRatio
+			shareRatio := operation_setting.GetShareRatio()
+			shareRevenue := int(float64(params.Quota) * shareRatio)
 			if shareRevenue > 0 {
 				err := IncreaseUserShareQuota(channel.OwnerUserId, shareRevenue)
 				if err != nil {
 					logger.LogError(c, fmt.Sprintf("failed to record share quota for channel owner: %v", err))
 				} else {
-					logger.LogInfo(c, fmt.Sprintf("recorded share quota: channel_owner_id=%d, revenue=%d (10%% of %d)", channel.OwnerUserId, shareRevenue, params.Quota))
+					logger.LogInfo(c, fmt.Sprintf("recorded share quota: channel_owner_id=%d, revenue=%d (%.1f%% of %d)",
+						channel.OwnerUserId, shareRevenue, shareRatio*100, params.Quota))
+
+					// Record sharing revenue log
+					shareLog := &Log{
+						UserId:    channel.OwnerUserId,
+						CreatedAt: common.GetTimestamp(),
+						Type:      LogTypeShare,
+						Content:   fmt.Sprintf("分享收益：模型 %s，收益 %d 配额 (%.1f%% of %d)",
+							params.ModelName, shareRevenue, shareRatio*100, params.Quota),
+						TokenName: username, // Consumer's username for reference
+						ModelName: params.ModelName,
+						Quota:     shareRevenue,
+						ChannelId: params.ChannelId,
+						Group:     params.Group,
+					}
+					if err := LOG_DB.Create(shareLog).Error; err != nil {
+						logger.LogError(c, fmt.Sprintf("failed to record share revenue log: %v", err))
+					}
 				}
 			}
 		}

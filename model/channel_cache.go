@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,14 +191,63 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	return nil, errors.New("channel not found")
 }
 
+// CheckChannelAccess checks if a user has access to a specific channel based on access control settings
+// Returns true if user has access, false otherwise
+func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
+	// Platform channels (owner_user_id = 0) are always accessible
+	if channel.OwnerUserId == 0 {
+		return true
+	}
+
+	// Owner always has access to their own channels
+	if channel.OwnerUserId == userId && userId != 0 {
+		return true
+	}
+
+	// If channel is marked as private, only owner can access
+	if channel.IsPrivate != nil && *channel.IsPrivate {
+		return false
+	}
+
+	// Check allowed users whitelist
+	if channel.AllowedUsers != nil && *channel.AllowedUsers != "" {
+		allowedUsers := strings.Split(*channel.AllowedUsers, ",")
+		userIdStr := strconv.Itoa(userId)
+		for _, allowedUser := range allowedUsers {
+			if strings.TrimSpace(allowedUser) == userIdStr {
+				return true
+			}
+		}
+	}
+
+	// Check allowed groups whitelist
+	if channel.AllowedGroups != nil && *channel.AllowedGroups != "" {
+		allowedGroups := strings.Split(*channel.AllowedGroups, ",")
+		for _, allowedGroup := range allowedGroups {
+			if strings.TrimSpace(allowedGroup) == userGroup {
+				return true
+			}
+		}
+	}
+
+	// If channel has either allowed_users or allowed_groups set, but user didn't match, deny access
+	if (channel.AllowedUsers != nil && *channel.AllowedUsers != "") ||
+	   (channel.AllowedGroups != nil && *channel.AllowedGroups != "") {
+		return false
+	}
+
+	// If no access control is set (not private, no whitelist), it's a shared/public P2P channel
+	return true
+}
+
 // GetRandomSatisfiedChannelWithPriority selects channels with P2P priority routing:
 // Priority 1: Private channels (user's own channels with is_private=true OR owner_user_id=userId)
 // Priority 2: Shared channels (other users' channels with owner_user_id != 0 AND owner_user_id != userId)
 // Priority 3: Public channels (platform channels with owner_user_id = 0)
-func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, retry int) (*Channel, error) {
+func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database with priority
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithPriority(group, model, userId, retry)
+		return GetChannelWithPriority(group, model, userId, userGroup, retry)
 	}
 
 	channelSyncLock.RLock()
@@ -216,21 +266,35 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 		return nil, nil
 	}
 
-	// Separate channels into three priority tiers based on ownership
+	// Separate channels into three priority tiers based on ownership and access control
 	var privateChannels []*Channel   // Tier 1: User's own channels
 	var sharedChannels []*Channel    // Tier 2: Other users' shared channels
 	var publicChannels []*Channel    // Tier 3: Platform public channels
 
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
-			// Check if this is a private channel (user's own channel)
+			// Apply access control check - skip channels user cannot access
+			if !CheckChannelAccess(channel, userId, userGroup) {
+				continue
+			}
+
+			// Apply risk control check for P2P channels - skip channels that exceed limits
+			if channel.OwnerUserId != 0 {
+				if err := CheckChannelRiskControl(channel); err != nil {
+					// Skip this channel if it exceeds risk control limits
+					continue
+				}
+			}
+
+			// Classify into appropriate tier based on ownership
 			if channel.OwnerUserId == userId && userId != 0 {
+				// User's own channels go to private tier
 				privateChannels = append(privateChannels, channel)
 			} else if channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
-				// Shared channel from another user
+				// Other users' channels that passed access control go to shared tier
 				sharedChannels = append(sharedChannels, channel)
 			} else if channel.OwnerUserId == 0 {
-				// Public platform channel
+				// Platform channels go to public tier
 				publicChannels = append(publicChannels, channel)
 			}
 		}

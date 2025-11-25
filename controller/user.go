@@ -885,22 +885,24 @@ func CreateUser(c *gin.Context) {
 		Role:        user.Role, // 保持管理员设置的角色
 	}
 
-	// Handle invitation relationship if invite_code is provided
+	// Handle invitation relationship according to design doc 10.2:
+	// - aff_code: the invite code used by the new user (to find inviter)
+	// - invite_code: the new user's own invite code (to be set on this user)
 	inviterId := 0
-	if user.InviteCode != "" {
-		// Find inviter by invite_code
+	if user.AffCode != "" {
+		// Find inviter by aff_code (the code this user used to register)
 		var inviter model.User
-		err := model.DB.Where("invite_code = ?", user.InviteCode).First(&inviter).Error
+		err := model.DB.Where("aff_code = ?", user.AffCode).First(&inviter).Error
 		if err == nil {
 			inviterId = inviter.Id
 			cleanUser.InviterId = inviterId
 		}
-		// If invite_code is invalid, just ignore it (inviterId remains 0)
+		// If aff_code is invalid, just ignore it (inviterId remains 0)
 	}
 
-	// Set user's own aff_code if provided
-	if user.AffCode != "" {
-		cleanUser.AffCode = user.AffCode
+	// Set user's own invite_code if provided
+	if user.InviteCode != "" {
+		cleanUser.InviteCode = user.InviteCode
 	}
 
 	if err := cleanUser.Insert(inviterId); err != nil {
@@ -1400,6 +1402,64 @@ func ExchangeShareQuota(c *gin.Context) {
 		"message": fmt.Sprintf("成功兑换 %d 配额", req.Amount),
 		"data": gin.H{
 			"exchanged_amount": req.Amount,
+		},
+	})
+}
+
+// AdminAdjustUserQuota allows administrators to adjust user quota (Phase 1)
+// POST /api/user/quota/adjust
+// This endpoint is for WQuant backend to synchronize quota from uniCloud
+func AdminAdjustUserQuota(c *gin.Context) {
+	type AdjustQuotaRequest struct {
+		UserId int `json:"user_id" binding:"required"`
+		Delta  int `json:"delta" binding:"required"` // Can be positive or negative
+	}
+
+	var req AdjustQuotaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的参数：" + err.Error(),
+		})
+		return
+	}
+
+	// Verify target user exists
+	user, err := model.GetUserById(req.UserId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Apply quota adjustment
+	err = model.DeltaUpdateUserQuotaByAdmin(req.UserId, req.Delta)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "配额调整失败：" + err.Error(),
+		})
+		return
+	}
+
+	// Record exchange log
+	var operation string
+	if req.Delta > 0 {
+		operation = fmt.Sprintf("管理员增加配额: +%d", req.Delta)
+	} else {
+		operation = fmt.Sprintf("管理员减少配额: %d", req.Delta)
+	}
+	model.RecordLog(req.UserId, model.LogTypeExchange, operation)
+
+	// Reload user to get updated quota
+	user, _ = model.GetUserById(req.UserId, true)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "配额调整成功",
+		"data": gin.H{
+			"user_id":   req.UserId,
+			"delta":     req.Delta,
+			"new_quota": user.Quota,
 		},
 	})
 }

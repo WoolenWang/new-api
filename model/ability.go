@@ -147,7 +147,7 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 // Priority 1: Private channels (user's own channels)
 // Priority 2: Shared channels (other users' channels)
 // Priority 3: Public channels (platform channels)
-func GetChannelWithPriority(group string, model string, userId int, retry int) (*Channel, error) {
+func GetChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
 	var abilities []Ability
 
 	channelQuery, err := getChannelQuery(group, model, retry)
@@ -187,7 +187,7 @@ func GetChannelWithPriority(group string, model string, userId int, retry int) (
 		channelMap[channels[i].Id] = &channels[i]
 	}
 
-	// Separate channels into three priority tiers based on ownership
+	// Separate channels into three priority tiers based on ownership and access control
 	var privateChannelIds []int // Tier 1: User's own channels
 	var sharedChannelIds []int  // Tier 2: Other users' shared channels
 	var publicChannelIds []int  // Tier 3: Platform public channels
@@ -198,6 +198,20 @@ func GetChannelWithPriority(group string, model string, userId int, retry int) (
 			continue
 		}
 
+		// Apply access control check - skip channels user cannot access
+		if !CheckChannelAccess(channel, userId, userGroup) {
+			continue
+		}
+
+		// Apply risk control check for P2P channels - skip channels that exceed limits
+		if channel.OwnerUserId != 0 {
+			if err := CheckChannelRiskControl(channel); err != nil {
+				// Skip this channel if it exceeds risk control limits
+				continue
+			}
+		}
+
+		// Classify into appropriate tier based on ownership
 		if channel.OwnerUserId == userId && userId != 0 {
 			privateChannelIds = append(privateChannelIds, ability.ChannelId)
 		} else if channel.OwnerUserId != 0 && channel.OwnerUserId != userId {

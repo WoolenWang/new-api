@@ -28,7 +28,7 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 		}
 		for _, autoGroup := range GetUserAutoGroup(userGroup) {
 			logger.LogDebug(c, "Auto selecting group:", autoGroup)
-			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, retry)
+			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, userGroup, retry)
 			if channel == nil {
 				continue
 			} else {
@@ -39,7 +39,7 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 			}
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, retry)
+		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, retry)
 		if err != nil {
 			return nil, group, err
 		}
