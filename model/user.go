@@ -21,7 +21,7 @@ import (
 type User struct {
 	Id               int            `json:"id"`
 	Username         string         `json:"username" gorm:"unique;index" validate:"max=20"`
-	Password         string         `json:"password" gorm:"not null;" validate:"min=8,max=20"`
+	Password         string         `json:"password" gorm:"default:'';" validate:"min=8,max=20"`
 	OriginalPassword string         `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
 	DisplayName      string         `json:"display_name" gorm:"index" validate:"max=20"`
 	Role             int            `json:"role" gorm:"type:int;default:1"`   // admin, common
@@ -44,6 +44,7 @@ type User struct {
 	AffHistoryQuota int    `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId       int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	InviteCode      string `json:"invite_code" gorm:"type:varchar(32);column:invite_code;index"` // WQuant同步过来的用户自身邀请码
+	ExternalId      string `json:"external_id" gorm:"type:varchar(64);column:external_id;uniqueIndex"` // 外部系统用户ID（如WQuant UID）
 	// P2P Channel Sharing Fields (Phase 1)
 	ShareQuota        int `json:"share_quota" gorm:"type:int;default:0;column:share_quota"`                 // 分享收益额度
 	HistoryShareQuota int `json:"history_share_quota" gorm:"type:int;default:0;column:history_share_quota"` // 历史累计分享收益
@@ -924,6 +925,33 @@ func (user *User) FillUserByLinuxDOId() error {
 	}
 	err := DB.Where("linux_do_id = ?", user.LinuxDOId).First(user).Error
 	return err
+}
+
+func (user *User) FillUserByExternalId() error {
+	if user.ExternalId == "" {
+		return errors.New("external id is empty")
+	}
+	err := DB.Where("external_id = ?", user.ExternalId).First(user).Error
+	return err
+}
+
+func GetUserByExternalId(externalId string) (*User, error) {
+	if externalId == "" {
+		return nil, errors.New("external id is empty")
+	}
+	var user User
+	err := DB.Where("external_id = ?", externalId).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func IsExternalIdAlreadyTaken(externalId string) bool {
+	if externalId == "" {
+		return false
+	}
+	return DB.Unscoped().Where("external_id = ?", externalId).Find(&User{}).RowsAffected == 1
 }
 
 func RootUserExists() bool {

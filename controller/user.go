@@ -852,13 +852,49 @@ func CreateUser(c *gin.Context) {
 	var user model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
 	user.Username = strings.TrimSpace(user.Username)
-	if err != nil || user.Username == "" || user.Password == "" {
+	if err != nil || user.Username == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "无效的参数",
 		})
 		return
 	}
+
+	// Idempotency check: if external_id is provided, check if user already exists
+	if user.ExternalId != "" {
+		existingUser, err := model.GetUserByExternalId(user.ExternalId)
+		if err == nil && existingUser != nil {
+			// User with this external_id already exists, return existing user (idempotent)
+			common.SysLog(fmt.Sprintf("User with external_id %s already exists, returning existing user id=%d", user.ExternalId, existingUser.Id))
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "用户已存在",
+				"data": map[string]interface{}{
+					"id":          existingUser.Id,
+					"username":    existingUser.Username,
+					"invite_code": existingUser.InviteCode,
+					"inviter_id":  existingUser.InviterId,
+				},
+			})
+			return
+		}
+	}
+
+	// Password is optional when external_id is provided (external auth)
+	if user.ExternalId == "" && user.Password == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "密码不能为空",
+		})
+		return
+	}
+
+	// For validation purposes: if external_id is provided and no password, use a placeholder
+	passwordProvided := user.Password != ""
+	if user.ExternalId != "" && !passwordProvided {
+		user.Password = "external_auth_placeholder" // Placeholder to pass validation
+	}
+
 	if err := common.Validate.Struct(&user); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -880,9 +916,14 @@ func CreateUser(c *gin.Context) {
 	// Even for admin users, we cannot fully trust them!
 	cleanUser := model.User{
 		Username:    user.Username,
-		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+		ExternalId:  user.ExternalId, // 支持外部系统用户ID
+	}
+
+	// Only set password if it was actually provided (not the placeholder)
+	if passwordProvided {
+		cleanUser.Password = user.Password
 	}
 
 	// Handle invitation relationship according to design doc 10.2:
@@ -896,6 +937,9 @@ func CreateUser(c *gin.Context) {
 		if err == nil {
 			inviterId = inviter.Id
 			cleanUser.InviterId = inviterId
+			common.SysLog(fmt.Sprintf("Found inviter by aff_code %s: inviter_id=%d", user.AffCode, inviterId))
+		} else {
+			common.SysLog(fmt.Sprintf("Invalid aff_code %s, ignoring invitation relationship", user.AffCode))
 		}
 		// If aff_code is invalid, just ignore it (inviterId remains 0)
 	}
@@ -910,9 +954,22 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
+	// Get the newly created user to return complete information
+	var createdUser model.User
+	if err := model.DB.Where("username = ?", cleanUser.Username).First(&createdUser).Error; err != nil {
+		common.SysLog(fmt.Sprintf("Warning: User created but failed to retrieve: %v", err))
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
+		"data": map[string]interface{}{
+			"id":          createdUser.Id,
+			"username":    createdUser.Username,
+			"invite_code": createdUser.InviteCode,
+			"inviter_id":  createdUser.InviterId,
+			"external_id": createdUser.ExternalId,
+		},
 	})
 	return
 }
@@ -1460,6 +1517,46 @@ func AdminAdjustUserQuota(c *gin.Context) {
 			"user_id":   req.UserId,
 			"delta":     req.Delta,
 			"new_quota": user.Quota,
+		},
+	})
+}
+
+// QueryUser queries user by external_id
+// GET /api/user/query?external_id=xxx
+func QueryUser(c *gin.Context) {
+	externalId := c.Query("external_id")
+
+	if externalId == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "external_id参数不能为空",
+		})
+		return
+	}
+
+	user, err := model.GetUserByExternalId(externalId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "用户不存在",
+		})
+		return
+	}
+
+	// Only return essential fields
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data": map[string]interface{}{
+			"id":          user.Id,
+			"username":    user.Username,
+			"invite_code": user.InviteCode,
+			"inviter_id":  user.InviterId,
+			"external_id": user.ExternalId,
+			"role":        user.Role,
+			"status":      user.Status,
+			"quota":       user.Quota,
+			"group":       user.Group,
 		},
 	})
 }
