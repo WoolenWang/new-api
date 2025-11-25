@@ -1,11 +1,15 @@
 package cliproxy
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,8 +24,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 // GetRequestURL returns the request URL for the channel
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	// For CLIProxyAPI, use the base URL from channel config
-	return info.BaseUrl, nil
+	// For CLIProxyAPI, delegate to OpenAI adaptor since it uses OpenAI-compatible format
+	openaiAdaptor := &openai.Adaptor{}
+	return openaiAdaptor.GetRequestURL(info)
 }
 
 // SetupRequestHeader sets up the request headers for CLIProxyAPI
@@ -42,24 +47,59 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	return nil
 }
 
-// ConvertRequest converts the request to CLIProxyAPI format
-// For CLIProxyAPI, we don't need special request conversion as it supports standard OpenAI/Claude/Gemini formats
-func (a *Adaptor) ConvertRequest(c *gin.Context, info *relaycommon.RelayInfo, request *relaycommon.GeneralOpenAIRequest) (any, error) {
-	// CLIProxyAPI supports standard OpenAI/Claude/Gemini formats directly
+// ConvertOpenAIRequest converts the request to CLIProxyAPI format
+func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
+	// CLIProxyAPI supports standard OpenAI format directly
 	// No conversion needed
 	return request, nil
 }
 
+// ConvertRerankRequest converts rerank requests
+func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
+	return nil, errors.New("rerank not implemented for CLIProxyAPI")
+}
+
+// ConvertEmbeddingRequest converts embedding requests
+func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.EmbeddingRequest) (any, error) {
+	return request, nil
+}
+
+// ConvertAudioRequest converts audio requests
+func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
+	return nil, errors.New("audio not implemented for CLIProxyAPI")
+}
+
+// ConvertImageRequest converts image requests
+func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
+	return request, nil
+}
+
+// ConvertOpenAIResponsesRequest converts OpenAI responses requests
+func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	return nil, errors.New("OpenAI responses not implemented for CLIProxyAPI")
+}
+
+// ConvertClaudeRequest converts Claude requests
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	return request, nil
+}
+
+// ConvertGeminiRequest converts Gemini requests
+func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
+	return request, nil
+}
+
 // DoRequest performs the actual HTTP request to CLIProxyAPI
-func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
 // DoResponse handles the response from CLIProxyAPI
-func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage *relaycommon.Usage, err *relaycommon.ErrorWithStatusCode) {
+func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
 	// CLIProxyAPI returns standard OpenAI/Claude/Gemini format responses
-	// Use common response handler
-	return channel.DoCommonResponse(c, resp, info)
+	// Delegate to OpenAI adaptor for response handling
+	openaiAdaptor := &openai.Adaptor{}
+	return openaiAdaptor.DoResponse(c, resp, info)
 }
 
 // GetModelList returns the list of models supported by this channel

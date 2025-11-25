@@ -12,7 +12,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
-	"github.com/QuantumNous/new-api/relay/channel/cliproxy"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
@@ -398,23 +397,6 @@ func BatchDeleteChannels(ids []int) error {
 		return nil
 	}
 
-	// P2P Channel Deletion Sync (Phase 1): Delete CLIProxyAPI credentials for applicable channels
-	var cliproxyChannels []Channel
-	err := DB.Where("id IN (?) AND type = ? AND account_hint IS NOT NULL AND account_hint != ''",
-		ids, constant.ChannelTypeCliProxy).Find(&cliproxyChannels).Error
-	if err == nil && len(cliproxyChannels) > 0 {
-		for _, channel := range cliproxyChannels {
-			baseUrl := channel.GetBaseURL()
-			apiKey, _, _ := channel.GetNextEnabledKey()
-			if baseUrl != "" && apiKey != "" && channel.AccountHint != nil && *channel.AccountHint != "" {
-				err := cliproxy.DeleteCredential(baseUrl, apiKey, *channel.AccountHint)
-				if err != nil {
-					// Log error but don't fail the batch deletion
-					common.SysLog(fmt.Sprintf("Warning: failed to delete CLIProxyAPI credential for channel #%d: %v", channel.Id, err))
-				}
-			}
-		}
-	}
 
 	// 使用事务 分批删除channel表和abilities表
 	tx := DB.Begin()
@@ -553,25 +535,6 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	// P2P Channel Deletion Sync (Phase 1): Delete CLIProxyAPI credential if applicable
-	if channel.Type == constant.ChannelTypeCliProxy && channel.AccountHint != nil && *channel.AccountHint != "" {
-		// Get channel details for base URL and key
-		fullChannel, err := GetChannelById(channel.Id, true)
-		if err == nil {
-			baseUrl := fullChannel.GetBaseURL()
-			apiKey, _, _ := fullChannel.GetNextEnabledKey()
-
-			if baseUrl != "" && apiKey != "" {
-				// Import CLIProxyAPI client
-				// Note: Import will be added at package level
-				err := cliproxy.DeleteCredential(baseUrl, apiKey, *channel.AccountHint)
-				if err != nil {
-					// Log error but don't fail the deletion - credential might be already deleted
-					common.SysLog(fmt.Sprintf("Warning: failed to delete CLIProxyAPI credential for channel #%d: %v", channel.Id, err))
-				}
-			}
-		}
-	}
 
 	var err error
 	err = DB.Delete(channel).Error
@@ -817,44 +780,12 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
-	// P2P Channel Deletion Sync (Phase 1): Delete CLIProxyAPI credentials for applicable channels
-	var cliproxyChannels []Channel
-	err := DB.Where("status = ? AND type = ? AND account_hint IS NOT NULL AND account_hint != ''",
-		status, constant.ChannelTypeCliProxy).Find(&cliproxyChannels).Error
-	if err == nil && len(cliproxyChannels) > 0 {
-		for _, channel := range cliproxyChannels {
-			baseUrl := channel.GetBaseURL()
-			apiKey, _, _ := channel.GetNextEnabledKey()
-			if baseUrl != "" && apiKey != "" && channel.AccountHint != nil && *channel.AccountHint != "" {
-				err := cliproxy.DeleteCredential(baseUrl, apiKey, *channel.AccountHint)
-				if err != nil {
-					common.SysLog(fmt.Sprintf("Warning: failed to delete CLIProxyAPI credential for channel #%d: %v", channel.Id, err))
-				}
-			}
-		}
-	}
 
 	result := DB.Where("status = ?", status).Delete(&Channel{})
 	return result.RowsAffected, result.Error
 }
 
 func DeleteDisabledChannel() (int64, error) {
-	// P2P Channel Deletion Sync (Phase 1): Delete CLIProxyAPI credentials for applicable channels
-	var cliproxyChannels []Channel
-	err := DB.Where("(status = ? OR status = ?) AND type = ? AND account_hint IS NOT NULL AND account_hint != ''",
-		common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled, constant.ChannelTypeCliProxy).Find(&cliproxyChannels).Error
-	if err == nil && len(cliproxyChannels) > 0 {
-		for _, channel := range cliproxyChannels {
-			baseUrl := channel.GetBaseURL()
-			apiKey, _, _ := channel.GetNextEnabledKey()
-			if baseUrl != "" && apiKey != "" && channel.AccountHint != nil && *channel.AccountHint != "" {
-				err := cliproxy.DeleteCredential(baseUrl, apiKey, *channel.AccountHint)
-				if err != nil {
-					common.SysLog(fmt.Sprintf("Warning: failed to delete CLIProxyAPI credential for channel #%d: %v", channel.Id, err))
-				}
-			}
-		}
-	}
 
 	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
 	return result.RowsAffected, result.Error

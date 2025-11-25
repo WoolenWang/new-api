@@ -205,7 +205,7 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
 	}
 
 	// If channel is marked as private, only owner can access
-	if channel.IsPrivate != nil && *channel.IsPrivate {
+	if channel.IsPrivate {
 		return false
 	}
 
