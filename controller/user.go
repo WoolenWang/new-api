@@ -332,8 +332,28 @@ func GetUser(c *gin.Context) {
 }
 
 func GenerateAccessToken(c *gin.Context) {
-	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
+	// Get user ID to generate token for
+	targetUserId := c.GetInt("id") // Default to current user
+
+	// Check if admin is generating token for another user
+	type GenerateTokenRequest struct {
+		UserId int `json:"user_id"`
+	}
+	var req GenerateTokenRequest
+	if err := c.ShouldBindJSON(&req); err == nil && req.UserId > 0 {
+		// Admin wants to generate token for another user
+		myRole := c.GetInt("role")
+		if myRole != common.RoleRootUser {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "只有超级管理员可以为其他用户生成访问令牌",
+			})
+			return
+		}
+		targetUserId = req.UserId
+	}
+
+	user, err := model.GetUserById(targetUserId, true)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -354,7 +374,7 @@ func GenerateAccessToken(c *gin.Context) {
 	if model.DB.Where("access_token = ?", user.AccessToken).First(user).RowsAffected != 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "请重试，系统生成的 UUID 竟然重复了！",
+			"message": "请重试,系统生成的 UUID 竟然重复了!",
 		})
 		return
 	}
@@ -864,7 +884,26 @@ func CreateUser(c *gin.Context) {
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
 	}
-	if err := cleanUser.Insert(0); err != nil {
+
+	// Handle invitation relationship if invite_code is provided
+	inviterId := 0
+	if user.InviteCode != "" {
+		// Find inviter by invite_code
+		var inviter model.User
+		err := model.DB.Where("invite_code = ?", user.InviteCode).First(&inviter).Error
+		if err == nil {
+			inviterId = inviter.Id
+			cleanUser.InviterId = inviterId
+		}
+		// If invite_code is invalid, just ignore it (inviterId remains 0)
+	}
+
+	// Set user's own aff_code if provided
+	if user.AffCode != "" {
+		cleanUser.AffCode = user.AffCode
+	}
+
+	if err := cleanUser.Insert(inviterId); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -1292,3 +1331,76 @@ func UpdateUserSetting(c *gin.Context) {
 		"message": "设置已更新",
 	})
 }
+
+// ExchangeShareQuota allows users to convert share_quota to regular quota (Phase 1)
+// POST /api/user/quota/:id
+func ExchangeShareQuota(c *gin.Context) {
+	userId := c.GetInt("id")
+	targetUserId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的用户ID",
+		})
+		return
+	}
+
+	// Users can only exchange their own share quota
+	if userId != targetUserId {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "只能兑换自己的分享收益配额",
+		})
+		return
+	}
+
+	type ExchangeRequest struct {
+		Amount int `json:"amount" binding:"required,gt=0"`
+	}
+
+	var req ExchangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的参数，amount必须大于0",
+		})
+		return
+	}
+
+	user, err := model.GetUserById(userId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Check if user has enough share quota
+	if user.ShareQuota < req.Amount {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("分享收益配额不足，当前可用: %d", user.ShareQuota),
+		})
+		return
+	}
+
+	// Transfer share_quota to quota
+	err = model.TransferShareQuotaToQuota(userId, req.Amount)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "兑换失败: " + err.Error(),
+		})
+		return
+	}
+
+	// Log the exchange operation
+	model.RecordLog(userId, model.LogTypeSystem, fmt.Sprintf("兑换分享收益配额: %d -> 常规配额", req.Amount))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("成功兑换 %d 配额", req.Amount),
+		"data": gin.H{
+			"exchanged_amount": req.Amount,
+		},
+	})
+}
+

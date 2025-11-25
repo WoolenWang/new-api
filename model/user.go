@@ -37,11 +37,15 @@ type User struct {
 	UsedQuota        int            `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount     int            `json:"request_count" gorm:"type:int;default:0;"`               // request number
 	Group            string         `json:"group" gorm:"type:varchar(64);default:'default'"`
-	AffCode          string         `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	AffCount         int            `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota         int            `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
-	AffHistoryQuota  int            `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
-	InviterId        int            `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	AffCode         string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	AffCount        int    `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
+	AffQuota        int    `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
+	AffHistoryQuota int    `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
+	InviterId       int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	InviteCode      string `json:"invite_code" gorm:"type:varchar(32);column:invite_code;index"` // WQuant同步过来的用户自身邀请码
+	// P2P Channel Sharing Fields (Phase 1)
+	ShareQuota        int `json:"share_quota" gorm:"type:int;default:0;column:share_quota"`                 // 分享收益额度
+	HistoryShareQuota int `json:"history_share_quota" gorm:"type:int;default:0;column:history_share_quota"` // 历史累计分享收益
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
 	LinuxDOId        string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Setting          string         `json:"setting" gorm:"type:text;column:setting"`
@@ -928,4 +932,86 @@ func RootUserExists() bool {
 		return false
 	}
 	return true
+}
+
+// IncreaseUserShareQuota increases user's share quota (from channel sharing earnings)
+func IncreaseUserShareQuota(userId int, quota int) error {
+	if quota <= 0 {
+		return errors.New("quota must be positive")
+	}
+	err := DB.Model(&User{}).Where("id = ?", userId).Updates(map[string]interface{}{
+		"share_quota":         gorm.Expr("share_quota + ?", quota),
+		"history_share_quota": gorm.Expr("history_share_quota + ?", quota),
+	}).Error
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to increase user share quota: user_id=%d, quota=%d, error=%v", userId, quota, err))
+	}
+	return err
+}
+
+// GetUserShareQuota retrieves user's share quota
+func GetUserShareQuota(userId int) (int, error) {
+	var shareQuota int
+	err := DB.Model(&User{}).Where("id = ?", userId).Select("share_quota").Find(&shareQuota).Error
+	return shareQuota, err
+}
+
+// DeltaUpdateUserQuotaByAdmin allows admin to increase/decrease user quota
+func DeltaUpdateUserQuotaByAdmin(userId int, delta int) error {
+	if delta == 0 {
+		return nil
+	}
+	err := DB.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", delta)).Error
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to update user quota by admin: user_id=%d, delta=%d, error=%v", userId, delta, err))
+	}
+	return err
+}
+
+// TransferShareQuotaToQuota transfers share_quota to quota (Phase 1)
+// This is an atomic operation that deducts from share_quota and adds to quota
+func TransferShareQuotaToQuota(userId int, amount int) error {
+	if amount <= 0 {
+		return errors.New("amount must be positive")
+	}
+
+	// Use transaction to ensure atomicity
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	// Lock the user row for update
+	var user User
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userId).First(&user).Error
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Check if user has enough share quota
+	if user.ShareQuota < amount {
+		tx.Rollback()
+		return fmt.Errorf("insufficient share quota: has %d, needs %d", user.ShareQuota, amount)
+	}
+
+	// Update both fields atomically
+	err = tx.Model(&User{}).Where("id = ?", userId).Updates(map[string]interface{}{
+		"share_quota": gorm.Expr("share_quota - ?", amount),
+		"quota":       gorm.Expr("quota + ?", amount),
+	}).Error
+	if err != nil {
+		tx.Rollback()
+		common.SysLog(fmt.Sprintf("failed to transfer share quota to quota: user_id=%d, amount=%d, error=%v", userId, amount, err))
+		return err
+	}
+
+	// Commit transaction
+	err = tx.Commit().Error
+	if err != nil {
+		return err
+	}
+
+	common.SysLog(fmt.Sprintf("successfully transferred share quota to quota: user_id=%d, amount=%d", userId, amount))
+	return nil
 }

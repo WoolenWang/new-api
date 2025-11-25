@@ -85,6 +85,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/stripe/amount", controller.RequestStripeAmount)
 				selfRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.RequestCreemPay)
 				selfRoute.POST("/aff_transfer", controller.TransferAffQuota)
+				selfRoute.POST("/quota/:id", controller.ExchangeShareQuota) // Phase 1: Exchange share_quota to quota
 				selfRoute.PUT("/setting", controller.UpdateUserSetting)
 
 				// 2FA routes
@@ -156,6 +157,15 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/tag/models", controller.GetTagModels)
 			channelRoute.POST("/copy/:id", controller.CopyChannel)
 			channelRoute.POST("/multi_key/manage", controller.ManageMultiKeys)
+		}
+		// P2P Channel Self-Service Routes (Phase 1)
+		channelSelfRoute := apiRouter.Group("/channel/self")
+		channelSelfRoute.Use(middleware.UserAuth())
+		{
+			channelSelfRoute.GET("/", controller.GetUserChannels)
+			channelSelfRoute.POST("/", controller.CreateUserChannel)
+			channelSelfRoute.PUT("/:id", controller.UpdateUserChannel)
+			channelSelfRoute.DELETE("/:id", controller.DeleteUserChannel)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

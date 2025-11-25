@@ -195,6 +195,29 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
 	}
+
+	// P2P Channel Risk Control: Update used quota for the channel (Phase 1)
+	if params.ChannelId > 0 && params.Quota > 0 {
+		AddChannelUsedQuota(params.ChannelId, int64(params.Quota))
+
+		// P2P Channel Sharing Revenue: Calculate and record owner's earnings (Phase 1)
+		// Only for shared channels (owner_user_id != 0 and owner_user_id != current_user_id)
+		channel, err := GetChannelById(params.ChannelId, false)
+		if err == nil && channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
+			// This is a shared channel from another user
+			// Calculate sharing revenue (10% of consumed quota)
+			shareRevenue := params.Quota / 10
+			if shareRevenue > 0 {
+				err := IncreaseUserShareQuota(channel.OwnerUserId, shareRevenue)
+				if err != nil {
+					logger.LogError(c, fmt.Sprintf("failed to record share quota for channel owner: %v", err))
+				} else {
+					logger.LogInfo(c, fmt.Sprintf("recorded share quota: channel_owner_id=%d, revenue=%d (10%% of %d)", channel.OwnerUserId, shareRevenue, params.Quota))
+				}
+			}
+		}
+	}
+
 	if common.DataExportEnabled {
 		gopool.Go(func() {
 			LogQuotaData(userId, username, params.ModelName, params.Quota, common.GetTimestamp(), params.PromptTokens+params.CompletionTokens)

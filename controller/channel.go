@@ -1151,6 +1151,212 @@ type KeyStatus struct {
 }
 
 // ManageMultiKeys handles multi-key management operations
+// =============== P2P Channel Self-Service APIs (Phase 1) ===============
+
+// GetUserChannels lists all channels owned by the current user
+func GetUserChannels(c *gin.Context) {
+	userId := c.GetInt("id")
+	pageInfo := common.GetPageQuery(c)
+
+	// Query channels owned by this user
+	var channels []*model.Channel
+	var total int64
+
+	query := model.DB.Model(&model.Channel{}).Where("owner_user_id = ?", userId)
+	query.Count(&total)
+
+	err := query.Order("id desc").
+		Limit(pageInfo.GetPageSize()).
+		Offset(pageInfo.GetStartIdx()).
+		Omit("key"). // Don't return API keys
+		Find(&channels).Error
+
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Clear sensitive channel info
+	for _, ch := range channels {
+		clearChannelInfo(ch)
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"items":     channels,
+		"total":     total,
+		"page":      pageInfo.GetPage(),
+		"page_size": pageInfo.GetPageSize(),
+	})
+}
+
+// CreateUserChannel creates a new channel owned by the current user
+func CreateUserChannel(c *gin.Context) {
+	userId := c.GetInt("id")
+
+	addChannelRequest := AddChannelRequest{}
+	err := c.ShouldBindJSON(&addChannelRequest)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Validate channel
+	if err := validateChannel(addChannelRequest.Channel, true); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Set owner_user_id to current user
+	addChannelRequest.Channel.OwnerUserId = userId
+	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+
+	// For P2P channels, only support single key mode
+	if addChannelRequest.Mode != "single" && addChannelRequest.Mode != "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "P2P渠道仅支持单密钥模式",
+		})
+		return
+	}
+
+	// Insert channel
+	err = model.BatchInsertChannels([]model.Channel{*addChannelRequest.Channel})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	service.ResetProxyClientCache()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "渠道创建成功",
+	})
+}
+
+// UpdateUserChannel updates a channel owned by the current user
+func UpdateUserChannel(c *gin.Context) {
+	userId := c.GetInt("id")
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Check ownership
+	existingChannel, err := model.GetChannelById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	if existingChannel.OwnerUserId != userId {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无权修改此渠道",
+		})
+		return
+	}
+
+	// Parse update request
+	channel := PatchChannel{}
+	err = c.ShouldBindJSON(&channel)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Ensure ID matches
+	channel.Id = id
+
+	// Validate channel
+	if err := validateChannel(&channel.Channel, false); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Preserve ChannelInfo and owner_user_id
+	originChannel, err := model.GetChannelById(channel.Id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	channel.ChannelInfo = originChannel.ChannelInfo
+	channel.OwnerUserId = originChannel.OwnerUserId // Cannot change owner
+
+	// Update channel
+	err = channel.Update()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	model.InitChannelCache()
+	service.ResetProxyClientCache()
+	channel.Key = ""
+	clearChannelInfo(&channel.Channel)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "渠道更新成功",
+		"data":    channel,
+	})
+}
+
+// DeleteUserChannel deletes a channel owned by the current user
+func DeleteUserChannel(c *gin.Context) {
+	userId := c.GetInt("id")
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Check ownership
+	existingChannel, err := model.GetChannelById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	if existingChannel.OwnerUserId != userId {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无权删除此渠道",
+		})
+		return
+	}
+
+	// Delete channel
+	channel := model.Channel{Id: id}
+	err = channel.Delete()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	model.InitChannelCache()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "渠道删除成功",
+	})
+}
+
+// =============== End of P2P Channel Self-Service APIs ===============
+
+// ManageMultiKeys handles multi-key management operations
 func ManageMultiKeys(c *gin.Context) {
 	request := MultiKeyManageRequest{}
 	err := c.ShouldBindJSON(&request)

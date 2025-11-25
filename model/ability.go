@@ -143,6 +143,108 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 	return &channel, err
 }
 
+// GetChannelWithPriority selects channel with P2P priority routing (database fallback version):
+// Priority 1: Private channels (user's own channels)
+// Priority 2: Shared channels (other users' channels)
+// Priority 3: Public channels (platform channels)
+func GetChannelWithPriority(group string, model string, userId int, retry int) (*Channel, error) {
+	var abilities []Ability
+
+	channelQuery, err := getChannelQuery(group, model, retry)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get all matching abilities
+	if common.UsingSQLite || common.UsingPostgreSQL {
+		err = channelQuery.Order("weight DESC").Find(&abilities).Error
+	} else {
+		err = channelQuery.Order("weight DESC").Find(&abilities).Error
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	// Fetch all candidate channels to classify by ownership
+	channelIds := make([]int, 0, len(abilities))
+	for _, ability := range abilities {
+		channelIds = append(channelIds, ability.ChannelId)
+	}
+
+	var channels []Channel
+	err = DB.Where("id IN ?", channelIds).Find(&channels).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Create channel map for quick lookup
+	channelMap := make(map[int]*Channel)
+	for i := range channels {
+		channelMap[channels[i].Id] = &channels[i]
+	}
+
+	// Separate channels into three priority tiers based on ownership
+	var privateChannelIds []int // Tier 1: User's own channels
+	var sharedChannelIds []int  // Tier 2: Other users' shared channels
+	var publicChannelIds []int  // Tier 3: Platform public channels
+
+	for _, ability := range abilities {
+		channel, ok := channelMap[ability.ChannelId]
+		if !ok {
+			continue
+		}
+
+		if channel.OwnerUserId == userId && userId != 0 {
+			privateChannelIds = append(privateChannelIds, ability.ChannelId)
+		} else if channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
+			sharedChannelIds = append(sharedChannelIds, ability.ChannelId)
+		} else if channel.OwnerUserId == 0 {
+			publicChannelIds = append(publicChannelIds, ability.ChannelId)
+		}
+	}
+
+	// Try each tier in order
+	tierChannelIds := [][]int{privateChannelIds, sharedChannelIds, publicChannelIds}
+
+	for _, tierIds := range tierChannelIds {
+		if len(tierIds) == 0 {
+			continue
+		}
+
+		// Filter abilities to this tier
+		tierAbilities := make([]Ability, 0)
+		for _, ability := range abilities {
+			for _, id := range tierIds {
+				if ability.ChannelId == id {
+					tierAbilities = append(tierAbilities, ability)
+					break
+				}
+			}
+		}
+
+		// Apply weight-based selection within tier
+		if len(tierAbilities) > 0 {
+			weightSum := uint(0)
+			for _, ability_ := range tierAbilities {
+				weightSum += ability_.Weight + 10
+			}
+			weight := common.GetRandomInt(int(weightSum))
+			for _, ability_ := range tierAbilities {
+				weight -= int(ability_.Weight) + 10
+				if weight <= 0 {
+					return channelMap[ability_.ChannelId], nil
+				}
+			}
+		}
+	}
+
+	return nil, nil
+}
+
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")

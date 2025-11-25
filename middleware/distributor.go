@@ -118,6 +118,22 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
+
+		// P2P Channel Risk Control Check (Phase 1)
+		if channel != nil && channel.OwnerUserId != 0 {
+			err := model.CheckChannelRiskControl(channel)
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("渠道风控检查失败: %s", err.Error()))
+				return
+			}
+			// Increment concurrency counter before processing request
+			model.IncrementChannelConcurrency(channel.Id)
+			// Increment request counter
+			model.IncrementChannelRequest(channel.Id)
+			// Ensure decrement on request completion
+			defer model.DecrementChannelConcurrency(channel.Id)
+		}
+
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
@@ -313,6 +329,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
+	// Set AccountHint for CLIProxyAPI channels
+	if channel.AccountHint != nil && *channel.AccountHint != "" {
+		common.SetContextKey(c, constant.ContextKeyChannelAccountHint, *channel.AccountHint)
+	}
 
 	key, index, newAPIError := channel.GetNextEnabledKey()
 	if newAPIError != nil {

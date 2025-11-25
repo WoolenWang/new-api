@@ -71,6 +71,7 @@ type ChannelMeta struct {
 	UpstreamModelName    string
 	IsModelMapped        bool
 	SupportStreamOptions bool // 是否支持流式选项
+	AccountHint          string // CLIProxyAPI 凭证映射标识
 }
 
 type RelayInfo struct {
@@ -161,6 +162,10 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if ok {
 		channelMeta.ChannelOtherSettings = channelOtherSettings
 	}
+
+	// Get AccountHint for CLIProxyAPI channels
+	accountHint := common.GetContextKeyString(c, constant.ContextKeyChannelAccountHint)
+	channelMeta.AccountHint = accountHint
 
 	if streamSupportedChannels[channelMeta.ChannelType] {
 		channelMeta.SupportStreamOptions = true

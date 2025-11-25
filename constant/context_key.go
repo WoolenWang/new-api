@@ -35,6 +35,7 @@ const (
 	ContextKeyChannelIsMultiKey        ContextKey = "channel_is_multi_key"
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
+	ContextKeyChannelAccountHint       ContextKey = "account_hint"
 
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
