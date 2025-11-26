@@ -350,9 +350,11 @@ func GenerateAccessToken(c *gin.Context) {
 			})
 			return
 		}
+		common.SysLog(fmt.Sprintf("Admin 为新用户 %d 设置 accessToken", req.UserId))
 		targetUserId = req.UserId
 	}
 
+	common.SysLog(fmt.Sprintf("用户 %d 设置 accessToken", targetUserId))
 	user, err := model.GetUserById(targetUserId, true)
 	if err != nil {
 		common.ApiError(c, err)
@@ -870,10 +872,8 @@ func CreateUser(c *gin.Context) {
 				"success": true,
 				"message": "用户已存在",
 				"data": map[string]interface{}{
-					"id":          existingUser.Id,
-					"username":    existingUser.Username,
-					"invite_code": existingUser.InviteCode,
-					"inviter_id":  existingUser.InviterId,
+					"id":       existingUser.Id,
+					"username": existingUser.Username,
 				},
 			})
 			return
@@ -889,10 +889,22 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// For validation purposes: if external_id is provided and no password, use a placeholder
+	// For external auth users: generate a secure random password if none provided
 	passwordProvided := user.Password != ""
 	if user.ExternalId != "" && !passwordProvided {
-		user.Password = "external_auth_placeholder" // Placeholder to pass validation
+		// Generate a 20-character strong random password (max allowed by validation)
+		generatedPassword, err := common.GenerateSecurePassword(20)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Failed to generate secure password for external user: %v", err))
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "生成安全密码失败",
+			})
+			return
+		}
+		user.Password = generatedPassword
+		passwordProvided = true // Mark as provided so it will be saved
+		common.SysLog(fmt.Sprintf("Generated secure password for external user with external_id=%s", user.ExternalId))
 	}
 
 	if err := common.Validate.Struct(&user); err != nil {
@@ -917,8 +929,9 @@ func CreateUser(c *gin.Context) {
 	cleanUser := model.User{
 		Username:    user.Username,
 		DisplayName: user.DisplayName,
-		Role:        user.Role, // 保持管理员设置的角色
+		Role:        user.Role,       // 保持管理员设置的角色
 		ExternalId:  user.ExternalId, // 支持外部系统用户ID
+		AffCode:     user.InviteCode, // 自己的邀请码
 	}
 
 	// Only set password if it was actually provided (not the placeholder)
@@ -944,11 +957,6 @@ func CreateUser(c *gin.Context) {
 		// If aff_code is invalid, just ignore it (inviterId remains 0)
 	}
 
-	// Set user's own invite_code if provided
-	if user.InviteCode != "" {
-		cleanUser.InviteCode = user.InviteCode
-	}
-
 	if err := cleanUser.Insert(inviterId); err != nil {
 		common.ApiError(c, err)
 		return
@@ -966,7 +974,6 @@ func CreateUser(c *gin.Context) {
 		"data": map[string]interface{}{
 			"id":          createdUser.Id,
 			"username":    createdUser.Username,
-			"invite_code": createdUser.InviteCode,
 			"inviter_id":  createdUser.InviterId,
 			"external_id": createdUser.ExternalId,
 		},
@@ -1550,8 +1557,6 @@ func QueryUser(c *gin.Context) {
 		"data": map[string]interface{}{
 			"id":          user.Id,
 			"username":    user.Username,
-			"invite_code": user.InviteCode,
-			"inviter_id":  user.InviterId,
 			"external_id": user.ExternalId,
 			"role":        user.Role,
 			"status":      user.Status,
@@ -1560,4 +1565,3 @@ func QueryUser(c *gin.Context) {
 		},
 	})
 }
-
