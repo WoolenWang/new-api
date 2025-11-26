@@ -2,7 +2,7 @@ package common
 
 import (
 	"crypto/hmac"
-	crand "crypto/r
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"math/big"

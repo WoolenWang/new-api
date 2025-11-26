@@ -99,6 +99,10 @@ func newHTTPClient() *http.Client {
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: time.Duration(timeoutSec) * time.Second,
 	}
+
+	// Set proxy from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+	transport.Proxy = http.ProxyFromEnvironment
+
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -126,6 +130,9 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 	baseDelay := 200 * time.Millisecond
 	maxMB := common.GetEnvOrDefault("SYNC_HTTP_MAX_MB", 10)
 	maxBytes := int64(maxMB) << 20
+
+	common.SysLog(fmt.Sprintf("fetchJSON - 开始请求: %s (最大尝试次数: %d)", url, attempts))
+
 	for attempt := 0; attempt < attempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -140,6 +147,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			common.SysLog(fmt.Sprintf("fetchJSON - 请求失败 (尝试 %d/%d): %v", attempt+1, attempts, err))
 			lastErr = err
 			// backoff with jitter
 			sleep := baseDelay * time.Duration(1<<attempt)
@@ -151,6 +159,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 			defer resp.Body.Close()
 			switch resp.StatusCode {
 			case http.StatusOK:
+				common.SysLog(fmt.Sprintf("fetchJSON - 请求成功 (状态码 200): %s", url))
 				// read body into buffer for caching and flexible decode
 				limited := io.LimitReader(resp.Body, maxBytes)
 				buf, err := io.ReadAll(limited)
@@ -166,24 +175,31 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 				bodyCache[url] = buf
 				cacheMutex.Unlock()
 
+				common.SysLog(fmt.Sprintf("fetchJSON - 读取到 %d 字节数据: %s", len(buf), url))
+
 				// Try decode as envelope first
 				if err := json.Unmarshal(buf, out); err != nil {
+					common.SysLog(fmt.Sprintf("fetchJSON - 尝试解析为envelope格式失败，尝试解析为纯数组: %s", url))
 					// Try decode as pure array
 					var arr []T
 					if err2 := json.Unmarshal(buf, &arr); err2 != nil {
+						common.SysError(fmt.Sprintf("fetchJSON - JSON解析失败: %v, 二次尝试: %v", err, err2))
 						lastErr = err
 						return
 					}
+					common.SysLog(fmt.Sprintf("fetchJSON - 成功解析为纯数组，包含 %d 个元素", len(arr)))
 					out.Success = true
 					out.Data = arr
 					out.Message = ""
 				} else {
+					common.SysLog(fmt.Sprintf("fetchJSON - 成功解析为envelope格式，包含 %d 个元素", len(out.Data)))
 					if !out.Success && len(out.Data) == 0 && out.Message == "" {
 						out.Success = true
 					}
 				}
 				lastErr = nil
 			case http.StatusNotModified:
+				common.SysLog(fmt.Sprintf("fetchJSON - 使用缓存 (状态码 304): %s", url))
 				// use cache
 				cacheMutex.RLock()
 				buf := bodyCache[url]
@@ -208,6 +224,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 				}
 				lastErr = nil
 			default:
+				common.SysLog(fmt.Sprintf("fetchJSON - 请求失败 (状态码 %d): %s", resp.StatusCode, url))
 				lastErr = errors.New(resp.Status)
 			}
 		}()
@@ -251,25 +268,13 @@ func ensureVendorID(vendorName string, vendorByName map[string]upstreamVendor, v
 
 // SyncUpstreamModels 同步上游模型与供应商，仅对「未配置模型」生效
 func SyncUpstreamModels(c *gin.Context) {
+	common.SysLog("SyncUpstreamModels - 开始同步上游模型")
 	var req syncRequest
 	// 允许空体
 	_ = c.ShouldBindJSON(&req)
-	// 1) 获取未配置模型列表
-	missing, err := model.GetMissingModels()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
-		return
-	}
-	if len(missing) == 0 {
-		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
-			"created_models":  0,
-			"created_vendors": 0,
-			"skipped_models":  []string{},
-		}})
-		return
-	}
 
 	// 2) 拉取上游 vendors 与 models
+	common.SysLog("SyncUpstreamModels - 开始拉取上游数据")
 	timeoutSec := common.GetEnvOrDefault("SYNC_HTTP_TIMEOUT_SECONDS", 15)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -292,10 +297,17 @@ func SyncUpstreamModels(c *gin.Context) {
 		}
 	}()
 	wg.Wait()
+	common.SysLog("SyncUpstreamModels - 上游数据拉取完成")
 	if fetchErr != nil {
+		common.SysError(fmt.Sprintf("SyncUpstreamModels - 获取上游模型失败: %v", fetchErr))
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取上游模型失败: " + fetchErr.Error(), "locale": req.Locale, "source_urls": gin.H{"models_url": modelsURL, "vendors_url": vendorsURL}})
 		return
 	}
+
+	// 打印从上游获取的数据
+	common.SysLog(fmt.Sprintf("SyncUpstreamModels - 从上游获取到 %d 个模型, %d 个供应商", len(modelsEnv.Data), len(vendorsEnv.Data)))
+	common.SysLog(fmt.Sprintf("SyncUpstreamModels - 模型数据源: %s", modelsURL))
+	common.SysLog(fmt.Sprintf("SyncUpstreamModels - 供应商数据源: %s", vendorsURL))
 
 	// 建立映射
 	vendorByName := make(map[string]upstreamVendor)
@@ -305,10 +317,33 @@ func SyncUpstreamModels(c *gin.Context) {
 		}
 	}
 	modelByName := make(map[string]upstreamModel)
+	upstreamModelNames := make([]string, 0, len(modelsEnv.Data))
 	for _, m := range modelsEnv.Data {
 		if m.ModelName != "" {
 			modelByName[m.ModelName] = m
+			upstreamModelNames = append(upstreamModelNames, m.ModelName)
 		}
+	}
+
+	// 计算缺失模型列表
+	missing, err := model.GetMissingModelsFromUpstream(upstreamModelNames)
+	if err != nil {
+		common.SysError(fmt.Sprintf("SyncUpstreamModels - 计算缺失模型失败: %v", err))
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	common.SysLog(fmt.Sprintf("SyncUpstreamModels - 找到 %d 个未配置模型", len(missing)))
+	if len(missing) > 0 {
+		common.SysLog(fmt.Sprintf("SyncUpstreamModels - 未配置模型列表（前20个）: %v", missing[:min(20, len(missing))]))
+	}
+	if len(missing) == 0 {
+		common.SysLog("SyncUpstreamModels - 没有需要同步的模型")
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+			"created_models":  0,
+			"created_vendors": 0,
+			"skipped_models":  []string{},
+		}})
+		return
 	}
 
 	// 3) 执行同步：仅创建缺失模型；若上游缺失该模型则跳过
@@ -420,6 +455,19 @@ func SyncUpstreamModels(c *gin.Context) {
 		}
 	}
 
+	// 打印同步结果
+	common.SysLog(fmt.Sprintf("SyncUpstreamModels - 同步完成: 创建模型 %d 个, 创建供应商 %d 个, 更新模型 %d 个, 跳过 %d 个",
+		createdModels, createdVendors, updatedModels, len(skipped)))
+	if len(createdList) > 0 {
+		common.SysLog(fmt.Sprintf("SyncUpstreamModels - 新建模型列表: %v", createdList))
+	}
+	if len(updatedList) > 0 {
+		common.SysLog(fmt.Sprintf("SyncUpstreamModels - 更新模型列表: %v", updatedList))
+	}
+	if len(skipped) > 0 {
+		common.SysLog(fmt.Sprintf("SyncUpstreamModels - 跳过模型列表: %v", skipped))
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
@@ -463,6 +511,13 @@ func chooseStatus(primary, fallback int) int {
 		return primary
 	}
 	return 1
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // SyncUpstreamPreview 预览上游与本地的差异（仅用于弹窗选择）
