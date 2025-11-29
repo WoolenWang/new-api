@@ -54,6 +54,10 @@ func main() {
 	}
 
 	defer func() {
+		// Sync all channel used_quota before shutdown
+		common.SysLog("Syncing all channel used_quota to database before shutdown...")
+		model.SyncAllChannelUsedQuotaToDB()
+
 		err := model.CloseDB()
 		if err != nil {
 			common.FatalLog("failed to close database: " + err.Error())
@@ -88,6 +92,15 @@ func main() {
 
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
+
+	// 定期同步 P2P 渠道的 used_quota 到数据库（每5分钟）
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			model.SyncAllChannelUsedQuotaToDB()
+		}
+	}()
 
 	// 数据看板
 	go model.UpdateQuotaData()

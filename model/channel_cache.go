@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 )
 
 var group2model2channels map[string]map[string][]int // enabled channel
@@ -232,7 +233,7 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
 
 	// If channel has either allowed_users or allowed_groups set, but user didn't match, deny access
 	if (channel.AllowedUsers != nil && *channel.AllowedUsers != "") ||
-	   (channel.AllowedGroups != nil && *channel.AllowedGroups != "") {
+		(channel.AllowedGroups != nil && *channel.AllowedGroups != "") {
 		return false
 	}
 
@@ -241,9 +242,15 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
 }
 
 // GetRandomSatisfiedChannelWithPriority selects channels with P2P priority routing:
-// Priority 1: Private channels (user's own channels with is_private=true OR owner_user_id=userId)
-// Priority 2: Shared channels (other users' channels with owner_user_id != 0 AND owner_user_id != userId)
-// Priority 3: Public channels (platform channels with owner_user_id = 0)
+// Priority 1 (Private): User's own channels with is_private=true (owner_user_id=userId AND is_private=true)
+// Priority 2 (Shared): Non-private P2P channels, including:
+//   - User's own non-private channels (owner_user_id=userId AND is_private=false)
+//   - Other users' shared channels that passed access control (owner_user_id != 0 AND owner_user_id != userId AND is_private=false)
+//
+// Priority 3 (Public): Platform channels (owner_user_id = 0)
+//
+// Within each priority tier, channels are further selected based on their priority level and weight.
+// Access control is enforced via CheckChannelAccess, and risk control limits are applied for P2P channels.
 func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database with priority
 	if !common.MemoryCacheEnabled {
@@ -267,9 +274,9 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	}
 
 	// Separate channels into three priority tiers based on ownership and access control
-	var privateChannels []*Channel   // Tier 1: User's own channels
-	var sharedChannels []*Channel    // Tier 2: Other users' shared channels
-	var publicChannels []*Channel    // Tier 3: Platform public channels
+	var privateChannels []*Channel // Tier 1: User's own channels
+	var sharedChannels []*Channel  // Tier 2: Other users' shared channels
+	var publicChannels []*Channel  // Tier 3: Platform public channels
 
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
@@ -281,29 +288,43 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 			// Apply risk control check for P2P channels - skip channels that exceed limits
 			if channel.OwnerUserId != 0 {
 				if err := CheckChannelRiskControl(channel); err != nil {
+					// Check if this is a concurrency limit error and log it specially
+					var newAPIErr *types.NewAPIError
+					if errors.As(err, &newAPIErr) && newAPIErr.GetErrorCode() == types.ErrorCodeChannelConcurrencyExceeded {
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					}
 					// Skip this channel if it exceeds risk control limits
 					continue
 				}
 			}
 
-			// Classify into appropriate tier based on ownership
-			if channel.OwnerUserId == userId && userId != 0 {
-				// User's own channels go to private tier
+			// Classify into appropriate tier based on ownership and privacy settings
+			if channel.OwnerUserId == userId && userId != 0 && channel.IsPrivate {
+				// Tier 1: User's own private channels (explicitly marked as private)
 				privateChannels = append(privateChannels, channel)
-			} else if channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
-				// Other users' channels that passed access control go to shared tier
+			} else if channel.OwnerUserId != 0 && !channel.IsPrivate {
+				// Tier 2: Shared channels (both user's own public channels and others' shared channels)
+				// User's own non-private channels and other users' channels that passed access control
 				sharedChannels = append(sharedChannels, channel)
 			} else if channel.OwnerUserId == 0 {
-				// Platform channels go to public tier
+				// Tier 3: Platform public channels
 				publicChannels = append(publicChannels, channel)
 			}
 		}
 	}
 
+	// Log channel tier distribution for debugging
+	common.SysLog(fmt.Sprintf(
+		"P2P Channel Routing - User: %d, Group: %s, Model: %s | Tiers: Private=%d, Shared=%d, Public=%d",
+		userId, userGroup, model, len(privateChannels), len(sharedChannels), len(publicChannels),
+	))
+
 	// Try selecting from each tier in order: private -> shared -> public
 	tierChannels := [][]*Channel{privateChannels, sharedChannels, publicChannels}
+	tierNames := []string{"Private", "Shared", "Public"}
 
-	for _, tier := range tierChannels {
+	for tierIdx, tier := range tierChannels {
 		if len(tier) == 0 {
 			continue // Skip empty tiers
 		}
@@ -311,6 +332,11 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 		// Within each tier, apply the original priority + weight selection logic
 		selectedChannel := selectChannelFromTier(tier, retry)
 		if selectedChannel != nil {
+			common.SysLog(fmt.Sprintf(
+				"P2P Channel Selected - Tier: %s, Channel: #%d (Owner: %d, IsPrivate: %t, Name: %s)",
+				tierNames[tierIdx], selectedChannel.Id, selectedChannel.OwnerUserId,
+				selectedChannel.IsPrivate, selectedChannel.Name,
+			))
 			return selectedChannel, nil
 		}
 	}

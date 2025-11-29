@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -144,9 +145,13 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 }
 
 // GetChannelWithPriority selects channel with P2P priority routing (database fallback version):
-// Priority 1: Private channels (user's own channels)
-// Priority 2: Shared channels (other users' channels)
-// Priority 3: Public channels (platform channels)
+// Priority 1 (Private): User's own channels with is_private=true (owner_user_id=userId AND is_private=true)
+// Priority 2 (Shared): Non-private P2P channels, including:
+//   - User's own non-private channels (owner_user_id=userId AND is_private=false)
+//   - Other users' shared channels that passed access control (owner_user_id != 0 AND owner_user_id != userId AND is_private=false)
+// Priority 3 (Public): Platform channels (owner_user_id = 0)
+//
+// This function is used when memory cache is disabled. It queries the database directly.
 func GetChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
 	var abilities []Ability
 
@@ -188,8 +193,8 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 	}
 
 	// Separate channels into three priority tiers based on ownership and access control
-	var privateChannelIds []int // Tier 1: User's own channels
-	var sharedChannelIds []int  // Tier 2: Other users' shared channels
+	var privateChannelIds []int // Tier 1: User's own private channels (is_private=true)
+	var sharedChannelIds []int  // Tier 2: Non-private P2P channels (user's own public + others' shared)
 	var publicChannelIds []int  // Tier 3: Platform public channels
 
 	for _, ability := range abilities {
@@ -206,17 +211,26 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 		// Apply risk control check for P2P channels - skip channels that exceed limits
 		if channel.OwnerUserId != 0 {
 			if err := CheckChannelRiskControl(channel); err != nil {
+				// Check if this is a concurrency limit error and log it specially
+				var newAPIErr *types.NewAPIError
+				if errors.As(err, &newAPIErr) && newAPIErr.GetErrorCode() == types.ErrorCodeChannelConcurrencyExceeded {
+					common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
+						channel.Id, channel.Name, err.Error()))
+				}
 				// Skip this channel if it exceeds risk control limits
 				continue
 			}
 		}
 
-		// Classify into appropriate tier based on ownership
-		if channel.OwnerUserId == userId && userId != 0 {
+		// Classify into appropriate tier based on ownership and privacy settings
+		if channel.OwnerUserId == userId && userId != 0 && channel.IsPrivate {
+			// Tier 1: User's own private channels (explicitly marked as private)
 			privateChannelIds = append(privateChannelIds, ability.ChannelId)
-		} else if channel.OwnerUserId != 0 && channel.OwnerUserId != userId {
+		} else if channel.OwnerUserId != 0 && !channel.IsPrivate {
+			// Tier 2: Shared channels (both user's own public channels and others' shared channels)
 			sharedChannelIds = append(sharedChannelIds, ability.ChannelId)
 		} else if channel.OwnerUserId == 0 {
+			// Tier 3: Platform public channels
 			publicChannelIds = append(publicChannelIds, ability.ChannelId)
 		}
 	}

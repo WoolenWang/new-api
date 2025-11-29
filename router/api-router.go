@@ -159,6 +159,10 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/tag/models", controller.GetTagModels)
 			channelRoute.POST("/copy/:id", controller.CopyChannel)
 			channelRoute.POST("/multi_key/manage", controller.ManageMultiKeys)
+			// P2P Channel Admin Routes
+			channelRoute.GET("/p2p", controller.GetP2PChannels)                        // List all P2P channels with usage
+			channelRoute.GET("/:id/usage", controller.GetChannelUsage)                 // Get detailed usage for specific channel
+			channelRoute.GET("/concurrency", controller.GetChannelConcurrencySnapshot) // Get lightweight concurrency snapshot for all channels
 		}
 		// P2P Channel Self-Service Routes (Phase 1)
 		channelSelfRoute := apiRouter.Group("/channel/self")

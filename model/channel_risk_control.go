@@ -6,18 +6,19 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/types"
 )
 
 // ChannelUsageStats tracks real-time usage statistics for P2P channels
 type ChannelUsageStats struct {
-	ChannelId        int
-	UsedQuota        int64     // Total quota used (累计使用额度)
-	CurrentConcurrency int     // Current concurrent requests (当前并发数)
-	HourlyRequests   int       // Requests in current hour (当前小时请求数)
-	DailyRequests    int       // Requests in current day (当前天请求数)
-	HourStartTime    time.Time // Start of current hour window
-	DayStartTime     time.Time // Start of current day window
-	mu               sync.RWMutex
+	ChannelId          int
+	UsedQuota          int64     // Total quota used (累计使用额度)
+	CurrentConcurrency int       // Current concurrent requests (当前并发数)
+	HourlyRequests     int       // Requests in current hour (当前小时请求数)
+	DailyRequests      int       // Requests in current day (当前天请求数)
+	HourStartTime      time.Time // Start of current hour window
+	DayStartTime       time.Time // Start of current day window
+	mu                 sync.RWMutex
 }
 
 var (
@@ -44,15 +45,26 @@ func GetChannelUsageStats(channelId int) *ChannelUsageStats {
 		return stats
 	}
 
+	// Load persisted used_quota from database
+	var persistedQuota int64 = 0
+	var channel Channel
+	err := DB.Select("used_quota").Where("id = ?", channelId).First(&channel).Error
+	if err == nil {
+		persistedQuota = channel.UsedQuota
+		common.SysLog(fmt.Sprintf("Loaded persisted used_quota for channel #%d: %d", channelId, persistedQuota))
+	} else {
+		common.SysLog(fmt.Sprintf("Warning: Failed to load used_quota for channel #%d, starting from 0: %v", channelId, err))
+	}
+
 	now := time.Now()
 	stats = &ChannelUsageStats{
-		ChannelId:        channelId,
-		UsedQuota:        0,
+		ChannelId:          channelId,
+		UsedQuota:          persistedQuota, // Initialize from database
 		CurrentConcurrency: 0,
-		HourlyRequests:   0,
-		DailyRequests:    0,
-		HourStartTime:    now,
-		DayStartTime:     now.Truncate(24 * time.Hour),
+		HourlyRequests:     0,
+		DailyRequests:      0,
+		HourStartTime:      now,
+		DayStartTime:       now.Truncate(24 * time.Hour),
 	}
 	channelUsageStats[channelId] = stats
 	return stats
@@ -80,7 +92,10 @@ func CheckChannelRiskControl(channel *Channel) error {
 	// Check 2: Concurrency limit
 	if channel.Concurrency > 0 {
 		if stats.CurrentConcurrency >= channel.Concurrency {
-			return fmt.Errorf("渠道已达到并发数限制: %d/%d", stats.CurrentConcurrency, channel.Concurrency)
+			return types.NewError(
+				fmt.Errorf("渠道已达到并发数限制: %d/%d", stats.CurrentConcurrency, channel.Concurrency),
+				types.ErrorCodeChannelConcurrencyExceeded,
+			)
 		}
 	}
 
@@ -101,7 +116,7 @@ func CheckChannelRiskControl(channel *Channel) error {
 	if channel.DailyLimit > 0 {
 		now := time.Now()
 		// Reset daily counter if day has changed
-		if now.Truncate(24*time.Hour).After(stats.DayStartTime) {
+		if now.Truncate(24 * time.Hour).After(stats.DayStartTime) {
 			// Note: This is read-locked, actual reset happens in IncrementChannelRequest
 			// We just check the old counter here
 		}
@@ -146,7 +161,7 @@ func IncrementChannelRequest(channelId int) {
 	}
 
 	// Reset daily counter if day has changed
-	if now.Truncate(24*time.Hour).After(stats.DayStartTime) {
+	if now.Truncate(24 * time.Hour).After(stats.DayStartTime) {
 		stats.DailyRequests = 0
 		stats.DayStartTime = now.Truncate(24 * time.Hour)
 	}
@@ -155,12 +170,21 @@ func IncrementChannelRequest(channelId int) {
 	stats.DailyRequests++
 }
 
-// AddChannelUsedQuota adds used quota to channel statistics
+// AddChannelUsedQuota adds used quota to channel statistics and persists to DB
 func AddChannelUsedQuota(channelId int, quota int64) {
 	stats := GetChannelUsageStats(channelId)
 	stats.mu.Lock()
-	defer stats.mu.Unlock()
 	stats.UsedQuota += quota
+	newUsedQuota := stats.UsedQuota
+	stats.mu.Unlock()
+
+	// Asynchronously update database to avoid blocking
+	go func() {
+		err := DB.Model(&Channel{}).Where("id = ?", channelId).Update("used_quota", newUsedQuota).Error
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Error updating used_quota for channel #%d: %v", channelId, err))
+		}
+	}()
 }
 
 // GetChannelUsedQuota retrieves current used quota for a channel
@@ -196,6 +220,59 @@ func GetAllChannelUsageStats() map[int]*ChannelUsageStats {
 			HourStartTime:      stats.HourStartTime,
 			DayStartTime:       stats.DayStartTime,
 		}
+		stats.mu.RUnlock()
+	}
+	return snapshot
+}
+
+// SyncAllChannelUsedQuotaToDB synchronizes all in-memory used_quota to database
+// This is a safety mechanism to ensure data persistence, called periodically or on shutdown
+func SyncAllChannelUsedQuotaToDB() error {
+	usageStatsMutex.RLock()
+	defer usageStatsMutex.RUnlock()
+
+	if len(channelUsageStats) == 0 {
+		return nil
+	}
+
+	// Build batch update data
+	type quotaUpdate struct {
+		ChannelId int
+		UsedQuota int64
+	}
+	updates := make([]quotaUpdate, 0, len(channelUsageStats))
+
+	for id, stats := range channelUsageStats {
+		stats.mu.RLock()
+		updates = append(updates, quotaUpdate{
+			ChannelId: id,
+			UsedQuota: stats.UsedQuota,
+		})
+		stats.mu.RUnlock()
+	}
+
+	// Execute batch updates
+	for _, u := range updates {
+		err := DB.Model(&Channel{}).Where("id = ?", u.ChannelId).Update("used_quota", u.UsedQuota).Error
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Error syncing used_quota for channel #%d: %v", u.ChannelId, err))
+		}
+	}
+
+	common.SysLog(fmt.Sprintf("Synced used_quota for %d channels to database", len(updates)))
+	return nil
+}
+
+// GetChannelConcurrencySnapshot returns a simplified snapshot of concurrency information for all channels
+// This is specifically designed for management API consumption
+func GetChannelConcurrencySnapshot() map[int]int {
+	usageStatsMutex.RLock()
+	defer usageStatsMutex.RUnlock()
+
+	snapshot := make(map[int]int)
+	for id, stats := range channelUsageStats {
+		stats.mu.RLock()
+		snapshot[id] = stats.CurrentConcurrency
 		stats.mu.RUnlock()
 	}
 	return snapshot
