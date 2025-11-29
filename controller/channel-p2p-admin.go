@@ -49,11 +49,23 @@ func GetP2PChannels(c *gin.Context) {
 		return
 	}
 
+	// Take a consistent snapshot of runtime usage stats to avoid cross-package locking
+	usageSnapshot := model.GetAllChannelUsageStats()
+
 	// Build response with runtime stats
 	result := make([]P2PChannelUsageInfo, 0, len(channels))
 	for _, ch := range channels {
-		stats := model.GetChannelUsageStats(ch.Id)
-		stats.mu.RLock()
+		runtimeStats, ok := usageSnapshot[ch.Id]
+
+		var usedQuotaRuntime int64
+		var currentConcurrency, hourlyRequests, dailyRequests int
+		if ok && runtimeStats != nil {
+			usedQuotaRuntime = runtimeStats.UsedQuota
+			currentConcurrency = runtimeStats.CurrentConcurrency
+			hourlyRequests = runtimeStats.HourlyRequests
+			dailyRequests = runtimeStats.DailyRequests
+		}
+
 		info := P2PChannelUsageInfo{
 			Id:                 ch.Id,
 			Name:               ch.Name,
@@ -61,20 +73,19 @@ func GetP2PChannels(c *gin.Context) {
 			Status:             ch.Status,
 			OwnerUserId:        ch.OwnerUserId,
 			TotalQuota:         ch.TotalQuota,
-			UsedQuota:          ch.UsedQuota,    // From database
-			UsedQuotaRuntime:   stats.UsedQuota, // From memory
-			CurrentConcurrency: stats.CurrentConcurrency,
+			UsedQuota:          ch.UsedQuota,     // From database
+			UsedQuotaRuntime:   usedQuotaRuntime, // From in-memory stats snapshot
+			CurrentConcurrency: currentConcurrency,
 			Concurrency:        ch.Concurrency,
-			HourlyRequests:     stats.HourlyRequests,
+			HourlyRequests:     hourlyRequests,
 			HourlyLimit:        ch.HourlyLimit,
-			DailyRequests:      stats.DailyRequests,
+			DailyRequests:      dailyRequests,
 			DailyLimit:         ch.DailyLimit,
 			IsPrivate:          ch.IsPrivate,
 			AllowedUsers:       ch.AllowedUsers,
 			AllowedGroups:      ch.AllowedGroups,
 			CreatedTime:        ch.CreatedTime,
 		}
-		stats.mu.RUnlock()
 		result = append(result, info)
 	}
 
@@ -101,10 +112,21 @@ func GetChannelUsage(c *gin.Context) {
 		return
 	}
 
-	// Get runtime statistics
-	stats := model.GetChannelUsageStats(channel.Id)
-	stats.mu.RLock()
-	defer stats.mu.RUnlock()
+	// Get runtime statistics snapshot for this channel
+	usageSnapshot := model.GetAllChannelUsageStats()
+	stats, ok := usageSnapshot[channel.Id]
+
+	var usedQuotaRuntime int64
+	var currentConcurrency, hourlyRequests, dailyRequests int
+	var hourStartTime, dayStartTime interface{}
+	if ok && stats != nil {
+		usedQuotaRuntime = stats.UsedQuota
+		currentConcurrency = stats.CurrentConcurrency
+		hourlyRequests = stats.HourlyRequests
+		dailyRequests = stats.DailyRequests
+		hourStartTime = stats.HourStartTime
+		dayStartTime = stats.DayStartTime
+	}
 
 	common.ApiSuccess(c, gin.H{
 		"channel_id":          channel.Id,
@@ -112,15 +134,15 @@ func GetChannelUsage(c *gin.Context) {
 		"owner_user_id":       channel.OwnerUserId,
 		"total_quota":         channel.TotalQuota,
 		"used_quota_db":       channel.UsedQuota, // Persisted value
-		"used_quota_runtime":  stats.UsedQuota,   // Runtime value
-		"current_concurrency": stats.CurrentConcurrency,
+		"used_quota_runtime":  usedQuotaRuntime,  // Runtime value (snapshot)
+		"current_concurrency": currentConcurrency,
 		"concurrency_limit":   channel.Concurrency,
-		"hourly_requests":     stats.HourlyRequests,
+		"hourly_requests":     hourlyRequests,
 		"hourly_limit":        channel.HourlyLimit,
-		"daily_requests":      stats.DailyRequests,
+		"daily_requests":      dailyRequests,
 		"daily_limit":         channel.DailyLimit,
-		"hour_start_time":     stats.HourStartTime,
-		"day_start_time":      stats.DayStartTime,
+		"hour_start_time":     hourStartTime,
+		"day_start_time":      dayStartTime,
 	})
 }
 
