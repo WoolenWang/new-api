@@ -470,9 +470,22 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
 	}
 
+	// 校验 P2P 渠道的速率限制配置
+	// hourly_limit: 每小时请求数限制，0表示不限制，仅对P2P渠道生效
+	if channel.HourlyLimit < 0 {
+		return fmt.Errorf("每小时请求数限制不能为负数")
+	}
+	// daily_limit: 每日请求数限制，0表示不限制，仅对P2P渠道生效
+	if channel.DailyLimit < 0 {
+		return fmt.Errorf("每日请求数限制不能为负数")
+	}
+
 	// 如果是添加操作，检查 key 是否为空
+	// 说明：对 CLIProxy 类型渠道（channel.Type == ChannelTypeCliProxy），
+	// 实际上不会直接使用上游 API Key，而是通过 other/account_hint 在 CLIProxy 中查找凭证，
+	// 因此此处允许 Key 为空，避免误挡 OAuth/CLIProxy 渠道创建。
 	if isAdd {
-		if channel.Key == "" {
+		if channel.Type != constant.ChannelTypeCliProxy && channel.Key == "" {
 			return fmt.Errorf("channel cannot be empty")
 		}
 
@@ -515,20 +528,21 @@ type AddChannelRequest struct {
 // woolen_quant/controllers/api/svr/v1/newapi/channels.py::NewapiChannelApi.post
 type SelfChannelCreateRequest struct {
 	Name            string          `json:"name"`
-	Type            string          `json:"type"`          // openai / claude / gemini / cli_proxy 等
-	Key             string          `json:"key"`           // 部分类型可为空（如 cli_proxy）
-	BaseURL         string          `json:"base_url"`      // 可选
-	ModelsRaw       json.RawMessage `json:"models"`        // 字符串或数组，延后解析
-	Remark          string          `json:"remark"`        // 可选
-	Priority        int64           `json:"priority"`      // 可选，默认 0
-	Weight          int             `json:"weight"`        // 可选，默认 1
-	ModelMappingRaw json.RawMessage `json:"model_mapping"` // 可选，JSON 对象或字符串
-	Groups          []string        `json:"groups"`        // 可选，未传时使用 default
-	Tag             string          `json:"tag"`           // 可选
-	AutoDisable     int             `json:"auto_disable"`  // 1=自动禁用，其余视为关闭
-	Config          string          `json:"config"`        // 参数覆盖（JSON 字符串）
-	Headers         string          `json:"headers"`       // header 覆盖（JSON 字符串）
-	Other           string          `json:"other"`         // OAuth/CLIProxy 等场景使用
+	Type            string          `json:"type"`           // openai / claude / gemini / cli_proxy 等
+	Key             string          `json:"key"`            // 部分类型可为空（如 cli_proxy）
+	BaseURL         string          `json:"base_url"`       // 可选
+	ModelsRaw       json.RawMessage `json:"models"`         // 字符串或数组，延后解析
+	Remark          string          `json:"remark"`         // 可选
+	Priority        int64           `json:"priority"`       // 可选，默认 0
+	Weight          int             `json:"weight"`         // 可选，默认 1
+	ModelMappingRaw json.RawMessage `json:"model_mapping"`  // 可选，JSON 对象或字符串
+	Groups          []string        `json:"groups"`         // 可选，未传时使用 default
+	Tag             string          `json:"tag"`            // 可选
+	AutoDisable     int             `json:"auto_disable"`   // 1=自动禁用，其余视为关闭
+	Config          string          `json:"config"`         // 参数覆盖（JSON 字符串）
+	Headers         string          `json:"headers"`        // header 覆盖（JSON 字符串）
+	Other           string          `json:"other"`          // OAuth/CLIProxy 等场景使用
+	AllowedModels   string          `json:"allowed_models"` // P2P权限白名单：允许共享的模型列表(逗号分隔)
 }
 
 // mapExternalChannelType 将 WQuant 侧字符串类型映射到内部的 ChannelType 常量
@@ -670,6 +684,12 @@ func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
 
 	if r.Other != "" {
 		ch.Other = r.Other
+	}
+
+	// 处理 allowed_models: P2P权限白名单
+	if r.AllowedModels != "" {
+		allowedModels := strings.TrimSpace(r.AllowedModels)
+		ch.AllowedModels = &allowedModels
 	}
 
 	return ch, nil
