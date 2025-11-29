@@ -457,14 +457,22 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
+	// 先做空指针检查，避免在上游传入空 channel 时触发 panic
+	if channel == nil {
+		if isAdd {
+			return fmt.Errorf("channel cannot be empty")
+		}
+		return fmt.Errorf("channel is nil")
+	}
+
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
 	}
 
-	// 如果是添加操作，检查 channel 和 key 是否为空
+	// 如果是添加操作，检查 key 是否为空
 	if isAdd {
-		if channel == nil || channel.Key == "" {
+		if channel.Key == "" {
 			return fmt.Errorf("channel cannot be empty")
 		}
 
@@ -500,6 +508,171 @@ type AddChannelRequest struct {
 	MultiKeyMode              constant.MultiKeyMode `json:"multi_key_mode"`
 	BatchAddSetKeyPrefix2Name bool                  `json:"batch_add_set_key_prefix_2_name"`
 	Channel                   *model.Channel        `json:"channel"`
+}
+
+// SelfChannelCreateRequest 描述 /api/channel/self 创建渠道时 WQuant 侧透传的扁平请求体
+// 结构参考 wquant/docs/设计文档/07-NEW-API-集成-接口约定.md 以及
+// woolen_quant/controllers/api/svr/v1/newapi/channels.py::NewapiChannelApi.post
+type SelfChannelCreateRequest struct {
+	Name            string          `json:"name"`
+	Type            string          `json:"type"`          // openai / claude / gemini / cli_proxy 等
+	Key             string          `json:"key"`           // 部分类型可为空（如 cli_proxy）
+	BaseURL         string          `json:"base_url"`      // 可选
+	ModelsRaw       json.RawMessage `json:"models"`        // 字符串或数组，延后解析
+	Remark          string          `json:"remark"`        // 可选
+	Priority        int64           `json:"priority"`      // 可选，默认 0
+	Weight          int             `json:"weight"`        // 可选，默认 1
+	ModelMappingRaw json.RawMessage `json:"model_mapping"` // 可选，JSON 对象或字符串
+	Groups          []string        `json:"groups"`        // 可选，未传时使用 default
+	Tag             string          `json:"tag"`           // 可选
+	AutoDisable     int             `json:"auto_disable"`  // 1=自动禁用，其余视为关闭
+	Config          string          `json:"config"`        // 参数覆盖（JSON 字符串）
+	Headers         string          `json:"headers"`       // header 覆盖（JSON 字符串）
+	Other           string          `json:"other"`         // OAuth/CLIProxy 等场景使用
+}
+
+// mapExternalChannelType 将 WQuant 侧字符串类型映射到内部的 ChannelType 常量
+func mapExternalChannelType(typeStr string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(typeStr)) {
+	case "openai":
+		return constant.ChannelTypeOpenAI, nil
+	case "azure":
+		return constant.ChannelTypeAzure, nil
+	case "claude", "anthropic":
+		return constant.ChannelTypeAnthropic, nil
+	case "gemini":
+		return constant.ChannelTypeGemini, nil
+	case "cliproxy", "cli_proxy":
+		return constant.ChannelTypeCliProxy, nil
+	default:
+		return 0, fmt.Errorf("不支持的渠道类型: %s", typeStr)
+	}
+}
+
+// ToModelChannel 将自服务创建请求转换为内部的 model.Channel
+func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
+	name := strings.TrimSpace(r.Name)
+	if name == "" {
+		return nil, fmt.Errorf("渠道名称不能为空")
+	}
+	if strings.TrimSpace(r.Type) == "" {
+		return nil, fmt.Errorf("渠道类型不能为空")
+	}
+
+	channelType, err := mapExternalChannelType(r.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := &model.Channel{
+		Name: name,
+		Type: channelType,
+		Key:  strings.TrimSpace(r.Key),
+	}
+
+	// 处理 BaseURL：去掉尾部斜杠
+	if r.BaseURL != "" {
+		base := strings.TrimSpace(r.BaseURL)
+		base = strings.TrimRight(base, "/")
+		if base != "" {
+			ch.BaseURL = &base
+		}
+	}
+
+	// 处理 models：既支持 ["gpt-4","gpt-3.5"] 也支持 "gpt-4,gpt-3.5"
+	if len(r.ModelsRaw) > 0 && string(r.ModelsRaw) != "null" {
+		var models []string
+		switch r.ModelsRaw[0] {
+		case '[':
+			var arr []string
+			if err := json.Unmarshal(r.ModelsRaw, &arr); err != nil {
+				return nil, fmt.Errorf("models 字段格式错误: %w", err)
+			}
+			for _, m := range arr {
+				m = strings.TrimSpace(m)
+				if m != "" {
+					models = append(models, m)
+				}
+			}
+		case '"':
+			var s string
+			if err := json.Unmarshal(r.ModelsRaw, &s); err != nil {
+				return nil, fmt.Errorf("models 字段格式错误: %w", err)
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				for _, m := range strings.Split(s, ",") {
+					m = strings.TrimSpace(m)
+					if m != "" {
+						models = append(models, m)
+					}
+				}
+			}
+		}
+		if len(models) > 0 {
+			ch.Models = strings.Join(models, ",")
+		}
+	}
+
+	if r.Remark != "" {
+		remark := r.Remark
+		ch.Remark = &remark
+	}
+
+	if r.Priority != 0 {
+		p := r.Priority
+		ch.Priority = &p
+	}
+
+	if r.Weight > 0 {
+		w := uint(r.Weight)
+		ch.Weight = &w
+	}
+
+	// 处理模型映射：前端可能传对象，也可能传已经序列化好的字符串
+	if len(r.ModelMappingRaw) > 0 && string(r.ModelMappingRaw) != "null" {
+		if json.Valid(r.ModelMappingRaw) {
+			mappingStr := string(r.ModelMappingRaw)
+			ch.ModelMapping = &mappingStr
+		}
+	}
+
+	// 处理分组：数组 -> 逗号分隔字符串
+	if len(r.Groups) > 0 {
+		for i, g := range r.Groups {
+			r.Groups[i] = strings.TrimSpace(g)
+		}
+		ch.Group = strings.Join(r.Groups, ",")
+	} else {
+		ch.Group = "default"
+	}
+
+	if r.Tag != "" {
+		tag := r.Tag
+		ch.Tag = &tag
+	}
+
+	// auto_disable -> AutoBan
+	if r.AutoDisable != 0 {
+		auto := 1
+		ch.AutoBan = &auto
+	}
+
+	if strings.TrimSpace(r.Config) != "" {
+		cfg := strings.TrimSpace(r.Config)
+		ch.ParamOverride = &cfg
+	}
+
+	if strings.TrimSpace(r.Headers) != "" {
+		h := strings.TrimSpace(r.Headers)
+		ch.HeaderOverride = &h
+	}
+
+	if r.Other != "" {
+		ch.Other = r.Other
+	}
+
+	return ch, nil
 }
 
 func getVertexArrayKeys(keys string) ([]string, error) {
@@ -1196,28 +1369,49 @@ func GetUserChannels(c *gin.Context) {
 func CreateUserChannel(c *gin.Context) {
 	userId := c.GetInt("id")
 
-	addChannelRequest := AddChannelRequest{}
-	err := c.ShouldBindJSON(&addChannelRequest)
+	// 读取原始请求体，兼容两种格式：
+	// 1) 管理端使用的 AddChannelRequest 结构（包含 mode + channel）
+	// 2) WQuant 侧透传的扁平结构（name/type/key/...）
+	body, err := c.GetRawData()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	// Validate channel
-	if err := validateChannel(addChannelRequest.Channel, true); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
+	// 优先尝试解析为 AddChannelRequest 结构（兼容旧有调用方式）
+	addChannelRequest := AddChannelRequest{}
+	var channel *model.Channel
+	mode := "single"
+
+	if err := common.Unmarshal(body, &addChannelRequest); err == nil && addChannelRequest.Channel != nil {
+		channel = addChannelRequest.Channel
+		if addChannelRequest.Mode != "" {
+			mode = addChannelRequest.Mode
+		}
+	} else {
+		// 否则按 WQuant 扁平结构解析
+		selfReq := SelfChannelCreateRequest{}
+		if err := common.Unmarshal(body, &selfReq); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		ch, err := selfReq.ToModelChannel()
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		channel = ch
 	}
 
 	// Set owner_user_id to current user
-	addChannelRequest.Channel.OwnerUserId = userId
-	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+	channel.OwnerUserId = userId
+	channel.CreatedTime = common.GetTimestamp()
 
-	// For P2P channels, only support single key mode
-	if addChannelRequest.Mode != "single" && addChannelRequest.Mode != "" {
+	// 对自服务渠道，仅支持单密钥模式
+	if mode != "single" && mode != "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "P2P渠道仅支持单密钥模式",
@@ -1225,8 +1419,17 @@ func CreateUserChannel(c *gin.Context) {
 		return
 	}
 
+	// Validate channel
+	if err := validateChannel(channel, true); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
 	// Insert channel
-	err = model.BatchInsertChannels([]model.Channel{*addChannelRequest.Channel})
+	err = model.BatchInsertChannels([]model.Channel{*channel})
 	if err != nil {
 		common.ApiError(c, err)
 		return
