@@ -169,6 +169,7 @@ func SetApiRouter(router *gin.Engine) {
 		channelSelfRoute.Use(middleware.UserAuth())
 		{
 			channelSelfRoute.GET("/", controller.GetUserChannels)
+			channelSelfRoute.GET("/:id", controller.GetUserChannel)
 			channelSelfRoute.POST("/", controller.CreateUserChannel)
 			channelSelfRoute.PUT("/:id", controller.UpdateUserChannel)
 			channelSelfRoute.DELETE("/:id", controller.DeleteUserChannel)

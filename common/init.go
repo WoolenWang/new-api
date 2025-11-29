@@ -85,6 +85,7 @@ func InitEnv() {
 	// Control / data plane logging switches
 	ControlPlaneLogEnabled = GetEnvOrDefaultBool("CONTROL_PLANE_LOG_ENABLED", true)
 	DataPlaneLogEnabled = GetEnvOrDefaultBool("DATA_PLANE_LOG_ENABLED", true)
+	LogCallerEnabled = GetEnvOrDefaultBool("LOG_CALLER_ENABLED", false)
 
 	// Parse requestInterval and set RequestInterval
 	requestInterval, _ = strconv.Atoi(os.Getenv("POLLING_INTERVAL"))

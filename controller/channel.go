@@ -1494,6 +1494,35 @@ func GetUserChannels(c *gin.Context) {
 	})
 }
 
+// GetUserChannel returns a single channel owned by the current user
+// GET /api/channel/self/:id
+func GetUserChannel(c *gin.Context) {
+	userId := c.GetInt("id")
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	channel, err := model.GetChannelById(channelId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	if channel.OwnerUserId != userId {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无权查看此渠道",
+		})
+		return
+	}
+
+	// 清理多 key 运行时信息等敏感字段
+	clearChannelInfo(channel)
+	common.ApiSuccess(c, channel)
+}
+
 // CreateUserChannel creates a new channel owned by the current user
 func CreateUserChannel(c *gin.Context) {
 	userId := c.GetInt("id")

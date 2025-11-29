@@ -84,6 +84,10 @@ var ControlPlaneLogEnabled = true
 // debug level.
 var DataPlaneLogEnabled = true
 
+// LogCallerEnabled controls whether logger prints caller file:line.
+// Disabled by default to avoid extra overhead in high-QPS environments.
+var LogCallerEnabled = false
+
 var SMTPServer = ""
 var SMTPPort = 587
 var SMTPSSLEnabled = false
