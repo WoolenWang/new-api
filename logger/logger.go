@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -85,7 +86,37 @@ func logHelper(ctx context.Context, level string, msg string) {
 		id = "SYSTEM"
 	}
 	now := time.Now()
-	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
+
+	// Optionally append caller file:line for easier debugging.
+	caller := ""
+	if common.LogCallerEnabled {
+		// Skip 2 frames to reach the original caller of LogInfo/LogError/etc.
+		if _, file, line, ok := runtime.Caller(2); ok {
+			caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+		}
+	}
+
+	if caller != "" {
+		_, _ = fmt.Fprintf(
+			writer,
+			"[%s] %v | %s | %s | %s \n",
+			level,
+			now.Format("2006/01/02 - 15:04:05"),
+			id,
+			caller,
+			msg,
+		)
+	} else {
+		_, _ = fmt.Fprintf(
+			writer,
+			"[%s] %v | %s | %s \n",
+			level,
+			now.Format("2006/01/02 - 15:04:05"),
+			id,
+			msg,
+		)
+	}
+
 	logCount++ // we don't need accurate count, so no lock here
 	if logCount > maxLogCount && !setupLogWorking {
 		logCount = 0
