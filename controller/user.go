@@ -333,7 +333,9 @@ func GetUser(c *gin.Context) {
 
 func GenerateAccessToken(c *gin.Context) {
 	// Get user ID to generate token for
-	targetUserId := c.GetInt("id") // Default to current user
+	currentUserId := c.GetInt("id")
+	targetUserId := currentUserId // Default to current user
+	isAdminGenerating := false
 
 	// Check if admin is generating token for another user
 	type GenerateTokenRequest struct {
@@ -350,16 +352,37 @@ func GenerateAccessToken(c *gin.Context) {
 			})
 			return
 		}
-		common.SysLog(fmt.Sprintf("Admin 为新用户 %d 设置 accessToken", req.UserId))
 		targetUserId = req.UserId
+		isAdminGenerating = true
+		common.SysLog(fmt.Sprintf("Admin (id=%d) 为用户 %d 生成 accessToken", currentUserId, targetUserId))
 	}
 
-	common.SysLog(fmt.Sprintf("用户 %d 设置 accessToken", targetUserId))
+	// Get target user
 	user, err := model.GetUserById(targetUserId, true)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+
+	// For admin generating token for other users: check if token already exists
+	if isAdminGenerating {
+		if user.AccessToken != nil && *user.AccessToken != "" {
+			// User already has an access token, return existing one
+			common.SysLog(fmt.Sprintf("用户 %d 已有 accessToken，返回现有 token", targetUserId))
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "用户已有访问令牌，返回现有令牌",
+				"data":    *user.AccessToken,
+			})
+			return
+		}
+		common.SysLog(fmt.Sprintf("用户 %d 无 accessToken，生成新 token", targetUserId))
+	} else {
+		// User generating for themselves, always generate new token (overwrite old one)
+		common.SysLog(fmt.Sprintf("用户 %d 自己重新生成 accessToken", targetUserId))
+	}
+
+	// Generate new access token
 	// get rand int 28-32
 	randI := common.GetRandomInt(4)
 	key, err := common.GenerateRandomKey(29 + randI)
