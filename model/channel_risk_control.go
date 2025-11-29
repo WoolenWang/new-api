@@ -85,7 +85,10 @@ func CheckChannelRiskControl(channel *Channel) error {
 	// Check 1: Total quota limit
 	if channel.TotalQuota > 0 {
 		if stats.UsedQuota >= channel.TotalQuota {
-			return fmt.Errorf("渠道已达到总额度限制: %d/%d", stats.UsedQuota, channel.TotalQuota)
+			return types.NewError(
+				fmt.Errorf("渠道已达到总额度限制: %d/%d", stats.UsedQuota, channel.TotalQuota),
+				types.ErrorCodeChannelTotalQuotaExceeded,
+			)
 		}
 	}
 
@@ -108,7 +111,10 @@ func CheckChannelRiskControl(channel *Channel) error {
 			// We just check the old counter here
 		}
 		if stats.HourlyRequests >= channel.HourlyLimit {
-			return fmt.Errorf("渠道已达到每小时请求数限制: %d/%d", stats.HourlyRequests, channel.HourlyLimit)
+			return types.NewError(
+				fmt.Errorf("渠道已达到每小时请求数限制: %d/%d", stats.HourlyRequests, channel.HourlyLimit),
+				types.ErrorCodeChannelHourlyLimitExceeded,
+			)
 		}
 	}
 
@@ -121,7 +127,10 @@ func CheckChannelRiskControl(channel *Channel) error {
 			// We just check the old counter here
 		}
 		if stats.DailyRequests >= channel.DailyLimit {
-			return fmt.Errorf("渠道已达到每日请求数限制: %d/%d", stats.DailyRequests, channel.DailyLimit)
+			return types.NewError(
+				fmt.Errorf("渠道已达到每日请求数限制: %d/%d", stats.DailyRequests, channel.DailyLimit),
+				types.ErrorCodeChannelDailyLimitExceeded,
+			)
 		}
 	}
 

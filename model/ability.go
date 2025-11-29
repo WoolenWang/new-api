@@ -149,10 +149,12 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 // Priority 2 (Shared): Non-private P2P channels, including:
 //   - User's own non-private channels (owner_user_id=userId AND is_private=false)
 //   - Other users' shared channels that passed access control (owner_user_id != 0 AND owner_user_id != userId AND is_private=false)
+//
+// Priority 3 (Public): Platform channels (owner_user_id =
 // Priority 3 (Public): Platform channels (owner_user_id = 0)
 //
 // This function is used when memory cache is disabled. It queries the database directly.
-func GetChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
+func GetChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, error) {
 	var abilities []Ability
 
 	channelQuery, err := getChannelQuery(group, model, retry)
@@ -204,18 +206,33 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 		}
 
 		// Apply access control check - skip channels user cannot access
-		if !CheckChannelAccess(channel, userId, userGroup) {
+		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
 			continue
 		}
 
 		// Apply risk control check for P2P channels - skip channels that exceed limits
 		if channel.OwnerUserId != 0 {
 			if err := CheckChannelRiskControl(channel); err != nil {
-				// Check if this is a concurrency limit error and log it specially
+				// Check error type and log specially for different limit types
 				var newAPIErr *types.NewAPIError
-				if errors.As(err, &newAPIErr) && newAPIErr.GetErrorCode() == types.ErrorCodeChannelConcurrencyExceeded {
-					common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
-						channel.Id, channel.Name, err.Error()))
+				if errors.As(err, &newAPIErr) {
+					switch newAPIErr.GetErrorCode() {
+					case types.ErrorCodeChannelConcurrencyExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelHourlyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to hourly rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelDailyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to daily rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelTotalQuotaExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to total quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					default:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to risk control: %s",
+							channel.Id, channel.Name, err.Error()))
+					}
 				}
 				// Skip this channel if it exceeds risk control limits
 				continue

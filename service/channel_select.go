@@ -22,13 +22,16 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 	userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
 
+	// Extract client IP from Gin context
+	clientIP := c.ClientIP()
+
 	if group == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
 		}
 		for _, autoGroup := range GetUserAutoGroup(userGroup) {
 			logger.LogDebug(c, "Auto selecting group:", autoGroup)
-			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, userGroup, retry)
+			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, userGroup, clientIP, retry)
 			if channel == nil {
 				continue
 			} else {
@@ -39,11 +42,10 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 			}
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, retry)
+		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, clientIP, retry)
 		if err != nil {
 			return nil, group, err
 		}
 	}
 	return channel, selectGroup, nil
 }
-

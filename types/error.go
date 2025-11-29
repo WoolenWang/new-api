@@ -57,6 +57,10 @@ const (
 	ErrorCodeChannelInvalidKey            ErrorCode = "channel:invalid_key"
 	ErrorCodeChannelResponseTimeExceeded  ErrorCode = "channel:response_time_exceeded"
 	ErrorCodeChannelConcurrencyExceeded   ErrorCode = "channel:concurrency_exceeded"
+	ErrorCodeChannelTotalQuotaExceeded    ErrorCode = "channel:total_quota_exceeded"
+	ErrorCodeChannelHourlyLimitExceeded   ErrorCode = "channel:hourly_limit_exceeded"
+	ErrorCodeChannelDailyLimitExceeded    ErrorCode = "channel:daily_limit_exceeded"
+	ErrorCodeChannelIPNotAllowed          ErrorCode = "channel:ip_not_allowed"
 
 	// client request error
 	ErrorCodeReadRequestBodyFailed ErrorCode = "read_request_body_failed"

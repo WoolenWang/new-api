@@ -54,15 +54,17 @@ type Channel struct {
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
 	// P2P Channel Sharing Fields (Phase 1)
-	OwnerUserId   int     `json:"owner_user_id" gorm:"type:int;default:0;index"`        // 渠道归属用户ID，0表示平台渠道
-	AccountHint   *string `json:"account_hint" gorm:"type:varchar(255)"`                // CLIProxyAPI 凭证映射标识
-	TotalQuota    int64   `json:"total_quota" gorm:"type:bigint;default:0"`             // 总额度限制(quota单位)
-	Concurrency   int     `json:"concurrency" gorm:"type:int;default:0"`                // 并发数限制
-	HourlyLimit   int     `json:"hourly_limit" gorm:"type:int;default:0"`               // 每小时请求数限制
-	DailyLimit    int     `json:"daily_limit" gorm:"type:int;default:0"`                // 每日请求数限制
-	IsPrivate     bool    `json:"is_private" gorm:"type:boolean;default:false"`         // 是否为私有渠道
-	AllowedUsers  *string `json:"allowed_users" gorm:"type:text"`                       // 允许访问的用户ID列表(JSON数组)
-	AllowedGroups *string `json:"allowed_groups" gorm:"type:text"`                      // 允许访问的用户组列表(JSON数组)
+	OwnerUserId   int     `json:"owner_user_id" gorm:"type:int;default:0;index"` // 渠道归属用户ID，0表示平台渠道
+	AccountHint   *string `json:"account_hint" gorm:"type:varchar(255)"`         // CLIProxyAPI 凭证映射标识
+	TotalQuota    int64   `json:"total_quota" gorm:"type:bigint;default:0"`      // 总额度限制(quota单位)
+	Concurrency   int     `json:"concurrency" gorm:"type:int;default:0"`         // 并发数限制
+	HourlyLimit   int     `json:"hourly_limit" gorm:"type:int;default:0"`        // 每小时请求数限制
+	DailyLimit    int     `json:"daily_limit" gorm:"type:int;default:0"`         // 每日请求数限制
+	IsPrivate     bool    `json:"is_private" gorm:"type:boolean;default:false"`  // 是否为私有渠道
+	AllowedUsers  *string `json:"allowed_users" gorm:"type:text"`                // 允许访问的用户ID列表(JSON数组)
+	AllowedGroups *string `json:"allowed_groups" gorm:"type:text"`               // 允许访问的用户组列表(JSON数组)
+	AllowedModels *string `json:"allowed_models" gorm:"type:text"`               // P2P权限白名单：允许共享的模型列表(逗号分隔)，为空则回退使用Models字段
+	IPWhitelist   *string `json:"ip_whitelist" gorm:"type:text"`                 // IP白名单：允许访问的IP地址或CIDR网段列表(JSON数组)，为空则不限制IP
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -396,7 +398,6 @@ func BatchDeleteChannels(ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
-
 
 	// 使用事务 分批删除channel表和abilities表
 	tx := DB.Begin()
@@ -1018,4 +1019,25 @@ func CountChannelsGroupByType() (map[int64]int64, error) {
 		counts[r.Type] = r.Count
 	}
 	return counts, nil
+}
+
+// GetIPWhitelist 返回渠道的IP白名单列表
+// 返回空切片表示不限制IP
+func (channel *Channel) GetIPWhitelist() []string {
+	if channel.IPWhitelist == nil || *channel.IPWhitelist == "" {
+		return []string{}
+	}
+
+	// 尝试解析为JSON数组
+	var ipList []string
+	err := json.Unmarshal([]byte(*channel.IPWhitelist), &ipList)
+	if err != nil {
+		// 如果JSON解析失败，尝试按逗号分隔（兼容性）
+		ipList = strings.Split(*channel.IPWhitelist, ",")
+		for i := range ipList {
+			ipList[i] = strings.TrimSpace(ipList[i])
+		}
+	}
+
+	return ipList
 }

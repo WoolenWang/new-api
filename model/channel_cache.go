@@ -192,15 +192,50 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	return nil, errors.New("channel not found")
 }
 
+// IsModelAllowedForChannel checks if a specific model is allowed for a channel based on AllowedModels whitelist
+// Semantics:
+//   - If AllowedModels is set and non-empty: use it as the permission whitelist (returns true only if model is in the list)
+//   - If AllowedModels is nil or empty: fallback to Models field as the permission whitelist (backward compatibility)
+//   - For platform channels (OwnerUserId == 0) or owner accessing their own channel: this check can be bypassed by caller
+//
+// This function implements the separation of "capability declaration" (Models) and "permission whitelist" (AllowedModels)
+func IsModelAllowedForChannel(channel *Channel, model string) bool {
+	// Determine which field to use as the permission whitelist
+	var permissionWhitelist string
+	if channel.AllowedModels != nil && *channel.AllowedModels != "" {
+		// Use AllowedModels as the permission whitelist (explicit P2P sharing control)
+		permissionWhitelist = *channel.AllowedModels
+	} else {
+		// Fallback to Models field (backward compatibility: capability = permission)
+		permissionWhitelist = channel.Models
+	}
+
+	// If whitelist is empty, deny by default (defensive)
+	if permissionWhitelist == "" {
+		return false
+	}
+
+	// Split models by comma and check if requested model is in the list
+	allowedModelList := strings.Split(permissionWhitelist, ",")
+	for _, allowedModel := range allowedModelList {
+		if strings.TrimSpace(allowedModel) == model {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CheckChannelAccess checks if a user has access to a specific channel based on access control settings
 // Returns true if user has access, false otherwise
-func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
+// Now includes model-level permission checking via AllowedModels whitelist and IP whitelist checking
+func CheckChannelAccess(channel *Channel, userId int, userGroup string, model string, clientIP string) bool {
 	// Platform channels (owner_user_id = 0) are always accessible
 	if channel.OwnerUserId == 0 {
 		return true
 	}
 
-	// Owner always has access to their own channels
+	// Owner always has access to their own channels (bypass all restrictions)
 	if channel.OwnerUserId == userId && userId != 0 {
 		return true
 	}
@@ -208,6 +243,21 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
 	// If channel is marked as private, only owner can access
 	if channel.IsPrivate {
 		return false
+	}
+
+	// For non-owner users accessing P2P channels, check model-level permission first
+	// This enforces the separation of "capability" (Models) and "permission" (AllowedModels)
+	if !IsModelAllowedForChannel(channel, model) {
+		return false
+	}
+
+	// Check IP whitelist (if configured)
+	ipWhitelist := channel.GetIPWhitelist()
+	if len(ipWhitelist) > 0 {
+		if !common.IsIPInWhitelist(ipWhitelist, clientIP) {
+			// IP not in whitelist, deny access
+			return false
+		}
 	}
 
 	// Check allowed users whitelist
@@ -251,10 +301,10 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string) bool {
 //
 // Within each priority tier, channels are further selected based on their priority level and weight.
 // Access control is enforced via CheckChannelAccess, and risk control limits are applied for P2P channels.
-func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, retry int) (*Channel, error) {
+func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database with priority
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithPriority(group, model, userId, userGroup, retry)
+		return GetChannelWithPriority(group, model, userId, userGroup, clientIP, retry)
 	}
 
 	channelSyncLock.RLock()
@@ -281,18 +331,33 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
 			// Apply access control check - skip channels user cannot access
-			if !CheckChannelAccess(channel, userId, userGroup) {
+			if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
 				continue
 			}
 
 			// Apply risk control check for P2P channels - skip channels that exceed limits
 			if channel.OwnerUserId != 0 {
 				if err := CheckChannelRiskControl(channel); err != nil {
-					// Check if this is a concurrency limit error and log it specially
+					// Check error type and log specially for different limit types
 					var newAPIErr *types.NewAPIError
-					if errors.As(err, &newAPIErr) && newAPIErr.GetErrorCode() == types.ErrorCodeChannelConcurrencyExceeded {
-						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
-							channel.Id, channel.Name, err.Error()))
+					if errors.As(err, &newAPIErr) {
+						switch newAPIErr.GetErrorCode() {
+						case types.ErrorCodeChannelConcurrencyExceeded:
+							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
+								channel.Id, channel.Name, err.Error()))
+						case types.ErrorCodeChannelHourlyLimitExceeded:
+							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to hourly rate limit: %s",
+								channel.Id, channel.Name, err.Error()))
+						case types.ErrorCodeChannelDailyLimitExceeded:
+							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to daily rate limit: %s",
+								channel.Id, channel.Name, err.Error()))
+						case types.ErrorCodeChannelTotalQuotaExceeded:
+							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to total quota limit: %s",
+								channel.Id, channel.Name, err.Error()))
+						default:
+							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to risk control: %s",
+								channel.Id, channel.Name, err.Error()))
+						}
 					}
 					// Skip this channel if it exceeds risk control limits
 					continue
