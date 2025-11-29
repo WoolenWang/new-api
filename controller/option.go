@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
@@ -40,6 +41,20 @@ func GetOptions(c *gin.Context) {
 type OptionUpdateRequest struct {
 	Key   string `json:"key"`
 	Value any    `json:"value"`
+}
+
+// maskOptionValue hides sensitive option values from logs to avoid leaking
+// secrets (tokens / keys / passwords) while still showing non-sensitive
+// configuration changes.
+func maskOptionValue(key, value string) string {
+	lower := strings.ToLower(key)
+	if strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "password") ||
+		(strings.Contains(lower, "key") && !strings.HasSuffix(lower, "_enabled")) {
+		return "***"
+	}
+	return value
 }
 
 func UpdateOption(c *gin.Context) {
@@ -214,6 +229,16 @@ func UpdateOption(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		valueStr := option.Value.(string)
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane option updated: admin_id=%d key=%q value=%q",
+			adminId,
+			option.Key,
+			maskOptionValue(option.Key, valueStr),
+		))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

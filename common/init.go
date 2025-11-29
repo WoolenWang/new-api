@@ -82,6 +82,10 @@ func InitEnv() {
 	MemoryCacheEnabled = os.Getenv("MEMORY_CACHE_ENABLED") == "true"
 	IsMasterNode = os.Getenv("NODE_TYPE") != "slave"
 
+	// Control / data plane logging switches
+	ControlPlaneLogEnabled = GetEnvOrDefaultBool("CONTROL_PLANE_LOG_ENABLED", true)
+	DataPlaneLogEnabled = GetEnvOrDefaultBool("DATA_PLANE_LOG_ENABLED", true)
+
 	// Parse requestInterval and set RequestInterval
 	requestInterval, _ = strconv.Atoi(os.Getenv("POLLING_INTERVAL"))
 	RequestInterval = time.Duration(requestInterval) * time.Second

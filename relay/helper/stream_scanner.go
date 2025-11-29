@@ -255,9 +255,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		logger.LogError(c, "streaming timeout")
 	case <-stopChan:
 		// 正常结束
-		logger.LogInfo(c, "streaming finished")
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, "streaming finished")
+		}
 	case <-c.Request.Context().Done():
 		// 客户端断开连接
-		logger.LogInfo(c, "client disconnected")
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, "client disconnected")
+		}
 	}
 }

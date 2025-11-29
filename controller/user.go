@@ -867,7 +867,14 @@ func CreateUser(c *gin.Context) {
 		existingUser, err := model.GetUserByExternalId(user.ExternalId)
 		if err == nil && existingUser != nil {
 			// User with this external_id already exists, return existing user (idempotent)
-			common.SysLog(fmt.Sprintf("User with external_id %s already exists, returning existing user id=%d", user.ExternalId, existingUser.Id))
+			if common.ControlPlaneLogEnabled {
+				logger.LogInfo(c, fmt.Sprintf(
+					"control-plane user sync: external user already exists external_id=%q id=%d username=%q",
+					user.ExternalId,
+					existingUser.Id,
+					existingUser.Username,
+				))
+			}
 			c.JSON(http.StatusOK, gin.H{
 				"success": true,
 				"message": "用户已存在",
@@ -966,6 +973,20 @@ func CreateUser(c *gin.Context) {
 	var createdUser model.User
 	if err := model.DB.Where("username = ?", cleanUser.Username).First(&createdUser).Error; err != nil {
 		common.SysLog(fmt.Sprintf("Warning: User created but failed to retrieve: %v", err))
+	}
+
+	if common.ControlPlaneLogEnabled && createdUser.Id != 0 {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane user created: admin_id=%d user_id=%d username=%q external_id=%q role=%d group=%q inviter_id=%d",
+			adminId,
+			createdUser.Id,
+			createdUser.Username,
+			createdUser.ExternalId,
+			createdUser.Role,
+			createdUser.Group,
+			createdUser.InviterId,
+		))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1082,6 +1103,18 @@ func ManageUser(c *gin.Context) {
 	if err := user.Update(false); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane manage user: admin_id=%d target_user_id=%d action=%s new_role=%d new_status=%d",
+			adminId,
+			user.Id,
+			req.Action,
+			user.Role,
+			user.Status,
+		))
 	}
 	clearUser := model.User{
 		Role:   user.Role,

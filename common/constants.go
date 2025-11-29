@@ -73,6 +73,17 @@ var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
 
+// ControlPlaneLogEnabled gates high-level logs for configuration changes
+// (users, tokens, channels, options, etc.). These logs help trace WQuant
+// control-plane operations without flooding output with read-only calls.
+var ControlPlaneLogEnabled = true
+
+// DataPlaneLogEnabled gates routing & quota related logs for the data plane.
+// When enabled, key routing decisions (group, model, selected channel,
+// retries) are logged once per request, with additional details only at
+// debug level.
+var DataPlaneLogEnabled = true
+
 var SMTPServer = ""
 var SMTPPort = 587
 var SMTPSSLEnabled = false

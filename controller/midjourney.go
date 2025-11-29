@@ -31,7 +31,9 @@ func UpdateMidjourneyTaskBulk() {
 			continue
 		}
 
-		logger.LogInfo(ctx, fmt.Sprintf("检测到未完成的任务数有: %v", len(tasks)))
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(ctx, fmt.Sprintf("检测到未完成的任务数有: %v", len(tasks)))
+		}
 		taskChannelM := make(map[int][]string)
 		taskM := make(map[string]*model.Midjourney)
 		nullTaskIds := make([]int, 0)
@@ -52,7 +54,9 @@ func UpdateMidjourneyTaskBulk() {
 			if err != nil {
 				logger.LogError(ctx, fmt.Sprintf("Fix null mj_id task error: %v", err))
 			} else {
-				logger.LogInfo(ctx, fmt.Sprintf("Fix null mj_id task success: %v", nullTaskIds))
+				if common.DataPlaneLogEnabled {
+					logger.LogInfo(ctx, fmt.Sprintf("Fix null mj_id task success: %v", nullTaskIds))
+				}
 			}
 		}
 		if len(taskChannelM) == 0 {
@@ -60,7 +64,9 @@ func UpdateMidjourneyTaskBulk() {
 		}
 
 		for channelId, taskIds := range taskChannelM {
-			logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+			if common.DataPlaneLogEnabled {
+				logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+			}
 			if len(taskIds) == 0 {
 				continue
 			}
@@ -73,7 +79,9 @@ func UpdateMidjourneyTaskBulk() {
 					"progress":    "100%",
 				})
 				if err != nil {
-					logger.LogInfo(ctx, fmt.Sprintf("UpdateMidjourneyTask error: %v", err))
+					if common.DataPlaneLogEnabled {
+						logger.LogInfo(ctx, fmt.Sprintf("UpdateMidjourneyTask error: %v", err))
+					}
 				}
 				continue
 			}
@@ -166,7 +174,9 @@ func UpdateMidjourneyTaskBulk() {
 
 				shouldReturnQuota := false
 				if (task.Progress != "100%" && responseItem.FailReason != "") || (task.Progress == "100%" && task.Status == "FAILURE") {
-					logger.LogInfo(ctx, task.MjId+" 构建失败，"+task.FailReason)
+					if common.DataPlaneLogEnabled {
+						logger.LogInfo(ctx, task.MjId+" 构建失败，"+task.FailReason)
+					}
 					task.Progress = "100%"
 					if task.Quota != 0 {
 						shouldReturnQuota = true

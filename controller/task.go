@@ -58,7 +58,9 @@ func UpdateTaskBulk() {
 				if err != nil {
 					logger.LogError(ctx, fmt.Sprintf("Fix null task_id task error: %v", err))
 				} else {
-					logger.LogInfo(ctx, fmt.Sprintf("Fix null task_id task success: %v", nullTaskIds))
+					if common.DataPlaneLogEnabled {
+						logger.LogInfo(ctx, fmt.Sprintf("Fix null task_id task success: %v", nullTaskIds))
+					}
 				}
 			}
 			if len(taskChannelM) == 0 {
@@ -95,7 +97,9 @@ func UpdateSunoTaskAll(ctx context.Context, taskChannelM map[int][]string, taskM
 }
 
 func updateSunoTaskAll(ctx context.Context, channelId int, taskIds []string, taskM map[string]*model.Task) error {
-	logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+	if common.DataPlaneLogEnabled {
+		logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+	}
 	if len(taskIds) == 0 {
 		return nil
 	}
@@ -156,7 +160,9 @@ func updateSunoTaskAll(ctx context.Context, channelId int, taskIds []string, tas
 		task.StartTime = lo.If(responseItem.StartTime != 0, responseItem.StartTime).Else(task.StartTime)
 		task.FinishTime = lo.If(responseItem.FinishTime != 0, responseItem.FinishTime).Else(task.FinishTime)
 		if responseItem.FailReason != "" || task.Status == model.TaskStatusFailure {
-			logger.LogInfo(ctx, task.TaskID+" 构建失败，"+task.FailReason)
+			if common.DataPlaneLogEnabled {
+				logger.LogInfo(ctx, task.TaskID+" 构建失败，"+task.FailReason)
+			}
 			task.Progress = "100%"
 			//err = model.CacheUpdateUserQuota(task.UserId) ?
 			if err != nil {

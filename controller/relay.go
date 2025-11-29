@@ -142,7 +142,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
 
 	if priceData.FreeModel {
-		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
+		}
 	} else {
 		newAPIError = service.PreConsumeQuota(c, priceData.QuotaToPreConsume, relayInfo)
 		if newAPIError != nil {
@@ -166,6 +168,25 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		addUsedChannel(c, channel.Id)
+
+		if common.DataPlaneLogEnabled {
+			userId := c.GetInt("id")
+			tokenId := c.GetInt("token_id")
+			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			logger.LogInfo(c, fmt.Sprintf(
+				"data-plane routing: user_id=%d token_id=%d using_group=%q original_model=%q relay_mode=%d channel_id=%d channel_type=%d channel_name=%q owner_user_id=%d retry=%d",
+				userId,
+				tokenId,
+				usingGroup,
+				originalModel,
+				relayInfo.RelayMode,
+				channel.Id,
+				channel.Type,
+				channel.Name,
+				channel.OwnerUserId,
+				i,
+			))
+		}
 		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
@@ -194,7 +215,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
-		logger.LogInfo(c, retryLogStr)
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, retryLogStr)
+		}
 	}
 }
 
@@ -414,7 +437,9 @@ func RelayTask(c *gin.Context) {
 		useChannel := c.GetStringSlice("use_channel")
 		useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 		c.Set("use_channel", useChannel)
-		logger.LogInfo(c, fmt.Sprintf("using channel #%d to retry (remain times %d)", channel.Id, i))
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf("using channel #%d to retry (remain times %d)", channel.Id, i))
+		}
 		//middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 
 		requestBody, _ := common.GetRequestBody(c)
@@ -424,7 +449,9 @@ func RelayTask(c *gin.Context) {
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
-		logger.LogInfo(c, retryLogStr)
+		if common.DataPlaneLogEnabled {
+			logger.LogInfo(c, retryLogStr)
+		}
 	}
 	if taskErr != nil {
 		if taskErr.StatusCode == http.StatusTooManyRequests {

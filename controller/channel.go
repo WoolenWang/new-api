@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/volcengine"
 	"github.com/QuantumNous/new-api/service"
@@ -819,6 +820,39 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if common.ControlPlaneLogEnabled && len(channels) > 0 {
+		adminId := c.GetInt("id")
+		// Log a concise summary; do not log keys or secrets.
+		if len(channels) == 1 {
+			ch := channels[0]
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane channel created: admin_id=%d channel_id=%d name=%q type=%d group=%q models=%q owner_user_id=%d is_private=%t total_quota=%d concurrency=%d hourly_limit=%d daily_limit=%d",
+				adminId,
+				ch.Id,
+				ch.Name,
+				ch.Type,
+				ch.Group,
+				ch.Models,
+				ch.OwnerUserId,
+				ch.IsPrivate,
+				ch.TotalQuota,
+				ch.Concurrency,
+				ch.HourlyLimit,
+				ch.DailyLimit,
+			))
+		} else {
+			first := channels[0]
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane channels batch created: admin_id=%d count=%d first_channel_id=%d type=%d group=%q owner_user_id=%d",
+				adminId,
+				len(channels),
+				first.Id,
+				first.Type,
+				first.Group,
+				first.OwnerUserId,
+			))
+		}
+	}
 	service.ResetProxyClientCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -836,6 +870,13 @@ func DeleteChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane channel deleted: admin_id=%d channel_id=%d",
+			adminId, id,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -850,6 +891,13 @@ func DeleteDisabledChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane disabled channels deleted: admin_id=%d rows=%d",
+			adminId, rows,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -886,6 +934,13 @@ func DisableTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane tag channels disabled: admin_id=%d tag=%q",
+			adminId, channelTag.Tag,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -909,6 +964,13 @@ func EnableTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane tag channels enabled: admin_id=%d tag=%q",
+			adminId, channelTag.Tag,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -961,6 +1023,17 @@ func EditTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		newTag := ""
+		if channelTag.NewTag != nil {
+			newTag = *channelTag.NewTag
+		}
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane tag channels edited: admin_id=%d tag=%q new_tag=%q",
+			adminId, channelTag.Tag, newTag,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -989,6 +1062,13 @@ func DeleteChannelBatch(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane channels batch deleted: admin_id=%d count=%d ids=%v",
+			adminId, len(channelBatch.Ids), channelBatch.Ids,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -1108,6 +1188,24 @@ func UpdateChannel(c *gin.Context) {
 	service.ResetProxyClientCache()
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane channel updated: admin_id=%d channel_id=%d name=%q type=%d group=%q models=%q owner_user_id=%d is_private=%t total_quota=%d concurrency=%d hourly_limit=%d daily_limit=%d",
+			adminId,
+			channel.Id,
+			channel.Name,
+			channel.Type,
+			channel.Group,
+			channel.Models,
+			channel.OwnerUserId,
+			channel.IsPrivate,
+			channel.TotalQuota,
+			channel.Concurrency,
+			channel.HourlyLimit,
+			channel.DailyLimit,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -1213,6 +1311,17 @@ func BatchSetChannelTag(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		adminId := c.GetInt("id")
+		tag := ""
+		if channelBatch.Tag != nil {
+			tag = *channelBatch.Tag
+		}
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane batch set channel tag: admin_id=%d count=%d tag=%q ids=%v",
+			adminId, len(channelBatch.Ids), tag, channelBatch.Ids,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -1456,6 +1565,22 @@ func CreateUserChannel(c *gin.Context) {
 	}
 
 	service.ResetProxyClientCache()
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane p2p channel created: owner_user_id=%d channel_id=%d name=%q type=%d group=%q models=%q is_private=%t total_quota=%d concurrency=%d hourly_limit=%d daily_limit=%d",
+			userId,
+			channel.Id,
+			channel.Name,
+			channel.Type,
+			channel.Group,
+			channel.Models,
+			channel.IsPrivate,
+			channel.TotalQuota,
+			channel.Concurrency,
+			channel.HourlyLimit,
+			channel.DailyLimit,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "渠道创建成功",
@@ -1536,6 +1661,22 @@ func UpdateUserChannel(c *gin.Context) {
 		"message": "渠道更新成功",
 		"data":    channel,
 	})
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane p2p channel updated: owner_user_id=%d channel_id=%d name=%q type=%d group=%q models=%q is_private=%t total_quota=%d concurrency=%d hourly_limit=%d daily_limit=%d",
+			userId,
+			channel.Id,
+			channel.Name,
+			channel.Type,
+			channel.Group,
+			channel.Models,
+			channel.IsPrivate,
+			channel.TotalQuota,
+			channel.Concurrency,
+			channel.HourlyLimit,
+			channel.DailyLimit,
+		))
+	}
 }
 
 // DeleteUserChannel deletes a channel owned by the current user
@@ -1571,6 +1712,12 @@ func DeleteUserChannel(c *gin.Context) {
 	}
 
 	model.InitChannelCache()
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane p2p channel deleted: owner_user_id=%d channel_id=%d",
+			userId, id,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "渠道删除成功",
@@ -1761,6 +1908,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey disable_key: channel_id=%d key_index=%d",
+				channel.Id, keyIndex,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已禁用",
@@ -1803,6 +1956,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey enable_key: channel_id=%d key_index=%d",
+				channel.Id, keyIndex,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已启用",
@@ -1827,6 +1986,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey enable_all_keys: channel_id=%d enabled_count=%d",
+				channel.Id, enabledCount,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已启用 %d 个密钥", enabledCount),
@@ -1874,6 +2039,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey disable_all_keys: channel_id=%d disabled_count=%d",
+				channel.Id, disabledCount,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已禁用 %d 个密钥", disabledCount),
@@ -1954,6 +2125,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey delete_key: channel_id=%d key_index=%d",
+				channel.Id, keyIndex,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已删除",
@@ -2022,6 +2199,12 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		if common.ControlPlaneLogEnabled {
+			logger.LogInfo(c, fmt.Sprintf(
+				"control-plane multikey delete_disabled_keys: channel_id=%d deleted_count=%d",
+				channel.Id, deletedCount,
+			))
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),

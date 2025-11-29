@@ -96,7 +96,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		if showBodyWhenFail {
 			newApiErr.Err = fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody))
 		} else {
-			if common.DebugEnabled {
+			if common.DebugEnabled && common.DataPlaneLogEnabled {
 				logger.LogInfo(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody)))
 			}
 			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)

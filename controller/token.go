@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -177,6 +179,19 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane token created: user_id=%d token_id=%d name=%q group=%q remain_quota=%d unlimited=%t model_limits_enabled=%t allow_ips=%q",
+			cleanToken.UserId,
+			cleanToken.Id,
+			cleanToken.Name,
+			cleanToken.Group,
+			cleanToken.RemainQuota,
+			cleanToken.UnlimitedQuota,
+			cleanToken.ModelLimitsEnabled,
+			cleanToken.AllowIps,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -191,6 +206,12 @@ func DeleteToken(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane token deleted: user_id=%d token_id=%d",
+			userId, id,
+		))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -254,6 +275,19 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane token updated: user_id=%d token_id=%d status=%d remain_quota=%d unlimited=%t group=%q model_limits_enabled=%t allow_ips=%q",
+			userId,
+			cleanToken.Id,
+			cleanToken.Status,
+			cleanToken.RemainQuota,
+			cleanToken.UnlimitedQuota,
+			cleanToken.Group,
+			cleanToken.ModelLimitsEnabled,
+			cleanToken.AllowIps,
+		))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -280,6 +314,12 @@ func DeleteTokenBatch(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if common.ControlPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf(
+			"control-plane tokens batch deleted: user_id=%d count=%d ids=%v",
+			userId, count, tokenBatch.Ids,
+		))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

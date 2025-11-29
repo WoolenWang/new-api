@@ -42,14 +42,14 @@ type Log struct {
 
 // don't use iota, avoid change log type value
 const (
-	LogTypeUnknown = 0
-	LogTypeTopup   = 1
-	LogTypeConsume = 2
-	LogTypeManage  = 3
-	LogTypeSystem  = 4
-	LogTypeError   = 5
-	LogTypeRefund  = 6
-	LogTypeShare   = 7  // P2P channel sharing revenue
+	LogTypeUnknown  = 0
+	LogTypeTopup    = 1
+	LogTypeConsume  = 2
+	LogTypeManage   = 3
+	LogTypeSystem   = 4
+	LogTypeError    = 5
+	LogTypeRefund   = 6
+	LogTypeShare    = 7 // P2P channel sharing revenue
 	LogTypeExchange = 8 // Quota exchange operations
 )
 
@@ -101,7 +101,9 @@ func RecordLog(userId int, logType int, content string) {
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other map[string]interface{}) {
-	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
+	if common.DataPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
+	}
 	username := c.GetString("username")
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
@@ -160,7 +162,9 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if !common.LogConsumeEnabled {
 		return
 	}
-	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
+	if common.DataPlaneLogEnabled {
+		logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
+	}
 	username := c.GetString("username")
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
@@ -216,15 +220,17 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 				if err != nil {
 					logger.LogError(c, fmt.Sprintf("failed to record share quota for channel owner: %v", err))
 				} else {
-					logger.LogInfo(c, fmt.Sprintf("recorded share quota: channel_owner_id=%d, revenue=%d (%.1f%% of %d)",
-						channel.OwnerUserId, shareRevenue, shareRatio*100, params.Quota))
+					if common.DataPlaneLogEnabled {
+						logger.LogInfo(c, fmt.Sprintf("recorded share quota: channel_owner_id=%d, revenue=%d (%.1f%% of %d)",
+							channel.OwnerUserId, shareRevenue, shareRatio*100, params.Quota))
+					}
 
 					// Record sharing revenue log
 					shareLog := &Log{
 						UserId:    channel.OwnerUserId,
 						CreatedAt: common.GetTimestamp(),
 						Type:      LogTypeShare,
-						Content:   fmt.Sprintf("分享收益：模型 %s，收益 %d 配额 (%.1f%% of %d)",
+						Content: fmt.Sprintf("分享收益：模型 %s，收益 %d 配额 (%.1f%% of %d)",
 							params.ModelName, shareRevenue, shareRatio*100, params.Quota),
 						TokenName: username, // Consumer's username for reference
 						ModelName: params.ModelName,
