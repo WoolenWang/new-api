@@ -243,10 +243,18 @@ func ApplyToJoinGroup(userId, groupId int, password string) (int, error) {
 		case MemberStatusPending:
 			return 0, errors.New("您的申请正在审核中")
 		case MemberStatusRejected, MemberStatusBanned, MemberStatusLeft:
-			// 允许重新申请,更新状态
-			existing.Status = MemberStatusPending
+			// 允许重新申请,但需要根据加入方式决定状态
+			// 如果是密码模式,需要验证密码
+			if group.JoinMethod == JoinMethodPassword {
+				if password != group.JoinKey {
+					return 0, errors.New("密码错误")
+				}
+				existing.Status = MemberStatusActive // 密码正确,直接激活
+			} else {
+				existing.Status = MemberStatusPending // 其他模式,待审核
+			}
 			existing.UpdatedAt = common.GetTimestamp()
-			return MemberStatusPending, DB.Save(&existing).Error
+			return existing.Status, DB.Save(&existing).Error
 		}
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
