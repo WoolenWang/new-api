@@ -110,6 +110,13 @@ func GetGroupsByOwner(ownerId int) ([]*Group, error) {
 	return groups, err
 }
 
+// CountGroupsByOwner 计算指定用户创建的分组数量
+func CountGroupsByOwner(ownerId int) (int64, error) {
+	var count int64
+	err := DB.Model(&Group{}).Where("owner_id = ?", ownerId).Count(&count).Error
+	return count, err
+}
+
 // GetGroupsByOwnerPaginated 获取指定用户创建的所有分组 (分页版本)
 func GetGroupsByOwnerPaginated(ownerId int, startIdx int, pageSize int) ([]*Group, int64, error) {
 	var groups []*Group

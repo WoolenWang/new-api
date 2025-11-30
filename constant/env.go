@@ -14,6 +14,7 @@ var NotifyLimitCount int
 var NotificationLimitDurationMinute int
 var GenerateDefaultToken bool
 var ErrorLogEnabled bool
+var MaxP2PGroupsPerUser int // Maximum number of P2P groups a user can create
 
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string

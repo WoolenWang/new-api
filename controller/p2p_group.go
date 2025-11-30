@@ -2,6 +2,8 @@ package controller
 
 import (
 	"errors"
+	"fmt"
+	"github.com/QuantumNous/new-api/constant"
 	"net/http"
 	"strconv"
 
@@ -20,10 +22,13 @@ func CreateP2PGroup(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+
 	if group.OwnerId == 0 {
-		group.OwnerId = c.GetInt("id")
-	} else if group.OwnerId != c.GetInt("id") {
-		myRole := c.GetInt("role")
+		group.OwnerId = myUserId
+	} else if group.OwnerId != myUserId {
 		if myRole != common.RoleRootUser {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -32,10 +37,28 @@ func CreateP2PGroup(c *gin.Context) {
 			return
 		}
 	}
+
 	// Validate required fields
 	if group.Name == "" || group.OwnerId == 0 {
 		common.ApiError(c, errors.New("name and owner_id are required"))
 		return
+	}
+
+	// Check group limit (only for non-root users)
+	if myRole != common.RoleRootUser {
+		count, err := model.CountGroupsByOwner(group.OwnerId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		maxGroups := constant.MaxP2PGroupsPerUser
+		if count >= int64(maxGroups) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("每个用户最多只能创建 %d 个分组，您已达到上限", maxGroups),
+			})
+			return
+		}
 	}
 
 	// Create group
