@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -22,7 +23,7 @@ func CreateP2PGroup(c *gin.Context) {
 
 	// Validate required fields
 	if group.Name == "" || group.OwnerId == 0 {
-		common.ApiError(c, common.NewError("name and owner_id are required"))
+		common.ApiError(c, errors.New("name and owner_id are required"))
 		return
 	}
 
@@ -40,13 +41,13 @@ func CreateP2PGroup(c *gin.Context) {
 func GetUserOwnedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 	if userIdStr == "" {
-		common.ApiError(c, common.NewError("user_id is required"))
+		common.ApiError(c, errors.New("user_id is required"))
 		return
 	}
 
 	userId, err := strconv.Atoi(userIdStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid user_id"))
+		common.ApiError(c, errors.New("invalid user_id"))
 		return
 	}
 
@@ -64,17 +65,17 @@ func GetUserOwnedGroups(c *gin.Context) {
 func GetUserJoinedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 	if userIdStr == "" {
-		common.ApiError(c, common.NewError("user_id is required"))
+		common.ApiError(c, errors.New("user_id is required"))
 		return
 	}
 
 	userId, err := strconv.Atoi(userIdStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid user_id"))
+		common.ApiError(c, errors.New("invalid user_id"))
 		return
 	}
 
-	groups, err := model.GetUserGroups(userId, model.MemberStatusActive)
+	groups, err := model.GetUserGroups(userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -94,7 +95,7 @@ func UpdateP2PGroup(c *gin.Context) {
 	}
 
 	if group.Id == 0 {
-		common.ApiError(c, common.NewError("group id is required"))
+		common.ApiError(c, errors.New("group id is required"))
 		return
 	}
 
@@ -108,7 +109,7 @@ func UpdateP2PGroup(c *gin.Context) {
 	// Security check: Only owner can update group
 	// This check can be bypassed by admin token, handled in middleware
 	if existingGroup.OwnerId != group.OwnerId && group.OwnerId != 0 {
-		common.ApiError(c, common.NewError("only group owner can update group"))
+		common.ApiError(c, errors.New("only group owner can update group"))
 		return
 	}
 
@@ -131,7 +132,7 @@ func DeleteP2PGroup(c *gin.Context) {
 			Id int `json:"id"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			common.ApiError(c, common.NewError("group id is required"))
+			common.ApiError(c, errors.New("group id is required"))
 			return
 		}
 		idStr = strconv.Itoa(req.Id)
@@ -139,7 +140,7 @@ func DeleteP2PGroup(c *gin.Context) {
 
 	groupId, err := strconv.Atoi(idStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid group id"))
+		common.ApiError(c, errors.New("invalid group id"))
 		return
 	}
 

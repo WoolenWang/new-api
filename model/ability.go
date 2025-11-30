@@ -206,7 +206,8 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 		}
 
 		// Apply access control check - skip channels user cannot access
-		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+		// For single-group routing, pass group as a single-element routingGroups array
+		if !CheckChannelAccess(channel, userId, userGroup, []string{group}, model, clientIP) {
 			continue
 		}
 
@@ -378,7 +379,7 @@ func GetChannelWithPriorityMultiGroup(routingGroups []string, model string, user
 		}
 
 		// Apply access control check
-		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+		if !CheckChannelAccess(channel, userId, userGroup, routingGroups, model, clientIP) {
 			continue
 		}
 

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -76,13 +77,13 @@ func ApplyToJoinGroup(c *gin.Context) {
 func GetGroupMembers(c *gin.Context) {
 	groupIdStr := c.Query("group_id")
 	if groupIdStr == "" {
-		common.ApiError(c, common.NewError("group_id is required"))
+		common.ApiError(c, errors.New("group_id is required"))
 		return
 	}
 
 	groupId, err := strconv.Atoi(groupIdStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid group_id"))
+		common.ApiError(c, errors.New("invalid group_id"))
 		return
 	}
 
@@ -112,7 +113,7 @@ func UpdateMemberStatus(c *gin.Context) {
 	}
 
 	// Get current member info
-	currentMember, err := model.GetMemberInfo(req.UserId, req.GroupId)
+	currentMember, err := model.GetMemberInfo(req.GroupId, req.UserId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -120,7 +121,7 @@ func UpdateMemberStatus(c *gin.Context) {
 
 	// Update status if provided
 	if req.Status != 0 {
-		if err := model.UpdateMemberStatus(req.UserId, req.GroupId, req.Status); err != nil {
+		if err := model.UpdateMemberStatus(req.GroupId, req.UserId, req.Status); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -133,14 +134,14 @@ func UpdateMemberStatus(c *gin.Context) {
 
 	// Update role if provided
 	if req.Role != 0 {
-		if err := model.UpdateMemberRole(req.UserId, req.GroupId, req.Role); err != nil {
+		if err := model.UpdateMemberRole(req.GroupId, req.UserId, req.Role); err != nil {
 			common.ApiError(c, err)
 			return
 		}
 	}
 
 	// Get updated member info
-	updatedMember, err := model.GetMemberInfo(req.UserId, req.GroupId)
+	updatedMember, err := model.GetMemberInfo(req.GroupId, req.UserId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -179,7 +180,7 @@ func LeaveGroup(c *gin.Context) {
 
 	// Prevent owner from leaving their own group
 	if group.OwnerId == req.UserId {
-		common.ApiError(c, common.NewError("group owner cannot leave, please transfer ownership or delete the group"))
+		common.ApiError(c, errors.New("group owner cannot leave, please transfer ownership or delete the group"))
 		return
 	}
 
@@ -211,23 +212,23 @@ func GetMemberInfo(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 
 	if groupIdStr == "" || userIdStr == "" {
-		common.ApiError(c, common.NewError("group_id and user_id are required"))
+		common.ApiError(c, errors.New("group_id and user_id are required"))
 		return
 	}
 
 	groupId, err := strconv.Atoi(groupIdStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid group_id"))
+		common.ApiError(c, errors.New("invalid group_id"))
 		return
 	}
 
 	userId, err := strconv.Atoi(userIdStr)
 	if err != nil {
-		common.ApiError(c, common.NewError("invalid user_id"))
+		common.ApiError(c, errors.New("invalid user_id"))
 		return
 	}
 
-	member, err := model.GetMemberInfo(userId, groupId)
+	member, err := model.GetMemberInfo(groupId, userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return

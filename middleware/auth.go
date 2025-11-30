@@ -308,6 +308,11 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 		c.Set("token_model_limit_enabled", false)
 	}
 	c.Set("token_group", token.Group)
+	// 解析 Token 的 P2P 分组限制
+	allowedP2PGroupIDs := token.GetAllowedP2PGroupIDs()
+	if len(allowedP2PGroupIDs) > 0 {
+		common.SetContextKey(c, constant.ContextKeyTokenAllowedP2PGroups, allowedP2PGroupIDs)
+	}
 	if len(parts) > 1 {
 		if model.IsAdmin(token.UserId) {
 			c.Set("specific_channel_id", parts[1])

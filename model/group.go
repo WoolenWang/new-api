@@ -182,15 +182,15 @@ func DeleteGroup(id int) error {
 // ========== UserGroup (成员管理) ==========
 
 // ApplyToJoinGroup 申请加入分组
-func ApplyToJoinGroup(userId, groupId int, password string) error {
+func ApplyToJoinGroup(userId, groupId int, password string) (int, error) {
 	if userId == 0 || groupId == 0 {
-		return errors.New("用户ID和分组ID不能为空")
+		return 0, errors.New("用户ID和分组ID不能为空")
 	}
 
 	// 获取分组信息
 	group, err := GetGroupById(groupId)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// 检查是否已存在记录
@@ -200,18 +200,18 @@ func ApplyToJoinGroup(userId, groupId int, password string) error {
 		// 记录已存在,检查状态
 		switch existing.Status {
 		case MemberStatusActive:
-			return errors.New("您已经是该分组的成员")
+			return 0, errors.New("您已经是该分组的成员")
 		case MemberStatusPending:
-			return errors.New("您的申请正在审核中")
+			return 0, errors.New("您的申请正在审核中")
 		case MemberStatusRejected, MemberStatusBanned, MemberStatusLeft:
 			// 允许重新申请,更新状态
 			existing.Status = MemberStatusPending
 			existing.UpdatedAt = common.GetTimestamp()
-			return DB.Save(&existing).Error
+			return MemberStatusPending, DB.Save(&existing).Error
 		}
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+		return 0, err
 	}
 
 	// 创建新的成员关系
@@ -228,7 +228,7 @@ func ApplyToJoinGroup(userId, groupId int, password string) error {
 	case JoinMethodPassword:
 		// 密码模式:验证密码
 		if password != group.JoinKey {
-			return errors.New("密码错误")
+			return 0, errors.New("密码错误")
 		}
 		userGroup.Status = MemberStatusActive // 直接通过
 	case JoinMethodApproval:
@@ -241,7 +241,8 @@ func ApplyToJoinGroup(userId, groupId int, password string) error {
 		userGroup.Status = MemberStatusPending
 	}
 
-	return DB.Create(userGroup).Error
+	err = DB.Create(userGroup).Error
+	return userGroup.Status, err
 }
 
 // GetGroupMembers 获取分组的所有成员

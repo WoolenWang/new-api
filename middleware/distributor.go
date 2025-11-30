@@ -97,7 +97,11 @@ func Distribute() func(c *gin.Context) {
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
 				}
-				channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(c, usingGroup, modelRequest.Model, 0)
+				// 计算 RoutingGroups (支持 P2P 分组多分组选路)
+				routingGroups := ComputeRoutingGroups(c, usingGroup)
+
+				// 使用多分组选路函数
+				channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
 				if err != nil {
 					showGroup := usingGroup
 					if usingGroup == "auto" {
@@ -396,4 +400,70 @@ func extractModelNameFromGeminiPath(path string) string {
 
 	// 返回模型名部分
 	return path[startIndex : startIndex+colonIndex]
+}
+
+// ComputeRoutingGroups 计算用户在当前请求中的路由分组集合
+// RoutingGroups = {BillingGroup (或 usingGroup)} ∪ {用户的 Active P2P 分组}
+// 此函数复用 relay_info.go 中的逻辑，确保选路与计费使用相同的分组计算规则
+func ComputeRoutingGroups(c *gin.Context, usingGroup string) []string {
+	userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+
+	// Step 1: 确定 BillingGroup (与 relay_info.go 保持一致)
+	billingGroup := usingGroup
+	if billingGroup == "" {
+		userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		billingGroup = userGroup
+	}
+
+	// Step 2: 获取用户的 Active P2P 分组 ID
+	var userP2PGroupIDs []int
+	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, false)
+	if err != nil {
+		// P2P 分组获取失败不阻塞请求，仅记录日志
+		common.SysLog(fmt.Sprintf("failed to get user P2P groups for user %d in distributor: %v", userId, err))
+		userP2PGroupIDs = []int{}
+	}
+
+	// Step 3: 应用 Token 的 P2P 分组限制 (取交集)
+	var effectiveP2PGroupIDs []int
+	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
+	if !exists || tokenAllowedP2PGroupIDs == nil {
+		effectiveP2PGroupIDs = userP2PGroupIDs
+	} else {
+		tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
+		if !ok {
+			common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d in distributor", userId))
+			effectiveP2PGroupIDs = userP2PGroupIDs
+		} else {
+			allowedMap := make(map[int]bool)
+			for _, id := range tokenP2PList {
+				allowedMap[id] = true
+			}
+			for _, groupID := range userP2PGroupIDs {
+				if allowedMap[groupID] {
+					effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
+				}
+			}
+		}
+	}
+
+	// Step 4: 构建 RoutingGroups
+	routingGroups := []string{billingGroup}
+
+	// 将 P2P 分组 ID 转换为 "p2p_{id}" 格式
+	for _, groupID := range effectiveP2PGroupIDs {
+		routingGroups = append(routingGroups, fmt.Sprintf("p2p_%d", groupID))
+	}
+
+	// 去重
+	uniqueGroups := make([]string, 0, len(routingGroups))
+	groupMap := make(map[string]bool)
+	for _, group := range routingGroups {
+		if !groupMap[group] {
+			groupMap[group] = true
+			uniqueGroups = append(uniqueGroups, group)
+		}
+	}
+
+	return uniqueGroups
 }

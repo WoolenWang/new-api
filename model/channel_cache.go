@@ -228,8 +228,10 @@ func IsModelAllowedForChannel(channel *Channel, model string) bool {
 
 // CheckChannelAccess checks if a user has access to a specific channel based on access control settings
 // Returns true if user has access, false otherwise
-// Now includes model-level permission checking via AllowedModels whitelist and IP whitelist checking
-func CheckChannelAccess(channel *Channel, userId int, userGroup string, model string, clientIP string) bool {
+// Now includes model-level permission checking via AllowedModels whitelist, IP whitelist, and P2P group access
+// Parameters:
+//   - routingGroups: User's routing groups (system groups + P2P groups in "p2p_{id}" format)
+func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingGroups []string, model string, clientIP string) bool {
 	// Platform channels (owner_user_id = 0) are always accessible
 	if channel.OwnerUserId == 0 {
 		return true
@@ -271,12 +273,35 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, model st
 		}
 	}
 
-	// Check allowed groups whitelist
+	// Check allowed groups whitelist (supports both system groups and P2P group IDs)
 	if channel.AllowedGroups != nil && *channel.AllowedGroups != "" {
-		allowedGroups := strings.Split(*channel.AllowedGroups, ",")
-		for _, allowedGroup := range allowedGroups {
-			if strings.TrimSpace(allowedGroup) == userGroup {
-				return true
+		// Try to parse as JSON array (P2P group IDs)
+		allowedGroupIDs := channel.GetAllowedGroupIDs()
+		if len(allowedGroupIDs) > 0 {
+			// P2P group ID mode: check if user's routingGroups contains any allowed P2P group
+			for _, groupID := range allowedGroupIDs {
+				p2pGroupName := fmt.Sprintf("p2p_%d", groupID)
+				for _, routingGroup := range routingGroups {
+					if routingGroup == p2pGroupName {
+						return true
+					}
+				}
+			}
+		} else {
+			// Fallback: treat as comma-separated system group names (legacy mode)
+			allowedGroups := strings.Split(*channel.AllowedGroups, ",")
+			for _, allowedGroup := range allowedGroups {
+				trimmedGroup := strings.TrimSpace(allowedGroup)
+				// Check against user's system group
+				if trimmedGroup == userGroup {
+					return true
+				}
+				// Also check against routingGroups (for flexibility)
+				for _, routingGroup := range routingGroups {
+					if routingGroup == trimmedGroup {
+						return true
+					}
+				}
 			}
 		}
 	}
@@ -331,7 +356,8 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
 			// Apply access control check - skip channels user cannot access
-			if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+			// For single-group routing, pass group as a single-element routingGroups array
+			if !CheckChannelAccess(channel, userId, userGroup, []string{group}, model, clientIP) {
 				continue
 			}
 
@@ -471,7 +497,7 @@ func GetRandomSatisfiedChannelWithPriorityMultiGroup(routingGroups []string, mod
 		}
 
 		// Apply access control check - skip channels user cannot access
-		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+		if !CheckChannelAccess(channel, userId, userGroup, routingGroups, model, clientIP) {
 			continue
 		}
 

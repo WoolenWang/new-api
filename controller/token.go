@@ -173,6 +173,7 @@ func AddToken(c *gin.Context) {
 		ModelLimits:        token.ModelLimits,
 		AllowIps:           token.AllowIps,
 		Group:              token.Group,
+		AllowedP2PGroups:   token.AllowedP2PGroups, // P2P 分组限制
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -269,6 +270,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
+		cleanToken.AllowedP2PGroups = token.AllowedP2PGroups // P2P 分组限制
 	}
 	err = cleanToken.Update()
 	if err != nil {

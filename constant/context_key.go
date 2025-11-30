@@ -17,6 +17,7 @@ const (
 	ContextKeyTokenSpecificChannelId ContextKey = "specific_channel_id"
 	ContextKeyTokenModelLimitEnabled ContextKey = "token_model_limit_enabled"
 	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
+	ContextKeyTokenAllowedP2PGroups  ContextKey = "token_allowed_p2p_groups" // P2P 分组限制 ([]int)
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"

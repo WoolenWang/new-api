@@ -63,10 +63,16 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 		}
 	}
 
-	// 预扣
-	groupRatio := ratio_setting.GetGroupRatio(info.UsingGroup)
+	// 预扣 - Use BillingGroup for consistency with design
+	billingGroup := info.BillingGroup
+	if billingGroup == "" {
+		// Fallback to UsingGroup for backward compatibility
+		billingGroup = info.UsingGroup
+	}
+
+	groupRatio := ratio_setting.GetGroupRatio(billingGroup)
 	var ratio float64
-	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(info.UserGroup, info.UsingGroup)
+	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(info.UserGroup, billingGroup)
 	if hasUserGroupRatio {
 		ratio = modelPrice * userGroupRatio
 	} else {
@@ -82,7 +88,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 			}
 		}
 	}
-	println(fmt.Sprintf("model: %s, model_price: %.4f, group: %s, group_ratio: %.4f, final_ratio: %.4f", modelName, modelPrice, info.UsingGroup, groupRatio, ratio))
+	println(fmt.Sprintf("model: %s, model_price: %.4f, billing_group: %s, group_ratio: %.4f, final_ratio: %.4f", modelName, modelPrice, billingGroup, groupRatio, ratio))
 	userQuota, err := model.GetUserQuota(info.UserId, false)
 	if err != nil {
 		taskErr = service.TaskErrorWrapper(err, "get_user_quota_failed", http.StatusInternalServerError)
@@ -203,7 +209,26 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 	}
 	info.ConsumeQuota = true
 	// insert task
-	task := model.InitTask(platform, info)
+	// 提取 info 的字段传递给 InitTask,避免 model 包依赖 relay/common
+	var channelType int
+	var apiKey, upstreamModelName, originModelName string
+	if info.ChannelMeta != nil {
+		channelType = info.ChannelMeta.ChannelType
+		apiKey = info.ChannelMeta.ApiKey
+		upstreamModelName = info.ChannelMeta.UpstreamModelName
+	}
+	originModelName = info.OriginModelName
+
+	task := model.InitTask(
+		platform,
+		info.UserId,
+		info.UsingGroup,
+		info.ChannelId,
+		channelType,
+		apiKey,
+		upstreamModelName,
+		originModelName,
+	)
 	task.TaskID = taskID
 	task.Quota = quota
 	task.Data = taskData

@@ -269,5 +269,9 @@ func InitResources() error {
 	if err != nil {
 		return err
 	}
+
+	// Initialize L1 Memory Cache for user data (including P2P groups)
+	model.InitUserMemoryCache()
+
 	return nil
 }

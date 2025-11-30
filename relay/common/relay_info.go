@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
 
@@ -411,24 +412,29 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 	// Step 3: 应用 Token 的 P2P 分组限制 (取交集)
 	var effectiveP2PGroupIDs []int
-	tokenAllowedP2PGroups := c.GetStringSlice("token_allowed_p2p_groups") // 从 context 读取 Token 的限制
-	if len(tokenAllowedP2PGroups) == 0 {
+	// 从 Context 读取 Token 的 P2P 分组限制 (已由 middleware.SetupContextForToken 设置)
+	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
+	if !exists || tokenAllowedP2PGroupIDs == nil {
 		// Token 未配置限制,使用用户的全部 P2P 分组
 		effectiveP2PGroupIDs = userP2PGroupIDs
 	} else {
 		// Token 配置了限制,取交集
-		// 将 tokenAllowedP2PGroups ([]string) 转换为 map 用于快速查找
-		allowedMap := make(map[int]bool)
-		for _, idStr := range tokenAllowedP2PGroups {
-			var id int
-			if _, scanErr := fmt.Sscanf(idStr, "%d", &id); scanErr == nil {
+		tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
+		if !ok {
+			common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d", userId))
+			effectiveP2PGroupIDs = userP2PGroupIDs
+		} else {
+			// 构建 tokenP2PList 的 map 用于快速查找
+			allowedMap := make(map[int]bool)
+			for _, id := range tokenP2PList {
 				allowedMap[id] = true
 			}
-		}
 
-		for _, groupID := range userP2PGroupIDs {
-			if allowedMap[groupID] {
-				effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
+			// 取交集
+			for _, groupID := range userP2PGroupIDs {
+				if allowedMap[groupID] {
+					effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
+				}
 			}
 		}
 	}
