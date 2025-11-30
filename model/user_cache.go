@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,13 +16,14 @@ import (
 
 // UserBase struct remains the same as it represents the cached data structure
 type UserBase struct {
-	Id       int    `json:"id"`
-	Group    string `json:"group"`
-	Email    string `json:"email"`
-	Quota    int    `json:"quota"`
-	Status   int    `json:"status"`
-	Username string `json:"username"`
-	Setting  string `json:"setting"`
+	Id             int    `json:"id"`
+	Group          string `json:"group"`
+	Email          string `json:"email"`
+	Quota          int    `json:"quota"`
+	Status         int    `json:"status"`
+	Username       string `json:"username"`
+	Setting        string `json:"setting"`
+	ExtendedGroups []int  `json:"extended_groups"` // P2P分组ID列表 (仅用于L1内存缓存,不存储到Redis)
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
@@ -216,4 +218,57 @@ func updateUserSettingCache(userId int, setting string) error {
 		return nil
 	}
 	return common.RedisHSetField(getUserCacheKey(userId), "Setting", setting)
+}
+
+// ========== L1 Memory Cache (for ExtendedGroups) ==========
+
+var userMemoryCacheM map[int]*UserBase // in-memory user cache
+var userMemoryCacheLock sync.RWMutex
+
+// InitUserMemoryCache initializes the in-memory user cache
+func InitUserMemoryCache() {
+	if !common.MemoryCacheEnabled {
+		return
+	}
+	userMemoryCacheLock.Lock()
+	defer userMemoryCacheLock.Unlock()
+	userMemoryCacheM = make(map[int]*UserBase)
+	common.SysLog("user memory cache initialized")
+}
+
+// getUserCache gets user from L1 memory cache (read-only, no auto-load from DB)
+func getUserCache(userId int) (*UserBase, error) {
+	if !common.MemoryCacheEnabled {
+		return nil, fmt.Errorf("memory cache is not enabled")
+	}
+	userMemoryCacheLock.RLock()
+	defer userMemoryCacheLock.RUnlock()
+
+	userCache, ok := userMemoryCacheM[userId]
+	if !ok {
+		return nil, fmt.Errorf("user not found in memory cache")
+	}
+	return userCache, nil
+}
+
+// setUserCache sets user to L1 memory cache
+func setUserCache(userId int, userCache *UserBase) error {
+	if !common.MemoryCacheEnabled {
+		return nil
+	}
+	userMemoryCacheLock.Lock()
+	defer userMemoryCacheLock.Unlock()
+	userMemoryCacheM[userId] = userCache
+	return nil
+}
+
+// invalidateUserMemoryCache removes user from L1 memory cache
+func invalidateUserMemoryCache(userId int) error {
+	if !common.MemoryCacheEnabled {
+		return nil
+	}
+	userMemoryCacheLock.Lock()
+	defer userMemoryCacheLock.Unlock()
+	delete(userMemoryCacheM, userId)
+	return nil
 }

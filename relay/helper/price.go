@@ -16,30 +16,41 @@ import (
 // https://docs.claude.com/en/docs/build-with-claude/prompt-caching#1-hour-cache-duration
 const claudeCacheCreation1hMultiplier = 6 / 3.75
 
-// HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
+// HandleGroupRatio checks for "auto_group" in the context and updates the group ratio.
+// IMPORTANT: This function now uses relayInfo.BillingGroup for pricing instead of UsingGroup,
+// enforcing P2P group decoupling (billing is always based on the user's BillingGroup, not their P2P groups).
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.GroupRatioInfo {
 	groupRatioInfo := types.GroupRatioInfo{
 		GroupRatio:        1.0, // default ratio
 		GroupSpecialRatio: -1,
 	}
 
-	// check auto group
+	// check auto group (deprecated: will be replaced by multi-group routing)
+	// For backward compatibility, we still check auto_group and update UsingGroup
 	autoGroup, exists := ctx.Get("auto_group")
 	if exists {
 		logger.LogDebug(ctx, fmt.Sprintf("final group: %s", autoGroup))
+		// Update deprecated UsingGroup for backward compatibility
 		relayInfo.UsingGroup = autoGroup.(string)
+		// Update BillingGroup to match auto_group selection
+		relayInfo.BillingGroup = autoGroup.(string)
 	}
 
-	// check user group special ratio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
+	// CRITICAL: Use BillingGroup for billing instead of UsingGroup
+	// BillingGroup is locked to the user's system group or token group, preventing billing bypasses via P2P groups
+	billingGroup := relayInfo.BillingGroup
+	userGroup := relayInfo.UserGroup
+
+	// check user group special ratio (user's system group vs billing group)
+	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
 	if ok {
-		// user group special ratio
+		// user group special ratio (e.g., VIP user in default group gets special rate)
 		groupRatioInfo.GroupSpecialRatio = userGroupRatio
 		groupRatioInfo.GroupRatio = userGroupRatio
 		groupRatioInfo.HasSpecialRatio = true
 	} else {
-		// normal group ratio
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+		// normal group ratio (use the billing group's standard rate)
+		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(billingGroup)
 	}
 
 	return groupRatioInfo

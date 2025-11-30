@@ -27,6 +27,7 @@ type Token struct {
 	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
 	Group              string         `json:"group" gorm:"default:''"`
+	AllowedP2PGroups   *string        `json:"allowed_p2p_groups" gorm:"type:text"` // 允许使用的P2P分组ID列表(JSON数组)
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -361,4 +362,23 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	return len(tokens), nil
+}
+
+// GetAllowedP2PGroupIDs 返回Token允许使用的P2P分组ID列表
+// 返回空切片表示不限制P2P分组
+func (token *Token) GetAllowedP2PGroupIDs() []int {
+	if token.AllowedP2PGroups == nil || *token.AllowedP2PGroups == "" {
+		return []int{}
+	}
+
+	// 解析JSON数组 (格式: [101, 102, 103])
+	var groupIDs []int
+	err := common.Unmarshal([]byte(*token.AllowedP2PGroups), &groupIDs)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to unmarshal allowed_p2p_groups for token %d: %v (value: %s)",
+			token.Id, err, *token.AllowedP2PGroups))
+		return []int{}
+	}
+
+	return groupIDs
 }

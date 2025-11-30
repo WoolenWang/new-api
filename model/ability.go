@@ -290,6 +290,186 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 	return nil, nil
 }
 
+// GetChannelWithPriorityMultiGroup selects a channel from multiple routing groups using database query.
+// This is the database fallback for GetRandomSatisfiedChannelWithPriorityMultiGroup when memory cache is disabled.
+// It follows the same multi-group routing logic: collect channels from all groups, deduplicate, and apply 3-tier priority.
+func GetChannelWithPriorityMultiGroup(routingGroups []string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, string, error) {
+	if len(routingGroups) == 0 {
+		return nil, "", errors.New("routing groups cannot be empty")
+	}
+
+	// Step 1: Query abilities from all routing groups
+	var allAbilities []Ability
+	abilityMap := make(map[int]Ability) // Use map for deduplication by ChannelId
+
+	for _, group := range routingGroups {
+		channelQuery, err := getChannelQuery(group, model, retry)
+		if err != nil {
+			continue // Skip this group if query fails
+		}
+
+		var groupAbilities []Ability
+		if common.UsingSQLite || common.UsingPostgreSQL {
+			err = channelQuery.Order("weight DESC").Find(&groupAbilities).Error
+		} else {
+			err = channelQuery.Order("weight DESC").Find(&groupAbilities).Error
+		}
+		if err != nil {
+			continue // Skip this group if query fails
+		}
+
+		// Deduplicate by ChannelId (prefer higher weight if duplicate)
+		for _, ability := range groupAbilities {
+			if existing, exists := abilityMap[ability.ChannelId]; exists {
+				// Keep the ability with higher weight
+				if ability.Weight > existing.Weight {
+					abilityMap[ability.ChannelId] = ability
+				}
+			} else {
+				abilityMap[ability.ChannelId] = ability
+			}
+		}
+	}
+
+	// Convert map back to slice
+	for _, ability := range abilityMap {
+		allAbilities = append(allAbilities, ability)
+	}
+
+	if len(allAbilities) == 0 {
+		return nil, "", errors.New(fmt.Sprintf("no satisfied channel found in any routing group (DB), groups: %v, model: %s", routingGroups, model))
+	}
+
+	// Step 2: Fetch all candidate channels
+	channelIds := make([]int, 0, len(allAbilities))
+	for _, ability := range allAbilities {
+		channelIds = append(channelIds, ability.ChannelId)
+	}
+
+	var channels []Channel
+	err := DB.Where("id IN ?", channelIds).Find(&channels).Error
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Create channel map for quick lookup
+	channelMap := make(map[int]*Channel)
+	for i := range channels {
+		channelMap[channels[i].Id] = &channels[i]
+	}
+
+	// Track which group each channel came from (use first matching group for logging)
+	channelGroupMap := make(map[int]string)
+	for _, ability := range allAbilities {
+		if _, exists := channelGroupMap[ability.ChannelId]; !exists {
+			channelGroupMap[ability.ChannelId] = ability.Group
+		}
+	}
+
+	// Step 3: Classify channels into three priority tiers
+	var privateChannelIds []int // Tier 1: User's own private channels
+	var sharedChannelIds []int  // Tier 2: Non-private P2P channels
+	var publicChannelIds []int  // Tier 3: Platform public channels
+
+	for _, ability := range allAbilities {
+		channel, ok := channelMap[ability.ChannelId]
+		if !ok {
+			continue
+		}
+
+		// Apply access control check
+		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+			continue
+		}
+
+		// Apply risk control check for P2P channels
+		if channel.OwnerUserId != 0 {
+			if err := CheckChannelRiskControl(channel); err != nil {
+				var newAPIErr *types.NewAPIError
+				if errors.As(err, &newAPIErr) {
+					switch newAPIErr.GetErrorCode() {
+					case types.ErrorCodeChannelConcurrencyExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group DB routing: Channel #%d (%s) skipped due to concurrency limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelHourlyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group DB routing: Channel #%d (%s) skipped due to hourly rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelDailyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group DB routing: Channel #%d (%s) skipped due to daily rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelTotalQuotaExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group DB routing: Channel #%d (%s) skipped due to total quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					default:
+						common.SysLog(fmt.Sprintf("Multi-group DB routing: Channel #%d (%s) skipped due to risk control: %s",
+							channel.Id, channel.Name, err.Error()))
+					}
+				}
+				continue
+			}
+		}
+
+		// Classify into appropriate tier
+		if channel.OwnerUserId == userId && userId != 0 && channel.IsPrivate {
+			privateChannelIds = append(privateChannelIds, ability.ChannelId)
+		} else if channel.OwnerUserId != 0 && !channel.IsPrivate {
+			sharedChannelIds = append(sharedChannelIds, ability.ChannelId)
+		} else if channel.OwnerUserId == 0 {
+			publicChannelIds = append(publicChannelIds, ability.ChannelId)
+		}
+	}
+
+	common.SysLog(fmt.Sprintf(
+		"Multi-group DB P2P Routing - User: %d, Groups: %v, Model: %s | Tiers: Private=%d, Shared=%d, Public=%d",
+		userId, routingGroups, model, len(privateChannelIds), len(sharedChannelIds), len(publicChannelIds),
+	))
+
+	// Step 4: Try each tier in order
+	tierChannelIds := [][]int{privateChannelIds, sharedChannelIds, publicChannelIds}
+	tierNames := []string{"Private", "Shared", "Public"}
+
+	for tierIdx, tierIds := range tierChannelIds {
+		if len(tierIds) == 0 {
+			continue
+		}
+
+		// Filter abilities to this tier
+		tierAbilities := make([]Ability, 0)
+		for _, ability := range allAbilities {
+			for _, id := range tierIds {
+				if ability.ChannelId == id {
+					tierAbilities = append(tierAbilities, ability)
+					break
+				}
+			}
+		}
+
+		// Apply weight-based selection within tier
+		if len(tierAbilities) > 0 {
+			weightSum := uint(0)
+			for _, ability_ := range tierAbilities {
+				weightSum += ability_.Weight + 10
+			}
+			weight := common.GetRandomInt(int(weightSum))
+			for _, ability_ := range tierAbilities {
+				weight -= int(ability_.Weight) + 10
+				if weight <= 0 {
+					selectedChannel := channelMap[ability_.ChannelId]
+					selectedGroup := channelGroupMap[ability_.ChannelId]
+					common.SysLog(fmt.Sprintf(
+						"Multi-group DB Channel Selected - Tier: %s, Group: %s, Channel: #%d (Owner: %d, IsPrivate: %t, Name: %s)",
+						tierNames[tierIdx], selectedGroup, selectedChannel.Id, selectedChannel.OwnerUserId,
+						selectedChannel.IsPrivate, selectedChannel.Name,
+					))
+					return selectedChannel, selectedGroup, nil
+				}
+			}
+		}
+	}
+
+	return nil, "", errors.New(fmt.Sprintf("no satisfied channel found in any routing group after filtering (DB), groups: %v, model: %s", routingGroups, model))
+}
+
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")

@@ -1041,3 +1041,25 @@ func (channel *Channel) GetIPWhitelist() []string {
 
 	return ipList
 }
+
+// GetAllowedGroupIDs 返回渠道允许访问的P2P分组ID列表
+// 该方法用于新的P2P分组权限检查(基于整数ID)
+// 返回空切片表示不限制分组
+func (channel *Channel) GetAllowedGroupIDs() []int {
+	if channel.AllowedGroups == nil || *channel.AllowedGroups == "" {
+		return []int{}
+	}
+
+	// 尝试解析为JSON数组 (新格式: [101, 102, 103])
+	var groupIDs []int
+	err := json.Unmarshal([]byte(*channel.AllowedGroups), &groupIDs)
+	if err != nil {
+		// JSON解析失败,可能是旧格式(逗号分隔的系统分组名称)
+		// 对于P2P分组检查,旧格式不适用,返回空列表
+		common.SysLog(fmt.Sprintf("failed to unmarshal allowed_groups as JSON array for channel %d: %v (value: %s)",
+			channel.Id, err, *channel.AllowedGroups))
+		return []int{}
+	}
+
+	return groupIDs
+}

@@ -273,5 +273,26 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.PUT("/", controller.UpdateModelMeta)
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
 		}
+
+		// P2P Group Management Routes (used by WQuant backend with Admin Token)
+		// Note: This is for P2P groups, NOT system groups (system groups are under /api/group)
+		p2pGroupsRoute := apiRouter.Group("/groups")
+		p2pGroupsRoute.Use(middleware.AdminAuth())
+		{
+			// P2P Group CRUD
+			p2pGroupsRoute.POST("", controller.CreateP2PGroup)            // Create group
+			p2pGroupsRoute.GET("/self", controller.GetUserOwnedGroups)    // Get user's owned groups
+			p2pGroupsRoute.GET("/joined", controller.GetUserJoinedGroups) // Get user's joined groups
+			p2pGroupsRoute.GET("/public", controller.GetPublicGroups)     // Get public shared groups
+			p2pGroupsRoute.PUT("", controller.UpdateP2PGroup)             // Update group
+			p2pGroupsRoute.DELETE("", controller.DeleteP2PGroup)          // Delete group
+
+			// Member Management
+			p2pGroupsRoute.POST("/apply", controller.ApplyToJoinGroup)    // Apply to join group
+			p2pGroupsRoute.GET("/members", controller.GetGroupMembers)    // Get group members
+			p2pGroupsRoute.GET("/member", controller.GetMemberInfo)       // Get specific member info
+			p2pGroupsRoute.PUT("/members", controller.UpdateMemberStatus) // Approve/reject/ban member
+			p2pGroupsRoute.POST("/leave", controller.LeaveGroup)          // Leave group
+		}
 	}
 }

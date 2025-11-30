@@ -409,6 +409,159 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	return nil, errors.New(fmt.Sprintf("no satisfied channel found, group: %s, model: %s", group, model))
 }
 
+// GetRandomSatisfiedChannelWithPriorityMultiGroup selects a channel from multiple routing groups with P2P priority.
+// This function implements the multi-group routing logic for P2P group decoupling:
+// 1. Iterates over all routingGroups (BillingGroup + Active P2P Groups)
+// 2. Collects channels from each group that support the target model
+// 3. Deduplicates channels by ID
+// 4. Applies the 3-tier priority sorting (Private > Shared > Public)
+// 5. Returns the selected channel and the group it came from
+func GetRandomSatisfiedChannelWithPriorityMultiGroup(routingGroups []string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, string, error) {
+	if len(routingGroups) == 0 {
+		return nil, "", errors.New("routing groups cannot be empty")
+	}
+
+	// If memory cache is disabled, use database query with multi-group support
+	if !common.MemoryCacheEnabled {
+		return GetChannelWithPriorityMultiGroup(routingGroups, model, userId, userGroup, clientIP, retry)
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	// Step 1: Collect all candidate channel IDs from all routing groups (with deduplication)
+	channelIDSet := make(map[int]bool) // Use map for deduplication
+	var allChannelIDs []int
+
+	for _, group := range routingGroups {
+		// Try exact model match first
+		channels := group2model2channels[group][model]
+
+		// If no channels found, try normalized model name
+		if len(channels) == 0 {
+			normalizedModel := ratio_setting.FormatMatchingModelName(model)
+			channels = group2model2channels[group][normalizedModel]
+		}
+
+		// Add channels to set (automatic deduplication)
+		for _, channelID := range channels {
+			if !channelIDSet[channelID] {
+				channelIDSet[channelID] = true
+				allChannelIDs = append(allChannelIDs, channelID)
+			}
+		}
+	}
+
+	if len(allChannelIDs) == 0 {
+		return nil, "", errors.New(fmt.Sprintf("no satisfied channel found in any routing group, groups: %v, model: %s", routingGroups, model))
+	}
+
+	// Step 2: Classify channels into three priority tiers (Private > Shared > Public)
+	var privateChannels []*Channel // Tier 1: User's own private channels
+	var sharedChannels []*Channel  // Tier 2: Other users' shared channels
+	var publicChannels []*Channel  // Tier 3: Platform public channels
+
+	// Track which group each channel came from for logging
+	channelGroupMap := make(map[int]string)
+
+	for _, channelID := range allChannelIDs {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			continue
+		}
+
+		// Apply access control check - skip channels user cannot access
+		if !CheckChannelAccess(channel, userId, userGroup, model, clientIP) {
+			continue
+		}
+
+		// Apply risk control check for P2P channels - skip channels that exceed limits
+		if channel.OwnerUserId != 0 {
+			if err := CheckChannelRiskControl(channel); err != nil {
+				// Log different limit types specially
+				var newAPIErr *types.NewAPIError
+				if errors.As(err, &newAPIErr) {
+					switch newAPIErr.GetErrorCode() {
+					case types.ErrorCodeChannelConcurrencyExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to concurrency limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelHourlyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to hourly rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelDailyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to daily rate limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelTotalQuotaExceeded:
+						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to total quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					default:
+						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to risk control: %s",
+							channel.Id, channel.Name, err.Error()))
+					}
+				}
+				continue
+			}
+		}
+
+		// Find which group this channel belongs to (for logging)
+		for _, group := range routingGroups {
+			groupChannels := group2model2channels[group][model]
+			if len(groupChannels) == 0 {
+				normalizedModel := ratio_setting.FormatMatchingModelName(model)
+				groupChannels = group2model2channels[group][normalizedModel]
+			}
+			for _, gChannelID := range groupChannels {
+				if gChannelID == channelID {
+					channelGroupMap[channelID] = group
+					break
+				}
+			}
+		}
+
+		// Classify into appropriate tier based on ownership and privacy settings
+		if channel.OwnerUserId == userId && userId != 0 && channel.IsPrivate {
+			// Tier 1: User's own private channels (explicitly marked as private)
+			privateChannels = append(privateChannels, channel)
+		} else if channel.OwnerUserId != 0 && !channel.IsPrivate {
+			// Tier 2: Shared channels (both user's own public channels and others' shared channels)
+			sharedChannels = append(sharedChannels, channel)
+		} else if channel.OwnerUserId == 0 {
+			// Tier 3: Platform public channels
+			publicChannels = append(publicChannels, channel)
+		}
+	}
+
+	// Log channel tier distribution for debugging
+	common.SysLog(fmt.Sprintf(
+		"Multi-group P2P Routing - User: %d, Groups: %v, Model: %s | Tiers: Private=%d, Shared=%d, Public=%d",
+		userId, routingGroups, model, len(privateChannels), len(sharedChannels), len(publicChannels),
+	))
+
+	// Step 3: Try selecting from each tier in order: private -> shared -> public
+	tierChannels := [][]*Channel{privateChannels, sharedChannels, publicChannels}
+	tierNames := []string{"Private", "Shared", "Public"}
+
+	for tierIdx, tier := range tierChannels {
+		if len(tier) == 0 {
+			continue // Skip empty tiers
+		}
+
+		// Within each tier, apply the original priority + weight selection logic
+		selectedChannel := selectChannelFromTier(tier, retry)
+		if selectedChannel != nil {
+			selectedGroup := channelGroupMap[selectedChannel.Id]
+			common.SysLog(fmt.Sprintf(
+				"Multi-group Channel Selected - Tier: %s, Group: %s, Channel: #%d (Owner: %d, IsPrivate: %t, Name: %s)",
+				tierNames[tierIdx], selectedGroup, selectedChannel.Id, selectedChannel.OwnerUserId,
+				selectedChannel.IsPrivate, selectedChannel.Name,
+			))
+			return selectedChannel, selectedGroup, nil
+		}
+	}
+
+	return nil, "", errors.New(fmt.Sprintf("no satisfied channel found in any routing group after filtering, groups: %v, model: %s", routingGroups, model))
+}
+
 // selectChannelFromTier selects a channel from a tier using priority and weight
 func selectChannelFromTier(tierChannels []*Channel, retry int) *Channel {
 	if len(tierChannels) == 0 {

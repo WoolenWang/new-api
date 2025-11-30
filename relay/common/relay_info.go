@@ -70,7 +70,7 @@ type ChannelMeta struct {
 	ChannelOtherSettings dto.ChannelOtherSettings
 	UpstreamModelName    string
 	IsModelMapped        bool
-	SupportStreamOptions bool // 是否支持流式选项
+	SupportStreamOptions bool   // 是否支持流式选项
 	AccountHint          string // CLIProxyAPI 凭证映射标识
 }
 
@@ -78,8 +78,10 @@ type RelayInfo struct {
 	TokenId           int
 	TokenKey          string
 	UserId            int
-	UsingGroup        string // 使用的分组
-	UserGroup         string // 用户所在分组
+	UsingGroup        string   // 使用的分组 (deprecated, 使用 BillingGroup 代替)
+	UserGroup         string   // 用户所在分组 (deprecated, 使用 BillingGroup 代替)
+	BillingGroup      string   // 计费分组 (仅用于计费和流控,不受P2P分组影响)
+	RoutingGroups     []string // 路由分组集合 (用于选路,包含 BillingGroup + 用户所有Active的P2P分组)
 	TokenUnlimited    bool
 	StartTime         time.Time
 	FirstResponseTime time.Time
@@ -384,16 +386,92 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		isStream = request.IsStream(c)
 	}
 
+	// === P2P 分组解耦逻辑开始 ===
+
+	userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)   // 用户的系统主分组
+	usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup) // Token 覆盖的分组(可能为空)
+
+	// Step 1: 确定 BillingGroup (仅用于计费和流控)
+	billingGroup := userGroup // 默认使用用户的系统主分组
+	if usingGroup != "" {
+		// 如果 Token 配置了 Group 字段,则使用 Token 的分组作为 BillingGroup
+		// TODO: 未来可以在此处添加安全校验,防止通过 Token 降级到低费率分组
+		billingGroup = usingGroup
+	}
+
+	// Step 2: 获取用户的所有 Active P2P 分组 ID (从三级缓存)
+	var userP2PGroupIDs []int
+	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, false)
+	if err != nil {
+		// 获取 P2P 分组失败不应阻塞请求,仅记录日志
+		common.SysLog(fmt.Sprintf("failed to get user P2P groups for user %d: %v", userId, err))
+		userP2PGroupIDs = []int{} // 使用空列表
+	}
+
+	// Step 3: 应用 Token 的 P2P 分组限制 (取交集)
+	var effectiveP2PGroupIDs []int
+	tokenAllowedP2PGroups := c.GetStringSlice("token_allowed_p2p_groups") // 从 context 读取 Token 的限制
+	if len(tokenAllowedP2PGroups) == 0 {
+		// Token 未配置限制,使用用户的全部 P2P 分组
+		effectiveP2PGroupIDs = userP2PGroupIDs
+	} else {
+		// Token 配置了限制,取交集
+		// 将 tokenAllowedP2PGroups ([]string) 转换为 map 用于快速查找
+		allowedMap := make(map[int]bool)
+		for _, idStr := range tokenAllowedP2PGroups {
+			var id int
+			if _, scanErr := fmt.Sscanf(idStr, "%d", &id); scanErr == nil {
+				allowedMap[id] = true
+			}
+		}
+
+		for _, groupID := range userP2PGroupIDs {
+			if allowedMap[groupID] {
+				effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
+			}
+		}
+	}
+
+	// Step 4: 构建 RoutingGroups (用于选路)
+	// RoutingGroups = {BillingGroup} ∪ {所有有效的 P2P 分组名称}
+	routingGroups := []string{billingGroup} // 首先加入 BillingGroup
+
+	// TODO: 处理 auto 分组展开
+	// if billingGroup == "auto" {
+	//     routingGroups = expandAutoGroup()
+	// }
+
+	// 将 P2P 分组 ID 转换为字符串并添加到 routingGroups
+	// 注意: 这里使用 "p2p_{id}" 格式以区分系统分组和 P2P 分组
+	for _, groupID := range effectiveP2PGroupIDs {
+		routingGroups = append(routingGroups, fmt.Sprintf("p2p_%d", groupID))
+	}
+
+	// 去重 (理论上不会重复,但为了安全起见)
+	routingGroupsMap := make(map[string]bool)
+	uniqueRoutingGroups := []string{}
+	for _, group := range routingGroups {
+		if !routingGroupsMap[group] {
+			routingGroupsMap[group] = true
+			uniqueRoutingGroups = append(uniqueRoutingGroups, group)
+		}
+	}
+
+	// === P2P 分组解耦逻辑结束 ===
+
 	// firstResponseTime = time.Now() - 1 second
 
 	info := &RelayInfo{
 		Request: request,
 
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		UserId:        userId,
+		UsingGroup:    usingGroup,          // deprecated,保留用于兼容性
+		UserGroup:     userGroup,           // deprecated,保留用于兼容性
+		BillingGroup:  billingGroup,        // 新增:计费分组
+		RoutingGroups: uniqueRoutingGroups, // 新增:路由分组集合
+		UserQuota:     common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:     common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 		PromptTokens:    common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),
