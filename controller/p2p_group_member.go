@@ -18,13 +18,30 @@ import (
 func ApplyToJoinGroup(c *gin.Context) {
 	var req struct {
 		GroupId  int    `json:"group_id" binding:"required"`
-		UserId   int    `json:"user_id" binding:"required"`
+		UserId   int    `json:"user_id"`
 		Password string `json:"password"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+
+	// If user_id is not specified, use authenticated user's ID
+	if req.UserId == 0 {
+		req.UserId = myUserId
+	} else if req.UserId != myUserId {
+		// Only admins can apply on behalf of other users
+		if myRole != common.RoleRootUser {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "只有超级管理员可以为其他用户申请加入分组",
+			})
+			return
+		}
 	}
 
 	// Get group information
@@ -163,12 +180,29 @@ func UpdateMemberStatus(c *gin.Context) {
 func LeaveGroup(c *gin.Context) {
 	var req struct {
 		GroupId int `json:"group_id" binding:"required"`
-		UserId  int `json:"user_id" binding:"required"`
+		UserId  int `json:"user_id"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+
+	// If user_id is not specified, use authenticated user's ID
+	if req.UserId == 0 {
+		req.UserId = myUserId
+	} else if req.UserId != myUserId {
+		// Only admins can remove other users from groups
+		if myRole != common.RoleRootUser {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "只有超级管理员可以让其他用户退出分组",
+			})
+			return
+		}
 	}
 
 	// Get group info before leaving
