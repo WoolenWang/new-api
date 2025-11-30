@@ -192,49 +192,89 @@ func GetPublicSharedGroups(page, pageSize int, keyword string) ([]*Group, int64,
 
 // GetGroupsByOwnerWithMemberCount 获取指定用户创建的所有分组（带成员数量，分页版本）
 func GetGroupsByOwnerWithMemberCount(ownerId int, startIdx int, pageSize int) ([]*GroupWithMemberCount, int64, error) {
-	var groups []*GroupWithMemberCount
+	var groups []*Group
 	var total int64
 
-	// 构建查询 - 使用LEFT JOIN统计Active成员数量
-	query := DB.Table("groups").
-		Select("groups.*, COALESCE(COUNT(user_groups.id), 0) as member_count").
-		Joins("LEFT JOIN user_groups ON groups.id = user_groups.group_id AND user_groups.status = ?", MemberStatusActive).
-		Where("groups.owner_id = ?", ownerId).
-		Group("groups.id")
+	// 第一步：分页查询分组列表
+	query := DB.Model(&Group{}).Where("owner_id = ?", ownerId)
 
-	// 获取总数（需要单独查询，因为有GROUP BY）
-	var countQuery = DB.Model(&Group{}).Where("owner_id = ?", ownerId)
-	err := countQuery.Count(&total).Error
+	// 获取总数
+	err := query.Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// 分页查询
-	err = query.Order("groups.created_at DESC").
-		Limit(pageSize).
-		Offset(startIdx).
-		Scan(&groups).Error
+	err = query.Order("created_at DESC").Limit(pageSize).Offset(startIdx).Find(&groups).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-	return groups, total, err
+	// 第二步：为当前页的分组批量查询成员数量
+	if len(groups) == 0 {
+		return []*GroupWithMemberCount{}, total, nil
+	}
+
+	// 提取分组ID列表
+	groupIds := make([]int, len(groups))
+	for i, g := range groups {
+		groupIds[i] = g.Id
+	}
+
+	// 批量查询成员数量
+	type MemberCountResult struct {
+		GroupId int   `gorm:"column:group_id"`
+		Count   int64 `gorm:"column:count"`
+	}
+	var memberCounts []MemberCountResult
+	err = DB.Table("user_groups").
+		Select("group_id, COUNT(*) as count").
+		Where("group_id IN ? AND status = ?", groupIds, MemberStatusActive).
+		Group("group_id").
+		Scan(&memberCounts).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 构建成员数量映射
+	countMap := make(map[int]int64)
+	for _, mc := range memberCounts {
+		countMap[mc.GroupId] = mc.Count
+	}
+
+	// 组装结果
+	result := make([]*GroupWithMemberCount, len(groups))
+	for i, g := range groups {
+		result[i] = &GroupWithMemberCount{
+			Id:          g.Id,
+			Name:        g.Name,
+			DisplayName: g.DisplayName,
+			OwnerId:     g.OwnerId,
+			Type:        g.Type,
+			JoinMethod:  g.JoinMethod,
+			JoinKey:     g.JoinKey,
+			Description: g.Description,
+			CreatedAt:   g.CreatedAt,
+			UpdatedAt:   g.UpdatedAt,
+			MemberCount: countMap[g.Id], // 默认为0（如果不在map中）
+		}
+	}
+
+	return result, total, nil
 }
 
 // GetUserGroupsWithMemberCount 获取用户加入的所有分组（带成员数量，仅Active状态，分页版本）
 func GetUserGroupsWithMemberCount(userId int, startIdx int, pageSize int) ([]*GroupWithMemberCount, int64, error) {
-	var groups []*GroupWithMemberCount
+	var groups []*Group
 	var total int64
 
-	// 构建查询 - JOIN user_groups和groups，同时统计成员数量
+	// 第一步：分页查询用户加入的分组列表
 	query := DB.Table("groups").
-		Select("groups.*, COALESCE(COUNT(DISTINCT ug2.id), 0) as member_count").
-		Joins("INNER JOIN user_groups ug1 ON groups.id = ug1.group_id AND ug1.user_id = ? AND ug1.status = ?", userId, MemberStatusActive).
-		Joins("LEFT JOIN user_groups ug2 ON groups.id = ug2.group_id AND ug2.status = ?", MemberStatusActive).
-		Group("groups.id")
-
-	// 获取总数
-	countQuery := DB.Table("groups").
 		Joins("INNER JOIN user_groups ON groups.id = user_groups.group_id").
 		Where("user_groups.user_id = ? AND user_groups.status = ?", userId, MemberStatusActive)
-	err := countQuery.Count(&total).Error
+
+	// 获取总数
+	err := query.Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -243,50 +283,143 @@ func GetUserGroupsWithMemberCount(userId int, startIdx int, pageSize int) ([]*Gr
 	err = query.Order("groups.created_at DESC").
 		Limit(pageSize).
 		Offset(startIdx).
-		Scan(&groups).Error
+		Find(&groups).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-	return groups, total, err
+	// 第二步：为当前页的分组批量查询成员数量
+	if len(groups) == 0 {
+		return []*GroupWithMemberCount{}, total, nil
+	}
+
+	// 提取分组ID列表
+	groupIds := make([]int, len(groups))
+	for i, g := range groups {
+		groupIds[i] = g.Id
+	}
+
+	// 批量查询成员数量
+	type MemberCountResult struct {
+		GroupId int   `gorm:"column:group_id"`
+		Count   int64 `gorm:"column:count"`
+	}
+	var memberCounts []MemberCountResult
+	err = DB.Table("user_groups").
+		Select("group_id, COUNT(*) as count").
+		Where("group_id IN ? AND status = ?", groupIds, MemberStatusActive).
+		Group("group_id").
+		Scan(&memberCounts).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 构建成员数量映射
+	countMap := make(map[int]int64)
+	for _, mc := range memberCounts {
+		countMap[mc.GroupId] = mc.Count
+	}
+
+	// 组装结果
+	result := make([]*GroupWithMemberCount, len(groups))
+	for i, g := range groups {
+		result[i] = &GroupWithMemberCount{
+			Id:          g.Id,
+			Name:        g.Name,
+			DisplayName: g.DisplayName,
+			OwnerId:     g.OwnerId,
+			Type:        g.Type,
+			JoinMethod:  g.JoinMethod,
+			JoinKey:     g.JoinKey,
+			Description: g.Description,
+			CreatedAt:   g.CreatedAt,
+			UpdatedAt:   g.UpdatedAt,
+			MemberCount: countMap[g.Id], // 默认为0（如果不在map中）
+		}
+	}
+
+	return result, total, nil
 }
 
 // GetPublicSharedGroupsWithMemberCount 获取所有公开的共享分组（带成员数量，用于分组广场）
 func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string) ([]*GroupWithMemberCount, int64, error) {
-	var groups []*GroupWithMemberCount
+	var groups []*Group
 	var total int64
 
-	// 构建查询 - 使用LEFT JOIN统计Active成员数量
-	query := DB.Table("groups").
-		Select("groups.*, COALESCE(COUNT(user_groups.id), 0) as member_count").
-		Joins("LEFT JOIN user_groups ON groups.id = user_groups.group_id AND user_groups.status = ?", MemberStatusActive).
-		Where("groups.type = ?", GroupTypeShared).
-		Group("groups.id")
+	// 第一步：分页查询公开分组列表
+	query := DB.Model(&Group{}).Where("type = ?", GroupTypeShared)
 
 	// 关键词搜索
 	if keyword != "" {
 		likePattern := "%" + keyword + "%"
-		query = query.Where("groups.name LIKE ? OR groups.display_name LIKE ? OR groups.description LIKE ?",
+		query = query.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?",
 			likePattern, likePattern, likePattern)
 	}
 
-	// 获取总数（需要单独查询，因为有GROUP BY）
-	countQuery := DB.Model(&Group{}).Where("type = ?", GroupTypeShared)
-	if keyword != "" {
-		likePattern := "%" + keyword + "%"
-		countQuery = countQuery.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?",
-			likePattern, likePattern, likePattern)
-	}
-	err := countQuery.Count(&total).Error
+	// 获取总数
+	err := query.Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	err = query.Order("groups.created_at DESC").
-		Limit(pageSize).
-		Offset(offset).
-		Scan(&groups).Error
+	err = query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&groups).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-	return groups, total, err
+	// 第二步：为当前页的分组批量查询成员数量
+	if len(groups) == 0 {
+		return []*GroupWithMemberCount{}, total, nil
+	}
+
+	// 提取分组ID列表
+	groupIds := make([]int, len(groups))
+	for i, g := range groups {
+		groupIds[i] = g.Id
+	}
+
+	// 批量查询成员数量
+	type MemberCountResult struct {
+		GroupId int   `gorm:"column:group_id"`
+		Count   int64 `gorm:"column:count"`
+	}
+	var memberCounts []MemberCountResult
+	err = DB.Table("user_groups").
+		Select("group_id, COUNT(*) as count").
+		Where("group_id IN ? AND status = ?", groupIds, MemberStatusActive).
+		Group("group_id").
+		Scan(&memberCounts).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 构建成员数量映射
+	countMap := make(map[int]int64)
+	for _, mc := range memberCounts {
+		countMap[mc.GroupId] = mc.Count
+	}
+
+	// 组装结果
+	result := make([]*GroupWithMemberCount, len(groups))
+	for i, g := range groups {
+		result[i] = &GroupWithMemberCount{
+			Id:          g.Id,
+			Name:        g.Name,
+			DisplayName: g.DisplayName,
+			OwnerId:     g.OwnerId,
+			Type:        g.Type,
+			JoinMethod:  g.JoinMethod,
+			JoinKey:     g.JoinKey,
+			Description: g.Description,
+			CreatedAt:   g.CreatedAt,
+			UpdatedAt:   g.UpdatedAt,
+			MemberCount: countMap[g.Id], // 默认为0（如果不在map中）
+		}
+	}
+
+	return result, total, nil
 }
 
 // UpdateGroup 更新分组信息
