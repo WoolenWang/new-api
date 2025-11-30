@@ -110,6 +110,24 @@ func GetGroupsByOwner(ownerId int) ([]*Group, error) {
 	return groups, err
 }
 
+// GetGroupsByOwnerPaginated 获取指定用户创建的所有分组 (分页版本)
+func GetGroupsByOwnerPaginated(ownerId int, startIdx int, pageSize int) ([]*Group, int64, error) {
+	var groups []*Group
+	var total int64
+
+	query := DB.Model(&Group{}).Where("owner_id = ?", ownerId)
+
+	// 获取总数
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	err = query.Order("created_at DESC").Limit(pageSize).Offset(startIdx).Find(&groups).Error
+	return groups, total, err
+}
+
 // GetPublicSharedGroups 获取所有公开的共享分组 (用于分组广场)
 func GetPublicSharedGroups(page, pageSize int, keyword string) ([]*Group, int64, error) {
 	var groups []*Group
@@ -257,6 +275,28 @@ func GetUserGroups(userId int) ([]*UserGroup, error) {
 	var userGroups []*UserGroup
 	err := DB.Where("user_id = ? AND status = ?", userId, MemberStatusActive).Find(&userGroups).Error
 	return userGroups, err
+}
+
+// GetUserGroupsPaginated 获取用户加入的所有分组的完整信息 (仅Active状态, 分页版本)
+// 返回完整的Group对象，而不是UserGroup关系对象
+func GetUserGroupsPaginated(userId int, startIdx int, pageSize int) ([]*Group, int64, error) {
+	var groups []*Group
+	var total int64
+
+	// 使用JOIN查询获取完整分组信息
+	query := DB.Table("groups").
+		Joins("INNER JOIN user_groups ON groups.id = user_groups.group_id").
+		Where("user_groups.user_id = ? AND user_groups.status = ?", userId, MemberStatusActive)
+
+	// 获取总数
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	err = query.Order("groups.created_at DESC").Limit(pageSize).Offset(startIdx).Find(&groups).Error
+	return groups, total, err
 }
 
 // GetUserActiveGroupIds 获取用户加入的所有分组ID (仅Active状态)

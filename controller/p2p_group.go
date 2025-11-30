@@ -37,7 +37,7 @@ func CreateP2PGroup(c *gin.Context) {
 }
 
 // GetUserOwnedGroups returns all groups created by a specific user
-// GET /api/groups/self?user_id=123
+// GET /api/groups/self?user_id=123&page=1&page_size=20
 func GetUserOwnedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 	if userIdStr == "" {
@@ -51,17 +51,27 @@ func GetUserOwnedGroups(c *gin.Context) {
 		return
 	}
 
-	groups, err := model.GetGroupsByOwner(userId)
+	// Get pagination parameters
+	pageInfo := common.GetPageQuery(c)
+
+	// Get paginated groups
+	groups, total, err := model.GetGroupsByOwnerPaginated(
+		userId,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	common.ApiSuccess(c, groups)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(groups)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // GetUserJoinedGroups returns all P2P groups a user has joined (Status=Active)
-// GET /api/groups/joined?user_id=123
+// GET /api/groups/joined?user_id=123&page=1&page_size=20
 func GetUserJoinedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 	if userIdStr == "" {
@@ -75,13 +85,23 @@ func GetUserJoinedGroups(c *gin.Context) {
 		return
 	}
 
-	groups, err := model.GetUserGroups(userId)
+	// Get pagination parameters
+	pageInfo := common.GetPageQuery(c)
+
+	// Get paginated joined groups
+	groups, total, err := model.GetUserGroupsPaginated(
+		userId,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	common.ApiSuccess(c, groups)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(groups)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // UpdateP2PGroup updates group information

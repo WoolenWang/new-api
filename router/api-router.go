@@ -168,6 +168,8 @@ func SetApiRouter(router *gin.Engine) {
 		channelSelfRoute := apiRouter.Group("/channel/self")
 		channelSelfRoute.Use(middleware.UserAuth())
 		{
+			channelSelfRoute.GET("/models", controller.ChannelListModels)
+			channelSelfRoute.GET("/models_enabled", controller.EnabledListModels)
 			channelSelfRoute.GET("/", controller.GetUserChannels)
 			channelSelfRoute.GET("/:id", controller.GetUserChannel)
 			channelSelfRoute.POST("/", controller.CreateUserChannel)
