@@ -20,7 +20,18 @@ func CreateP2PGroup(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-
+	if group.OwnerId == 0 {
+		group.OwnerId = c.GetInt("id")
+	} else if group.OwnerId != c.GetInt("id") {
+		myRole := c.GetInt("role")
+		if myRole != common.RoleRootUser {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "只有超级管理员可以为其他用户添加分组",
+			})
+			return
+		}
+	}
 	// Validate required fields
 	if group.Name == "" || group.OwnerId == 0 {
 		common.ApiError(c, errors.New("name and owner_id are required"))
@@ -36,8 +47,8 @@ func CreateP2PGroup(c *gin.Context) {
 	common.ApiSuccess(c, group)
 }
 
-// GetUserOwnedGroups returns all groups created by a specific user
-// GET /api/groups/self?user_id=123&page=1&page_size=20
+// GetUserOwnedGroups returns all groups created by a specific user (Admin API)
+// GET /api/groups/owned?user_id=123&page=1&page_size=20
 func GetUserOwnedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
 	if userIdStr == "" {
@@ -70,7 +81,31 @@ func GetUserOwnedGroups(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
-// GetUserJoinedGroups returns all P2P groups a user has joined (Status=Active)
+// GetSelfOwnedGroups returns all groups created by current authenticated user (User Self-Service API)
+// GET /api/groups/self/owned?page=1&page_size=20
+func GetSelfOwnedGroups(c *gin.Context) {
+	userId := c.GetInt("id")
+
+	// Get pagination parameters
+	pageInfo := common.GetPageQuery(c)
+
+	// Get paginated groups
+	groups, total, err := model.GetGroupsByOwnerPaginated(
+		userId,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(groups)
+	common.ApiSuccess(c, pageInfo)
+}
+
+// GetUserJoinedGroups returns all P2P groups a user has joined (Status=Active) (Admin API)
 // GET /api/groups/joined?user_id=123&page=1&page_size=20
 func GetUserJoinedGroups(c *gin.Context) {
 	userIdStr := c.Query("user_id")
@@ -84,6 +119,30 @@ func GetUserJoinedGroups(c *gin.Context) {
 		common.ApiError(c, errors.New("invalid user_id"))
 		return
 	}
+
+	// Get pagination parameters
+	pageInfo := common.GetPageQuery(c)
+
+	// Get paginated joined groups
+	groups, total, err := model.GetUserGroupsPaginated(
+		userId,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(groups)
+	common.ApiSuccess(c, pageInfo)
+}
+
+// GetSelfJoinedGroups returns all P2P groups current user has joined (Status=Active) (User Self-Service API)
+// GET /api/groups/self/joined?page=1&page_size=20
+func GetSelfJoinedGroups(c *gin.Context) {
+	userId := c.GetInt("id")
 
 	// Get pagination parameters
 	pageInfo := common.GetPageQuery(c)

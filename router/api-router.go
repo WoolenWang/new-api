@@ -276,18 +276,20 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
 		}
 
-		// P2P Group Management Routes (used by WQuant backend with Admin Token)
+		// P2P Group Management Routes
 		// Note: This is for P2P groups, NOT system groups (system groups are under /api/group)
 		p2pGroupsRoute := apiRouter.Group("/groups")
-		p2pGroupsRoute.Use(middleware.AdminAuth())
+		p2pGroupsRoute.Use(middleware.UserAuth())
 		{
 			// P2P Group CRUD
-			p2pGroupsRoute.POST("", controller.CreateP2PGroup)            // Create group
-			p2pGroupsRoute.GET("/self", controller.GetUserOwnedGroups)    // Get user's owned groups
-			p2pGroupsRoute.GET("/joined", controller.GetUserJoinedGroups) // Get user's joined groups
-			p2pGroupsRoute.GET("/public", controller.GetPublicGroups)     // Get public shared groups
-			p2pGroupsRoute.PUT("", controller.UpdateP2PGroup)             // Update group
-			p2pGroupsRoute.DELETE("", controller.DeleteP2PGroup)          // Delete group
+			p2pGroupsRoute.POST("", controller.CreateP2PGroup)        // Create group
+			p2pGroupsRoute.GET("/public", controller.GetPublicGroups) // Get public shared groups
+			p2pGroupsRoute.PUT("", controller.UpdateP2PGroup)         // Update group
+			p2pGroupsRoute.DELETE("", controller.DeleteP2PGroup)      // Delete group
+
+			// User Self-Service Routes (automatically use authenticated user ID)
+			p2pGroupsRoute.GET("/self/owned", controller.GetSelfOwnedGroups)   // Get current user's owned groups
+			p2pGroupsRoute.GET("/self/joined", controller.GetSelfJoinedGroups) // Get current user's joined groups
 
 			// Member Management
 			p2pGroupsRoute.POST("/apply", controller.ApplyToJoinGroup)    // Apply to join group
@@ -295,6 +297,15 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsRoute.GET("/member", controller.GetMemberInfo)       // Get specific member info
 			p2pGroupsRoute.PUT("/members", controller.UpdateMemberStatus) // Approve/reject/ban member
 			p2pGroupsRoute.POST("/leave", controller.LeaveGroup)          // Leave group
+		}
+
+		// P2P Group Admin Routes (for querying any user's groups)
+		p2pGroupsAdminRoute := apiRouter.Group("/groups/admin")
+		p2pGroupsAdminRoute.Use(middleware.AdminAuth())
+		{
+			p2pGroupsAdminRoute.POST("", controller.CreateP2PGroup)            // Create group
+			p2pGroupsAdminRoute.GET("/owned", controller.GetUserOwnedGroups)   // Get specific user's owned groups (requires user_id param)
+			p2pGroupsAdminRoute.GET("/joined", controller.GetUserJoinedGroups) // Get specific user's joined groups (requires user_id param)
 		}
 	}
 }
