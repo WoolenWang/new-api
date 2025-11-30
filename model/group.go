@@ -61,6 +61,20 @@ type UserGroup struct {
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
 
+// GroupMemberWithUser 分组成员信息（包含用户详情）
+type GroupMemberWithUser struct {
+	Id          int    `json:"id"`
+	UserId      int    `json:"user_id"`
+	GroupId     int    `json:"group_id"`
+	Role        int    `json:"role"`
+	Status      int    `json:"status"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+}
+
 // ========== Group CRUD ==========
 
 // CreateGroup 创建新分组
@@ -275,6 +289,37 @@ func GetGroupMembers(groupId int) ([]*UserGroup, error) {
 	var members []*UserGroup
 	err := DB.Where("group_id = ?", groupId).Find(&members).Error
 	return members, err
+}
+
+// GetGroupMembersWithUserInfo 获取分组成员列表（包含用户信息、支持分页和状态过滤）
+func GetGroupMembersWithUserInfo(groupId int, status *int, startIdx int, pageSize int) ([]*GroupMemberWithUser, int64, error) {
+	var members []*GroupMemberWithUser
+	var total int64
+
+	// 构建查询
+	query := DB.Table("user_groups").
+		Select("user_groups.id, user_groups.user_id, user_groups.group_id, user_groups.role, user_groups.status, user_groups.created_at, user_groups.updated_at, users.username, users.display_name, users.email").
+		Joins("LEFT JOIN users ON user_groups.user_id = users.id").
+		Where("user_groups.group_id = ?", groupId)
+
+	// 如果指定了status，添加状态过滤
+	if status != nil {
+		query = query.Where("user_groups.status = ?", *status)
+	}
+
+	// 获取总数
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	err = query.Order("user_groups.created_at DESC").
+		Limit(pageSize).
+		Offset(startIdx).
+		Scan(&members).Error
+
+	return members, total, err
 }
 
 // GetUserGroups 获取用户加入的所有分组 (仅Active状态)

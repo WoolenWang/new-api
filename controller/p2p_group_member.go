@@ -89,8 +89,8 @@ func ApplyToJoinGroup(c *gin.Context) {
 	})
 }
 
-// GetGroupMembers returns all members of a group with their status
-// GET /api/groups/members?group_id=101
+// GetGroupMembers returns all members of a group with their status and user information
+// GET /api/groups/members?group_id=101&status=0&page=1&page_size=20
 func GetGroupMembers(c *gin.Context) {
 	groupIdStr := c.Query("group_id")
 	if groupIdStr == "" {
@@ -104,13 +104,36 @@ func GetGroupMembers(c *gin.Context) {
 		return
 	}
 
-	members, err := model.GetGroupMembers(groupId)
+	// Optional status filter
+	var status *int
+	statusStr := c.Query("status")
+	if statusStr != "" {
+		statusVal, err := strconv.Atoi(statusStr)
+		if err != nil {
+			common.ApiError(c, errors.New("invalid status"))
+			return
+		}
+		status = &statusVal
+	}
+
+	// Get pagination parameters
+	pageInfo := common.GetPageQuery(c)
+
+	// Get members with user info
+	members, total, err := model.GetGroupMembersWithUserInfo(
+		groupId,
+		status,
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	common.ApiSuccess(c, members)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(members)
+	common.ApiSuccess(c, pageInfo)
 }
 
 // UpdateMemberStatus handles approval/rejection/ban operations
