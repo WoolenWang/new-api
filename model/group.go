@@ -50,6 +50,21 @@ type Group struct {
 	UpdatedAt   int64  `json:"updated_at" gorm:"bigint"`
 }
 
+// GroupWithMemberCount 分组信息（包含成员数量）
+type GroupWithMemberCount struct {
+	Id          int    `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	OwnerId     int    `json:"owner_id"`
+	Type        int    `json:"type"`
+	JoinMethod  int    `json:"join_method"`
+	JoinKey     string `json:"join_key"`
+	Description string `json:"description"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	MemberCount int64  `json:"member_count"` // 成员数量（仅包含Active状态的成员）
+}
+
 // UserGroup 用户-分组关联表 - 存储成员关系及状态
 type UserGroup struct {
 	Id        int   `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -172,6 +187,105 @@ func GetPublicSharedGroups(page, pageSize int, keyword string) ([]*Group, int64,
 	// 分页查询
 	offset := (page - 1) * pageSize
 	err = query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&groups).Error
+	return groups, total, err
+}
+
+// GetGroupsByOwnerWithMemberCount 获取指定用户创建的所有分组（带成员数量，分页版本）
+func GetGroupsByOwnerWithMemberCount(ownerId int, startIdx int, pageSize int) ([]*GroupWithMemberCount, int64, error) {
+	var groups []*GroupWithMemberCount
+	var total int64
+
+	// 构建查询 - 使用LEFT JOIN统计Active成员数量
+	query := DB.Table("groups").
+		Select("groups.*, COALESCE(COUNT(user_groups.id), 0) as member_count").
+		Joins("LEFT JOIN user_groups ON groups.id = user_groups.group_id AND user_groups.status = ?", MemberStatusActive).
+		Where("groups.owner_id = ?", ownerId).
+		Group("groups.id")
+
+	// 获取总数（需要单独查询，因为有GROUP BY）
+	var countQuery = DB.Model(&Group{}).Where("owner_id = ?", ownerId)
+	err := countQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	err = query.Order("groups.created_at DESC").
+		Limit(pageSize).
+		Offset(startIdx).
+		Scan(&groups).Error
+
+	return groups, total, err
+}
+
+// GetUserGroupsWithMemberCount 获取用户加入的所有分组（带成员数量，仅Active状态，分页版本）
+func GetUserGroupsWithMemberCount(userId int, startIdx int, pageSize int) ([]*GroupWithMemberCount, int64, error) {
+	var groups []*GroupWithMemberCount
+	var total int64
+
+	// 构建查询 - JOIN user_groups和groups，同时统计成员数量
+	query := DB.Table("groups").
+		Select("groups.*, COALESCE(COUNT(DISTINCT ug2.id), 0) as member_count").
+		Joins("INNER JOIN user_groups ug1 ON groups.id = ug1.group_id AND ug1.user_id = ? AND ug1.status = ?", userId, MemberStatusActive).
+		Joins("LEFT JOIN user_groups ug2 ON groups.id = ug2.group_id AND ug2.status = ?", MemberStatusActive).
+		Group("groups.id")
+
+	// 获取总数
+	countQuery := DB.Table("groups").
+		Joins("INNER JOIN user_groups ON groups.id = user_groups.group_id").
+		Where("user_groups.user_id = ? AND user_groups.status = ?", userId, MemberStatusActive)
+	err := countQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	err = query.Order("groups.created_at DESC").
+		Limit(pageSize).
+		Offset(startIdx).
+		Scan(&groups).Error
+
+	return groups, total, err
+}
+
+// GetPublicSharedGroupsWithMemberCount 获取所有公开的共享分组（带成员数量，用于分组广场）
+func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string) ([]*GroupWithMemberCount, int64, error) {
+	var groups []*GroupWithMemberCount
+	var total int64
+
+	// 构建查询 - 使用LEFT JOIN统计Active成员数量
+	query := DB.Table("groups").
+		Select("groups.*, COALESCE(COUNT(user_groups.id), 0) as member_count").
+		Joins("LEFT JOIN user_groups ON groups.id = user_groups.group_id AND user_groups.status = ?", MemberStatusActive).
+		Where("groups.type = ?", GroupTypeShared).
+		Group("groups.id")
+
+	// 关键词搜索
+	if keyword != "" {
+		likePattern := "%" + keyword + "%"
+		query = query.Where("groups.name LIKE ? OR groups.display_name LIKE ? OR groups.description LIKE ?",
+			likePattern, likePattern, likePattern)
+	}
+
+	// 获取总数（需要单独查询，因为有GROUP BY）
+	countQuery := DB.Model(&Group{}).Where("type = ?", GroupTypeShared)
+	if keyword != "" {
+		likePattern := "%" + keyword + "%"
+		countQuery = countQuery.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?",
+			likePattern, likePattern, likePattern)
+	}
+	err := countQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	err = query.Order("groups.created_at DESC").
+		Limit(pageSize).
+		Offset(offset).
+		Scan(&groups).Error
+
 	return groups, total, err
 }
 

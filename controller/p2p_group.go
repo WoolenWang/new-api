@@ -112,8 +112,8 @@ func GetSelfOwnedGroups(c *gin.Context) {
 	// Get pagination parameters
 	pageInfo := common.GetPageQuery(c)
 
-	// Get paginated groups
-	groups, total, err := model.GetGroupsByOwnerPaginated(
+	// Get paginated groups with member count
+	groups, total, err := model.GetGroupsByOwnerWithMemberCount(
 		userId,
 		pageInfo.GetStartIdx(),
 		pageInfo.GetPageSize(),
@@ -170,8 +170,8 @@ func GetSelfJoinedGroups(c *gin.Context) {
 	// Get pagination parameters
 	pageInfo := common.GetPageQuery(c)
 
-	// Get paginated joined groups
-	groups, total, err := model.GetUserGroupsPaginated(
+	// Get paginated joined groups with member count
+	groups, total, err := model.GetUserGroupsWithMemberCount(
 		userId,
 		pageInfo.GetStartIdx(),
 		pageInfo.GetPageSize(),
@@ -278,8 +278,8 @@ func GetPublicGroups(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	keyword := c.Query("keyword")
 
-	groups, total, err := model.GetPublicSharedGroups(
-		pageInfo.GetStartIdx(),
+	groups, total, err := model.GetPublicSharedGroupsWithMemberCount(
+		pageInfo.Page,
 		pageInfo.GetPageSize(),
 		keyword,
 	)
