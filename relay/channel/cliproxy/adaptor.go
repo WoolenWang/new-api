@@ -7,6 +7,8 @@ import (
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/claude"
+	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
@@ -24,9 +26,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 // GetRequestURL returns the request URL for the channel
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	// For CLIProxyAPI, delegate to OpenAI adaptor since it uses OpenAI-compatible format
-	openaiAdaptor := &openai.Adaptor{}
-	return openaiAdaptor.GetRequestURL(info)
+	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
 // SetupRequestHeader sets up the request headers for CLIProxyAPI
@@ -76,7 +76,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 
 // ConvertOpenAIResponsesRequest converts OpenAI responses requests
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	return nil, errors.New("OpenAI responses not implemented for CLIProxyAPI")
+	return request, nil
 }
 
 // ConvertClaudeRequest converts Claude requests
@@ -96,10 +96,21 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 
 // DoResponse handles the response from CLIProxyAPI
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	// CLIProxyAPI returns standard OpenAI/Claude/Gemini format responses
-	// Delegate to OpenAI adaptor for response handling
-	openaiAdaptor := &openai.Adaptor{}
-	return openaiAdaptor.DoResponse(c, resp, info)
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		claudeAdaptor := &claude.Adaptor{}
+		claudeAdaptor.Init(info)
+		return claudeAdaptor.DoResponse(c, resp, info)
+	case types.RelayFormatGemini:
+		geminiAdaptor := &gemini.Adaptor{}
+		geminiAdaptor.Init(info)
+		return geminiAdaptor.DoResponse(c, resp, info)
+	default:
+		// Default to OpenAI
+		openaiAdaptor := &openai.Adaptor{}
+		openaiAdaptor.Init(info)
+		return openaiAdaptor.DoResponse(c, resp, info)
+	}
 }
 
 // GetModelList returns the list of models supported by this channel
