@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -441,12 +442,17 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 	// Step 4: 构建 RoutingGroups (用于选路)
 	// RoutingGroups = {BillingGroup} ∪ {所有有效的 P2P 分组名称}
-	routingGroups := []string{billingGroup} // 首先加入 BillingGroup
+	var routingGroups []string
 
-	// TODO: 处理 auto 分组展开
-	// if billingGroup == "auto" {
-	//     routingGroups = expandAutoGroup()
-	// }
+	// 处理 auto 分组展开
+	if billingGroup == "auto" {
+		// 展开为配置的所有自动分组
+		autoGroups := setting.GetAutoGroups()
+		routingGroups = make([]string, len(autoGroups))
+		copy(routingGroups, autoGroups)
+	} else {
+		routingGroups = []string{billingGroup}
+	}
 
 	// 将 P2P 分组 ID 转换为字符串并添加到 routingGroups
 	// 注意: 这里使用 "p2p_{id}" 格式以区分系统分组和 P2P 分组
