@@ -167,7 +167,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		httpResp = resp.(*http.Response)
 		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 		if httpResp.StatusCode != http.StatusOK {
-			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			// 对 CLIProxy 通道打开 showBodyWhenFail，便于直接看到 CLIProxyAPI 返回体（例如 Missing API key）
+			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, info.ApiType == constant.APITypeCliProxy)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 			return newApiErr

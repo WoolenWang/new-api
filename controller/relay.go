@@ -306,6 +306,30 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, err.Error()))
+
+	// CLIProxyAPI 通道的专项诊断日志：帮助快速定位 NewAPI ↔ CLIProxyAPI 之间的鉴权/路由问题。
+	if channelError.ChannelType == constant.ChannelTypeCliProxy {
+		baseURL := common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl)
+		accountHint := common.GetContextKeyString(c, constant.ContextKeyChannelAccountHint)
+		apiKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+
+		logger.LogWarn(c, fmt.Sprintf(
+			"CLIProxyAPI upstream error: status=%d error_type=%s error_code=%s channel_id=%d base_url=%q account_hint=%q api_key_empty=%t path=%q",
+			err.StatusCode,
+			err.GetErrorType(),
+			err.GetErrorCode(),
+			channelError.ChannelId,
+			common.MaskSensitiveInfo(baseURL),
+			accountHint,
+			apiKey == "",
+			func() string {
+				if c.Request != nil && c.Request.URL != nil {
+					return c.Request.URL.Path
+				}
+				return ""
+			}(),
+		))
+	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(channelError.ChannelId, err) && channelError.AutoBan {

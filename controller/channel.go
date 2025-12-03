@@ -482,13 +482,19 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	}
 
 	// 如果是添加操作，检查 key 是否为空
-	// 说明：对 CLIProxy 类型渠道（channel.Type == ChannelTypeCliProxy），
-	// 实际上不会直接使用上游 API Key，而是通过 other/account_hint 在 CLIProxy 中查找凭证，
-	// 因此此处允许 Key 为空，避免误挡 OAuth/CLIProxy 渠道创建。
+	// 说明：
+	//   - 对普通 HTTP 渠道，Key 依然表示上游模型提供商的 API Key；
+	//   - 对 CLIProxy 类型渠道（channel.Type == ChannelTypeCliProxy），Key 表示 CLIProxyAPI 网关的 API Key，
+	//     必须与 CLIProxy config.yaml 中 api-keys 列表的某一项保持一致，用于通过 Authorization 头完成 CLIProxy 入口鉴权。
 	if isAdd {
-		if channel.Type != constant.ChannelTypeCliProxy && channel.Key == "" {
-			return fmt.Errorf("channel cannot be empty")
+		trimmedKey := strings.TrimSpace(channel.Key)
+		if trimmedKey == "" {
+			if channel.Type == constant.ChannelTypeCliProxy {
+				return fmt.Errorf("CLIProxyAPI 渠道必须配置 CLIProxy API Key，请在 CLIProxy config.yaml 的 api-keys 中添加密钥，并在此填写相同值")
+			}
+			return fmt.Errorf("channel key cannot be empty")
 		}
+		channel.Key = trimmedKey
 
 		// 检查模型名称长度是否超过 255
 		for _, m := range channel.GetModels() {

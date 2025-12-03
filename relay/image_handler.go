@@ -97,7 +97,8 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 				// replicate channel returns 201 Created when using Prefer: wait, treat it as success.
 				httpResp.StatusCode = http.StatusOK
 			} else {
-				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+				// CLIProxy 通道场景下，打开 showBodyWhenFail 便于看到 CLIProxyAPI 的具体错误体
+				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, info.ApiType == constant.APITypeCliProxy)
 				// reset status code 重置状态码
 				service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 				return newAPIError

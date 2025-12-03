@@ -94,10 +94,12 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
 		if showBodyWhenFail {
-			newApiErr.Err = fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody))
+			// 在需要展示上游返回体时，先做敏感信息脱敏，避免日志或错误信息中泄漏 URL / IP 等。
+			maskedBody := common.MaskSensitiveInfo(string(responseBody))
+			newApiErr.Err = fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, maskedBody)
 		} else {
 			if common.DebugEnabled && common.DataPlaneLogEnabled {
-				logger.LogInfo(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody)))
+				logger.LogInfo(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, common.MaskSensitiveInfo(string(responseBody))))
 			}
 			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)
 		}

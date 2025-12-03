@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
@@ -316,6 +317,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
+
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
@@ -330,9 +332,44 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
-	// Set AccountHint for CLIProxyAPI channels
-	if channel.AccountHint != nil && *channel.AccountHint != "" {
-		common.SetContextKey(c, constant.ContextKeyChannelAccountHint, *channel.AccountHint)
+
+	// Derive AccountHint for CLIProxyAPI channels.
+	// 优先使用独立的 account_hint 字段；若为空且为 CLIProxy 渠道，则尝试从 channel.Other JSON 中回退解析。
+	if channel.Type == constant.ChannelTypeCliProxy {
+		accountHint := ""
+		if channel.AccountHint != nil && *channel.AccountHint != "" {
+			accountHint = *channel.AccountHint
+		} else if channel.Other != "" {
+			var other map[string]interface{}
+			if err := common.Unmarshal([]byte(channel.Other), &other); err != nil {
+				// 仅日志提醒配置/数据不一致，不阻塞请求
+				logger.LogWarn(c, fmt.Sprintf(
+					"CLIProxyAPI channel other field is not valid JSON when parsing account_hint: channel_id=%d name=%q error=%v",
+					channel.Id, channel.Name, err,
+				))
+			} else {
+				if v, ok := other["account_hint"]; ok {
+					if s, ok2 := v.(string); ok2 && strings.TrimSpace(s) != "" {
+						accountHint = strings.TrimSpace(s)
+					}
+				}
+			}
+		}
+		if accountHint != "" {
+			common.SetContextKey(c, constant.ContextKeyChannelAccountHint, accountHint)
+		}
+
+		// 如果 CLIProxy 渠道的 key 为空，提前打日志，便于快速定位 401 问题（CLIProxy API Key 未配置）。
+		if channel.Key == "" {
+			logger.LogWarn(c, fmt.Sprintf(
+				"CLIProxyAPI channel selected with empty API key: channel_id=%d name=%q base_url=%q account_hint=%q model=%q – this will cause 401 Unauthorized from CLIProxyAPI, please set channel.key to a value in CLIProxy config.yaml api-keys",
+				channel.Id,
+				channel.Name,
+				common.MaskSensitiveInfo(channel.GetBaseURL()),
+				accountHint,
+				modelName,
+			))
+		}
 	}
 
 	key, index, newAPIError := channel.GetNextEnabledKey()
