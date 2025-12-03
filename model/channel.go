@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
-	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -539,26 +536,6 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	// 如果是 CLIProxy 类型渠道，且有 AccountHint，需要同步删除 CLIProxyAPI 凭证
-	if channel.Type == constant.ChannelTypeCliProxy && channel.AccountHint != nil && *channel.AccountHint != "" {
-		if channel.BaseURL != nil && *channel.BaseURL != "" {
-			// 异步删除 CLIProxyAPI 凭证，不阻塞渠道删除
-			baseURL := *channel.BaseURL
-			apiKey := channel.Key
-			accountHint := *channel.AccountHint
-
-			go func() {
-				err := deleteCLIProxyCredentialInternal(baseURL, apiKey, accountHint)
-				if err != nil {
-					common.SysLog(fmt.Sprintf("Failed to delete CLIProxy credential: channel_id=%d, account_hint=%s, error=%v",
-						channel.Id, accountHint, err))
-				} else {
-					common.SysLog(fmt.Sprintf("Successfully deleted CLIProxy credential: channel_id=%d, account_hint=%s",
-						channel.Id, accountHint))
-				}
-			}()
-		}
-	}
 
 	var err error
 	err = DB.Delete(channel).Error
@@ -1085,39 +1062,4 @@ func (channel *Channel) GetAllowedGroupIDs() []int {
 	}
 
 	return groupIDs
-}
-
-// deleteCLIProxyCredentialInternal 删除 CLIProxyAPI 凭证的内部函数
-// 该函数会调用 CLIProxyAPI 的管理接口删除指定的凭证文件
-func deleteCLIProxyCredentialInternal(baseURL, apiKey, accountHint string) error {
-	if baseURL == "" || apiKey == "" || accountHint == "" {
-		return fmt.Errorf("baseURL, apiKey and accountHint are required")
-	}
-
-	url := fmt.Sprintf("%s/v0/management/auth-files?name=%s", baseURL, accountHint)
-
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 200 OK, 204 No Content, 404 Not Found 都认为是成功
-	// 404 表示文件已经不存在，这也是可接受的结果
-	if resp.StatusCode != http.StatusOK &&
-		resp.StatusCode != http.StatusNoContent &&
-		resp.StatusCode != http.StatusNotFound {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("CLIProxy returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
 }

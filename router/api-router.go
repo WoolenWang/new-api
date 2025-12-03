@@ -176,19 +176,6 @@ func SetApiRouter(router *gin.Engine) {
 			channelSelfRoute.PUT("/:id", controller.UpdateUserChannel)
 			channelSelfRoute.DELETE("/:id", controller.DeleteUserChannel)
 		}
-
-		// CLIProxy OAuth Management Routes
-		// 用于 WQuant 后端管理 CLIProxyAPI 的 OAuth 认证流程
-		cliproxyOAuthRoute := apiRouter.Group("/channel/oauth")
-		cliproxyOAuthRoute.Use(middleware.UserAuth())
-		{
-			cliproxyOAuthRoute.POST("/initiate", controller.InitiateCLIProxyOAuth)                  // 启动 OAuth 流程
-			cliproxyOAuthRoute.GET("/status", controller.GetCLIProxyOAuthStatus)                    // 查询 OAuth 状态
-			cliproxyOAuthRoute.POST("/complete", controller.CompleteCLIProxyOAuth)                  // 完成 OAuth 流程
-			cliproxyOAuthRoute.POST("/device-flow/initiate", controller.InitiateCLIProxyDeviceFlow) // 启动设备授权流程
-			cliproxyOAuthRoute.POST("/import-credential", controller.ImportCLIProxyCredential)      // 导入凭证 (Cookie/Service Account)
-			cliproxyOAuthRoute.POST("/test", controller.TestCLIProxyChannel)                        // 测试连接
-		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{
