@@ -70,6 +70,12 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
+	// 复制原始请求头
+	for key, values := range c.Request.Header {
+		for _, value := range values {
+			req.Header.Set(key, value)
+		}
+	}
 	headers := req.Header
 	headerOverride, err := processHeaderOverride(info)
 	if err != nil {
