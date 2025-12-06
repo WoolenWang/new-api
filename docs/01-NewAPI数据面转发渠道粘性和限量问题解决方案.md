@@ -51,11 +51,24 @@
 核心思想是引入一个外部的、共享的状态存储（首选Redis）来记录一个“会话（Session）”与其首次成功路由的“渠道（Channel）”之间的绑定关系。当后续属于同一会话的请求进入时，系统优先使用已绑定的渠道，从而绕过标准的随机负载均衡逻辑，实现会话粘性。
 
 #### **4.1.2 会话标识提取 (Session ID Extraction)**
-为了识别属于同一会话的请求，我们需要一个统一的会话标识符。我们将实现一个解析器，按以下优先级从请求的各个部分提取 `session_id`：
-1.  **HTTP 请求头**: `X-NewAPI-Session-ID`
-2.  **URL 查询参数**: `session_id`
-3.  **请求体 (JSON Body)**: 依次查找 `session_id`, `conversation_id`, `chat_id` 等常见字段。
-4.  **OpenAI/Claude元数据**: 兼容某些客户端（如 Claude Code/Codex）可能将会话信息放在 `metadata` 对象中的情况，查找 `metadata.session_id` 或 `metadata.conversation_id`。
+为了识别属于同一会话的请求，我们需要一个统一的会话标识符。我们将实现一个解析器，按以下优先级从请求的各个部分提取 `session_id`。解析时应忽略头部字段的大小写（case-insensitive）。
+
+1.  **HTTP 请求头 (Header)**:
+    - `X-NewAPI-Session-ID`
+    - `Session-ID`
+    - `Conversation-ID`
+    - `X-Gemini-Api-Privileged-User-Id`
+    - *示例 1: `codex_cli_rs` 客户端会发送 `Conversation_id: 019af39a-...` 和 `Session_id: 019af39a-...`，这些都将被正确捕获。*
+    - *示例 2: Gemini CLI 可能会发送 `X-Gemini-Api-Privileged-User-Id: 703ed9b0-...`，我们同样可以将其作为会话标识。*
+2.  **URL 查询参数 (Query Parameter)**:
+    - `session_id`
+3.  **请求体 (JSON Body)**:
+    - `session_id`
+    - `conversation_id`
+    - `chat_id`
+4.  **元数据对象 (Metadata Object)**:
+    - `metadata.session_id`
+    - `metadata.conversation_id`
 
 如果所有位置都未找到 `session_id`，则该请求被视为无状态请求，沿用现有的负载均衡逻辑，不实现粘性。
 
@@ -324,10 +337,10 @@ graph TD
 
 ```mermaid
 stateDiagram-v2
-    Enabled["启用 (1)"]
-    ManuallyDisabled["手动禁用 (2)"]
-    AutoDisabled["自动禁用 (3)"]
-    QuotaExhausted["额度耗尽 (4)"]
+    Enabled["启用(1)"]
+    ManuallyDisabled["手动禁用(2)"]
+    AutoDisabled["自动禁用(3)"]
+    QuotaExhausted["额度耗尽(4)"]
 
     [*] --> Enabled: "创建/启用"
     
