@@ -324,28 +324,26 @@ graph TD
 
 ```mermaid
 stateDiagram-v2
-    direction LR
+    Enabled["启用 (1)"]
+    ManuallyDisabled["手动禁用 (2)"]
+    AutoDisabled["自动禁用 (3)"]
+    QuotaExhausted["额度耗尽 (4)"]
 
-    state "启用 (1)" as Enabled
-    state "手动禁用 (2)" as ManuallyDisabled
-    state "自动禁用 (3)" as AutoDisabled
-    state "额度耗尽 (4)" as QuotaExhausted
-
-    [*] --> Enabled: 创建/启用
+    [*] --> Enabled: "创建/启用"
     
-    Enabled --> ManuallyDisabled: 管理员禁用
-    ManuallyDisabled --> Enabled: 管理员启用
+    Enabled --> ManuallyDisabled: "管理员禁用"
+    ManuallyDisabled --> Enabled: "管理员启用"
 
-    Enabled --> AutoDisabled: 请求失败 (如401, 5xx)
-    AutoDisabled --> Enabled: 后台健康检查成功
+    Enabled --> AutoDisabled: "请求失败 (如401, 5xx)"
+    AutoDisabled --> Enabled: "后台健康检查成功"
 
-    Enabled --> QuotaExhausted: 额度探针检测到额度<=0
-    QuotaExhausted --> Enabled: 额度探针检测到额度恢复
+    Enabled --> QuotaExhausted: "额度探针检测到额度<=0"
+    QuotaExhausted --> Enabled: "额度探针检测到额度恢复"
     
-    QuotaExhausted --> ManuallyDisabled: 管理员禁用
-    ManuallyDisabled --> QuotaExhausted: (特殊)若额度仍耗尽
+    QuotaExhausted --> ManuallyDisabled: "管理员禁用"
+    ManuallyDisabled --> QuotaExhausted: "(特殊)若额度仍耗尽"
 
-    AutoDisabled --> QuotaExhausted: (特殊)若健康检查失败原因是额度
+    AutoDisabled --> QuotaExhausted: "(特殊)若健康检查失败原因是额度"
 ```
 - **通用性**: 此状态机适用于所有渠道，`手动禁用 (2)` 拥有最高优先级。在渠道选择时，状态为 `3` 和 `4` 的渠道都将被统一过滤。
 
