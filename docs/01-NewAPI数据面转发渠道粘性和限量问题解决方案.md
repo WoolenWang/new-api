@@ -5,46 +5,312 @@
 - 目标：在保持现有负载均衡与重试机制的前提下，为单会话提供渠道粘性、补齐会话监控与用户并发限制，并扩展渠道的小时/天/周/月额度控制能力。
 
 ## 2. 当前数据面流程梳理
-- 路由层：`router/relay-router.go:13-182` 统一挂载 `/v1` 等路径，串联 `TokenAuth -> ModelRequestRateLimit -> Distribute -> controller.Relay`。
-- 渠道选路：`middleware/distributor.go:30-142` 解析请求模型，调用 `service.CacheGetRandomSatisfiedChannelMultiGroup` 按分组+模型随机/权重选路；未记录“会话->渠道”绑定。
-- 转发与重试：`controller/relay.go:64-222` 首次使用上一步选中的渠道，失败后按优先级/权重重选；不同请求间无粘性。
-- 渠道风控：`model/channel_risk_control.go:12-205` 仅对 P2P 渠道检查总额度、并发、每小时/每日请求数，并在 `Distribute` 里做计数；不覆盖平台渠道，且无周/月额度，也未按额度单位分时限额。
-- 监控：`middleware/StatsMiddleware` 仅记录活跃连接，`GetChannelConcurrencySnapshot` 只返回渠道并发，不含“用户会话数”维度。
+当前数据面的核心请求转发逻辑始于 Gin 路由，经由一系列中间件，最终由 `relay` 控制器完成。
+- **统一入口与鉴权**: 所有对 `/v1/*` 的请求均由 `router/relay-router.go` 接收。`middleware.TokenAuth()` 中间件负责验证令牌有效性、用户状态及余额，并将用户信息（如用户分组 `user_group`）注入请求上下文。
+- **渠道选路 (`Distribute` 中间件)**:
+  - **核心位置**: `middleware/distributor.go` 是实现负载均衡与渠道选择的核心。
+  - **模型解析**: 从请求体中解析出 `model` 名称。
+  - **分组计算**: 通过 `ComputeRoutingGroups` 函数计算出请求的有效路由分组。此逻辑合并了用户的系统分组（`BillingGroup`）和其加入的所有 P2P 分组，是实现多分组选路的基础。
+  - **渠道获取**: 调用 `service.CacheGetRandomSatisfiedChannelMultiGroup`，该函数结合 P2P 优先级（私有 > 共享 > 公共）与渠道权重，从缓存或数据库中为当前模型和路由分组集合选择一个最合适的渠道。
+  - **上下文设置**: 将选中的渠道信息（ID、类型、密钥、模型映射等）写入请求上下文，供后续步骤使用。
+- **请求转发与重试 (`Relay` 控制器)**:
+  - **核心位置**: `controller/relay.go` 的 `Relay` 函数。
+  - **首次尝试**: 使用 `Distribute` 中间件选定的渠道进行首次请求转发。
+  - **失败重试**: 若首次请求失败（如网络错误、上游服务5xx），`Relay` 函数会捕获错误，并根据渠道的 `Priority`（优先级）和 `Weight`（权重）进行**重新选路**。值得注意的是，此重试逻辑与 `Distribute` 中间件的首次选路逻辑是独立的，且同样缺乏会话维度的上下文。
+- **风险控制 (`Risk Control`)**:
+  - **P2P渠道限制**: `model/channel_risk_control.go` 中定义了针对 P2P 渠道的风控检查，包括总额度、并发数以及基于“请求数”的小时/天限流。
+  - **执行时机**: 这些检查在 `service.CacheGetRandomSatisfiedChannelMultiGroup` 内部被调用，不满足风控条件的渠道会被提前过滤掉。
+  - **局限性**: 当前风控不覆盖平台渠道，缺少按“额度”而非“请求数”的限流，且无周/月维度。
+- **监控 (`Monitoring`)**:
+  - `middleware/StatsMiddleware` 仅记录了全局的活跃连接数。
+  - `GetChannelConcurrencySnapshot` 提供了渠道级的并发快照。
+  - 系统当前缺少从“用户”或“会话”维度出发的监控视图。
 
 ## 3. 问题与根因
-1) 会话渠道粘性缺失：每个请求独立选路（`Distribute` + `Relay` 重试），没有基于“session/conversation”维度的绑定，导致同一对话落在不同渠道/不同上游账号。
-2) 无法监控用户会话数：当前只统计连接/渠道并发，没有“用户->活跃会话”或“会话->渠道”视图，无法运维侧查看。
-3) 用户并发会话无法限制：仅有时间窗口限流（ModelRequestRateLimit）与渠道并发控制，没有按用户/令牌的“同时活跃会话数”限制。
-4) 渠道分时额度缺口：风控仅支持总额度 + 每小时/每日“请求数”限制，而且只对 P2P 渠道生效；缺少按额度单位的小时/天/周/月窗口控制。
+1.  **会话渠道粘性缺失**:
+    - **根因**: `Distribute` 中间件的渠道选择算法是无状态的。对于同一个会话中的多个连续请求，每个请求都会独立触发一次随机选路，无法保证它们落在同一个渠道实例上。
+    - **影响**: 对于需要上下文缓存的模型（如 Claude、Codex），这会导致上游缓存频繁失效，增加推理成本和延迟。对于多 Key 渠道，请求甚至可能在同一渠道的不同 Key 之间跳跃，破坏了上游服务的会话一致性。
+2.  **无法监控用户会话数**:
+    - **根因**: 系统日志和统计指标主要围绕“渠道”和“请求”这两个维度，缺少对“会话”（`conversation` 或 `session`）这一业务概念的抽象和追踪。
+    - **影响**: 运维人员无法得知当前有多少用户的会话正在进行中，也无法按用户或渠道维度分析会话活跃度，缺少关键的运营和监控数据。
+3.  **用户并发会话无法限制**:
+    - **根因**: 现有的 `ModelRequestRateLimit` 是基于用户ID的时间窗口“请求数”限流，而渠道并发控制是针对渠道而非用户。系统没有机制来限制一个用户能同时发起的“会话”数量。
+    - **影响**: 恶意或无意的用户可能会通过开启大量并行会话来攻击或滥用服务，耗尽平台资源。
+4.  **渠道分时额度缺口**:
+    - **根因**: `channel_risk_control` 中的限流机制仅支持按“请求次数”进行小时/日限流，并且只对 P2P 渠道生效。
+    - **影响**: 无法实现更精细的、基于“消耗额度”的预算控制（例如，限制渠道每小时最多消耗 $10）。此外，缺少周/月维度的限额，使得长期预算管理难以实现。
+5.  **渠道剩余额度感知缺失**:
+    - **根因**: 系统对渠道的管理是被动的。它只知道一个渠道是否被手动或自动禁用，但无法主动感知渠道在上游服务商处的实际剩余额度。
+    - **影响**: 当一个渠道的额度在上游耗尽时，系统只能通过不断重试并收到“额度不足”的错误来被动发现。这期间会浪费大量请求和时间。理想情况下，系统应能主动探测或通过回调感知额度变化，并在额度耗尽时自动暂停该渠道，额度恢复后自动启用。
 
 ## 4. 方案设计
 
-### 4.1 会话渠道粘性（Session Stickiness）
-- **Session 标识提取**：新增统一解析器，按优先级提取 `session_id`：  
-  `X-NewAPI-Session` 头 -> 查询参数 `session_id` -> 请求体字段 `session_id`/`conversation_id`/`chat_id` -> `metadata.session_id|conversation_id`（兼容 Claude Code/Codex 常见字段）。无显式值则沿用现状（不做粘性）。
-- **绑定存储**：在 Redis（有 Redis 优先）持久化 `session:{user_id}:{model}:{session_id}` -> `{channel_id, multi_key_index, group, ttl}`，TTL 滑动刷新（默认 30~60 分钟，可配置）。
-- **读路径**：`Distribute` 选路前先查绑定；命中后验证渠道是否启用、模型能力是否仍存在、风控校验是否通过。通过则复用绑定的渠道/Key 索引；失败则删除绑定并走常规选路。
-- **写路径**：当首次选路成功后写入绑定；`Relay` 中若因渠道禁用/风控/自动封禁触发重试，需同步更新/删除绑定，避免粘滞到失效渠道。
-- **多节点一致性**：Redis 作为共享状态；无 Redis 时降级为本地 LRU + TTL（只在单节点或测试环境可接受），并在日志中提示。
-- **多 Key 渠道**：绑定中记录 `multi_key_index`，`SetupContextForSelectedChannel` 在存在绑定时强制回用指定 key，避免同一渠道内部轮询打散上游会话。
+### 4.1 会话渠道粘性 (Session Stickiness)
+
+#### **4.1.1 实现原理**
+核心思想是引入一个外部的、共享的状态存储（首选Redis）来记录一个“会话（Session）”与其首次成功路由的“渠道（Channel）”之间的绑定关系。当后续属于同一会话的请求进入时，系统优先使用已绑定的渠道，从而绕过标准的随机负载均衡逻辑，实现会话粘性。
+
+#### **4.1.2 会话标识提取 (Session ID Extraction)**
+为了识别属于同一会话的请求，我们需要一个统一的会话标识符。我们将实现一个解析器，按以下优先级从请求的各个部分提取 `session_id`：
+1.  **HTTP 请求头**: `X-NewAPI-Session-ID`
+2.  **URL 查询参数**: `session_id`
+3.  **请求体 (JSON Body)**: 依次查找 `session_id`, `conversation_id`, `chat_id` 等常见字段。
+4.  **OpenAI/Claude元数据**: 兼容某些客户端（如 Claude Code/Codex）可能将会话信息放在 `metadata` 对象中的情况，查找 `metadata.session_id` 或 `metadata.conversation_id`。
+
+如果所有位置都未找到 `session_id`，则该请求被视为无状态请求，沿用现有的负载均衡逻辑，不实现粘性。
+
+#### **4.1.3 Redis 绑定数据结构**
+我们将使用 Redis 的 `HASH` 结构来存储会话与渠道的绑定信息。
+
+- **键 (Key)**: `session:{user_id}:{model_name}:{session_id}`
+  - `user_id`: 用户ID，确保会话隔离。
+  - `model_name`: 请求的模型名，因为不同模型的会话上下文不通用。
+  - `session_id`: 提取到的会话标识。
+
+- **值 (Value)**: 一个存储了以下字段的 `HASH`：
+  - `channel_id`: (整型) 绑定的渠道 ID。
+  - `key_id`: (整型, 可选) 对于多 Key 渠道，记录具体使用的 Key 的索引。这确保了请求不仅粘在同一个渠道上，还粘在同一个上游账户上。
+  - `group`: (字符串) 选路时所使用的分组名，用于调试和追溯。
+  - `created_at`: (时间戳) 绑定创建时间。
+
+- **过期时间 (TTL)**: 我们会为每个会话绑定键设置一个滑动过期时间（例如，30分钟）。每次请求成功命中并复用此绑定时，都会刷新其 TTL，确保活跃的会话能持续保持粘性。
+
+#### **4.1.4 带有粘性会话的请求处理流程**
+
+```mermaid
+graph TD
+    subgraph Legend ["图例"]
+        direction LR
+        start_node[("开始")]
+        end_node[("结束")]
+        process_node["处理步骤"]
+        decision_node{"决策判断"}
+        db_node[/"数据存储"/]
+    end
+
+    A(("开始")) --> B{提取 Session ID};
+    B -- "无 Session ID" --> C[执行标准负载均衡选路];
+    B -- "有 Session ID" --> D{Redis中查询绑定};
+
+    D -- "未命中" --> C;
+    C --> E{选路成功?};
+    E -- "是" --> F[转发请求至渠道];
+    E -- "否" --> G[返回无可用渠道错误];
+
+    D -- "命中" --> H[获取绑定的 Channel ID 和 Key ID];
+    H --> I{验证绑定渠道是否有效?<br>(启用、模型支持、风控通过)};
+    I -- "是" --> J[复用绑定渠道<br>并刷新Redis TTL];
+    J --> F;
+    I -- "否" --> K[从Redis删除绑定];
+    K --> C;
+
+    F --> L{请求成功?};
+    L -- "是" --> M{是新会话?};
+    M -- "是" --> N[在Redis中创建新绑定];
+    M -- "否" --> O[结束];
+
+    L -- "否" --> P{达到重试上限?};
+    P -- "是" --> Q[返回最终错误];
+    P -- "否" --> R[从Redis删除绑定<br>(若存在)];
+    R --> S[执行重试选路];
+    S --> F;
+    
+    N --> O;
+    G --> Z(("结束"));
+    Q --> Z;
+    O --> Z;
+
+    subgraph Redis 操作
+        D; K; N; R; J;
+    end
+```
+
+#### **4.1.5 边界条件与降级策略**
+- **多节点一致性**: 依赖 Redis 作为集中式存储，是保证多节点部署时会话粘性一致的关键。
+- **无 Redis 降级**: 如果部署环境中未启用 Redis，会话粘性功能将自动降级。系统会退化到使用本地内存缓存（如 LRU + TTL），但这仅在单节点部署或测试时有效。系统应在启动时检测并打印日志，明确提示此限制。
+- **渠道状态变更**: 当一个渠道被手动禁用、自动熔断或删除时，需要有一个机制来**主动失效**所有与该渠道相关的会话绑定，避免后续请求被粘滞到已不可用的渠道上。这可以通过发布/订阅消息或在状态变更时扫描并清理相关 Redis 键来实现。
+
 
 ### 4.2 会话监控与用户并发上限
-- **会话跟踪数据结构**：  
-  - Redis Set：`session:user:{user_id}` 存活跃 session_id；  
-  - Redis Hash：`session:chan:{channel_id}` 计活跃 session 数；  
-  - 绑定 TTL 失效时由后台任务或惰性清理同步扣减。
-- **监控接口**：新增管理端只读接口（如 `/api/admin/relay/sessions/summary`），返回总活跃会话数、按用户/分组/渠道的活跃会话数与最近 10 个 session 详情，用于看板/报警。
-- **用户并发会话限制**：新增配置（系统默认、分组覆盖、用户级 override 字段）如 `UserMaxConcurrentSessions`。在写入绑定前检查 `SCARD session:user:{uid}`，超限时返回 429/自定义错误码，已存在的同 session_id 视为复用不计入新增。
+
+#### **4.2.1 实现原理**
+在实现会话粘性的基础上，我们可以进一步利用 Redis 的数据结构来跟踪和聚合会话信息，从而实现对活跃会话的实时监控和对用户并发数的限制。
+
+#### **4.2.2 会话跟踪数据结构 (Redis)**
+为了有效地进行监控，我们将引入以下几个 Redis 数据结构：
+
+1.  **用户活跃会话集合 (Redis `SET`)**:
+    - **键**: `session:user:{user_id}`
+    - **值**: 一个集合（`SET`），其中每个成员都是该用户当前活跃的 `session_id`。
+    - **用途**: 快速查询和统计单个用户的所有活跃会话。使用 `SCARD` 命令可以高效地获取并发会话数。
+
+2.  **渠道活跃会话数计数器 (Redis `HASH`)**:
+    - **键**: `session:channel:stats`
+    - **字段 (Field)**: `channel_id`
+    - **值 (Value)**: (整型) 该渠道当前承载的活跃会话总数。
+    - **用途**: 快速获取每个渠道的会话负载情况。使用 `HINCRBY` 命令原子地增减计数。
+
+3.  **全局活跃会话总数计数器 (Redis `STRING`)**:
+    - **键**: `session:global:count`
+    - **值**: (整型) 整个平台当前的活跃会话总数。
+    - **用途**: 提供一个宏观的系统负载指标。
+
+#### **4.2.3 会话生命周期管理**
+- **创建**: 当一个新会话的绑定关系首次在 Redis 中创建时（见 4.1.4 流程），我们**原子地**执行以下操作：
+  1.  `SADD session:user:{user_id} {session_id}`
+  2.  `HINCRBY session:channel:stats {channel_id} 1`
+  3.  `INCR session:global:count`
+- **销毁/过期**: 当一个会话的绑定关系从 Redis 中因 TTL 过期或被主动删除时，我们需要一个机制来同步扣减上述计数。
+  - **方案A (惰性清理)**: 在每次创建新会话时，随机清理一小部分已过期的旧会话，并更新统计。
+  - **方案B (后台任务)**: 启动一个后台 Go routine，定期扫描并清理过期键，同步更新计数器。
+  - **方案C (Redis Keyspace Notifications)**: （推荐，但需 Redis 配置支持）监听键过期事件 (`__keyevent@*__:expired`)，在事件处理器中精确地扣减计数。这是最准确但对 Redis 配置有要求的方式。
+
+#### **4.2.4 用户并发会话限制**
+此功能允许为不同用户或用户组设置不同的并发会话上限。
+
+- **配置**:
+  1.  **系统默认值**: 在系统配置中增加 `SystemMaxConcurrentSessions`（例如，默认为 5）。
+  2.  **分组覆盖**: 在用户分组（`groups`）的设置中，增加 `max_concurrent_sessions` 字段，其优先级高于系统默认值。
+  3.  **用户级覆盖**: 在用户（`users`）表中增加 `max_concurrent_sessions` 字段，优先级最高。
+- **校验逻辑**:
+  - **时机**: 在`Distribute`中间件中，当一个请求被识别为新会话（即 Redis 中不存在其绑定）时，在创建绑定之前执行此检查。
+  - **步骤**:
+    1. 获取当前用户的并发会话数限制。
+    2. 使用 `SCARD session:user:{user_id}` 命令获取该用户当前的活跃会话数。
+    3. 如果 `当前会话数 >= 并发会话数限制`，则直接拒绝本次请求，返回 HTTP `429 Too Many Requests` 错误，并附带清晰的错误信息（如“并发会话数已达上限”）。
+  - **例外**: 如果请求携带的 `session_id` 已存在于用户的活跃会话集合中，则视为对现有会话的复用，**不计入**并发数检查，直接允许通过。
+
+#### **4.2.5 监控接口**
+为了让管理员能够实时了解系统会话状态，我们将新增一个只读的管理 API 端点。
+
+- **API 端点**: `GET /api/admin/sessions/summary`
+- **权限**: 仅限管理员访问。
+- **返回数据结构**:
+  ```json
+  {
+    "total_active_sessions": 1234, // 全局活跃会话总数
+    "sessions_by_channel": {
+      "1": 50,  // channel_id: count
+      "8": 120,
+      "...": "..."
+    },
+    "top_users_by_session": [
+      { "user_id": 101, "username": "user_a", "session_count": 15 },
+      { "user_id": 205, "username": "user_b", "session_count": 12 },
+      // ... more users
+    ],
+    "recent_sessions": [
+      {
+        "session_id": "conv_xyz...",
+        "user_id": 101,
+        "model": "claude-3-opus",
+        "channel_id": 8,
+        "created_at": "2025-12-06T10:00:00Z",
+        "expires_in_seconds": 1780
+      }
+      // ... more recent sessions
+    ]
+  }
+  ```
+- **实现**: 该接口将直接从 Redis 中读取 `session:global:count`、`session:channel:stats` 等键，并结合查询用户表来聚合数据，实现高效的实时监控。
+
 
 ### 4.3 渠道额度分时限额（小时/天/周/月）
-- **模型与字段**：在 `Channel` 增加 `HourlyQuotaLimit/DailyQuotaLimit/WeeklyQuotaLimit/MonthlyQuotaLimit`（额度单位，与 `used_quota` 同制），同时保留请求数限制；可配置是否对平台渠道生效。
-- **计数实现**：  
-  - Redis 计数（优先）：键形如 `chan:{id}:quota:{period}:{bucket}`，`INCRBY` 额度值并设定 TTL 等于窗口长度（1h/1d/1w/1m）。  
-  - 无 Redis 回落到内存结构，启动时从 DB 预热，定时/退出时刷回 DB，风险告警。
-- **校验时机**：  
-  - 预检查：在 `CheckChannelRiskControl` 中基于“预计预扣额度（QuotaToPreConsume 或估算 tokens）”做试探性校验，防止超卖；  
-  - 结算：在实际用量落地时（成功/失败扣返）调用 `AddChannelUsedQuota` 的同时更新各窗口计数，失败时回滚窗口增量。
-- **策略交互**：当窗口额度超限，返回专用错误码（新增 `ErrorCodeChannelWeeklyLimitExceeded` / `Monthly...`），并触发自动重试切换渠道；若是会话粘性命中该渠道，应清理绑定再重选。
+
+#### **4.3.1 实现原理**
+该功能旨在将渠道的风控能力从现有的“请求数”限制，扩展为基于“消耗额度”的、覆盖小时、天、周、月四个时间维度的精细化预算管理。我们将通过扩展数据模型和利用 Redis 的原子计数与自动过期特性来实现这一目标。
+
+#### **4.3.2 数据模型扩展**
+为了存储这些新的限额配置，我们需要在 `model/channel.go` 的 `Channel` 结构体中增加以下字段。这些字段的单位与 `UsedQuota` 保持一致，都是系统内部的额度单位。
+
+```go
+// in model/channel.go
+type Channel struct {
+    // ... existing fields
+
+    // 新增的分时额度限制字段
+    HourlyQuotaLimit   int64 `json:"hourly_quota_limit" gorm:"type:bigint;default:0"` // 每小时额度限制
+    DailyQuotaLimit    int64 `json:"daily_quota_limit" gorm:"type:bigint;default:0"`  // 每日额度限制
+    WeeklyQuotaLimit   int64 `json:"weekly_quota_limit" gorm:"type:bigint;default:0"` // 每周额度限制
+    MonthlyQuotaLimit  int64 `json:"monthly_quota_limit" gorm:"type:bigint;default:0"`// 每月额度限制
+
+    // ... existing fields
+}
+```
+- **配置范围**: 这些新字段将同时对平台渠道和P2P渠道生效，并可在渠道的编辑和权限设置页面进行配置。
+- **数据库迁移**: 需要提供相应的数据库迁移脚本（如 `migration_add_time_limit_to_channels.sql`）来应用这些字段变更。
+
+#### **4.3.3 Redis 额度计数器设计**
+我们将使用 Redis 的 `INCRBY` 命令来原子地累加每个时间窗口的消耗额度，并利用 `EXPIRE` 为每个键设置等于其窗口长度的 TTL，实现窗口的自动滚动。
+
+- **键 (Key) 格式**: `channel_quota:{channel_id}:{period}:{timestamp_bucket}`
+  - `channel_id`: 渠道的唯一ID。
+  - `period`: 时间窗口类型，可选值为 `hourly`, `daily`, `weekly`, `monthly`。
+  - `timestamp_bucket`: 当前时间窗口的起始时间戳。例如，对于小时窗口，它是当前小时的整点时间戳；对于天窗口，则是当天零点的时间戳。
+
+- **示例**: 对于渠道ID为 `101` 的每小时额度，在 `2025-12-06 10:00:00` 到 `10:59:59` 之间的所有消耗，都会累加到键 `channel_quota:101:hourly:1764957600` 上。该键的 TTL 会被设置为 3600 秒。
+
+- **降级策略**: 如果 Redis 不可用，此功能将自动降级。系统会在内存中维护一个临时的计数器，并在应用重启或定时任务触发时尝试将数据回写数据库。同时，会记录警告日志，提示数据非持久化带来的超卖风险。
+
+#### **4.3.4 额度检查与更新流程**
+
+```mermaid
+graph TD
+    subgraph Legend ["图例"]
+        direction LR
+        start_node[("开始")]
+        end_node[("结束")]
+        process_node["处理步骤"]
+        decision_node{"决策判断"}
+        db_node[/"数据存储"/]
+    end
+
+    A(("开始请求")) --> B[渠道选择逻辑<br>(Distribute 中间件)];
+    B --> C{"对选定渠道<br>执行预检查"};
+    C --> D[计算预估消耗额度<br>(e.g., PreConsumedQuota)];
+    D --> E{"循环检查各时间窗口<br>(小时/天/周/月)"};
+
+    subgraph TimeWindowChecks ["时间窗口检查循环"]
+        E --> F{"(Redis) GET 窗口已用额度"};
+        F --> G{"已用额度 + 预估消耗 > 窗口限额?"};
+        G -- "是" --> H[预检查失败<br>渠道不可用];
+        G -- "否" --> I[继续检查下一个窗口];
+    end
+    
+    I --> E;
+    E -- "所有窗口检查完毕" --> J[预检查通过];
+    H --> K[从候选列表移除<br>或触发重试];
+    J --> L[执行请求转发<br>(Relay 控制器)];
+    L --> M{"请求成功处理"};
+
+    subgraph QuotaUpdate ["额度更新"]
+        M -- "是" --> N[获取本次请求的<br>精确消耗额度];
+        N --> O["(Redis) INCRBY 更新所有<br>时间窗口的计数器"];
+        O --> P[更新渠道总消耗<br>和用户余额];
+    end
+
+    M -- "否 (请求失败)" --> Q[不更新额度计数器<br>(或执行回滚逻辑)];
+    
+    K --> Z(("结束"));
+    P --> Z;
+    Q --> Z;
+```
+
+**流程详解**:
+1.  **预检查 (Pre-check)**:
+    - **时机**: 在 `service.CacheGetRandomSatisfiedChannelMultiGroup` 的渠道过滤阶段，对每个候选渠道执行。
+    - **逻辑**: 使用一个相对保守的预估消耗额度（例如，基于模型的 `PreConsumedQuota` 或一个固定的较大值），与 Redis 中各个时间窗口的当前已用额度相加，判断是否会超出对应窗口的限额。
+    - **目的**: 快速剔除已明显达到或接近限额的渠道，防止超卖和不必要的请求尝试。
+
+2.  **精确结算与更新 (Settlement)**:
+    - **时机**: 在请求成功返回，并从上游响应中获取到精确的 `usage` 信息后。
+    - **逻辑**: 在 `postConsumeQuota` 函数中，除了更新用户余额和渠道总 `used_quota` 外，**同步**调用一个新的函数 `UpdateChannelTimeWindowQuota`。
+    - `UpdateChannelTimeWindowQuota` 函数会原子地将本次请求的**精确消耗额度**累加到 Redis 中对应的 `hourly`, `daily`, `weekly`, `monthly` 四个键上。
+
+3.  **与重试机制的交互**:
+    - 如果一个渠道因分时额度超限而在**预检查**阶段被过滤，它将不会被选中，负载均衡逻辑会自然地选择下一个可用渠道。
+    - 如果一个渠道在**请求过程中**（例如，在多个并发请求的竞态条件下）达到了限额，并导致上游返回错误，`Relay` 控制器的重试机制会被触发。如果是粘性会话命中了这个超限渠道，那么在重试之前，必须先**删除该会d话的绑定关系**，以确保下一次能够重新选择一个健康的渠道。
+
 
 ### 4.4 兼容与边界
 - 粘性仅在显式 session 标识存在时生效，避免误将不同对话绑定。
@@ -52,22 +318,150 @@
 - 集群场景下强依赖 Redis；无 Redis 时需提示监控风险，并可通过配置关闭粘性/分时限额。
 
 ## 5. 落地步骤（开发拆解）
-1. **Session 解析与绑定**：在 `middleware/distributor.go` 增加 session 提取与绑定查找；扩展 `SetupContextForSelectedChannel` 支持复用绑定的渠道与 key 索引；在 `controller/relay.go` 的错误处理/重试分支同步更新绑定。
-2. **会话监控与限流**：实现 Redis Set/Hash 维护；新增配置项及校验逻辑；在 admin 路由下暴露会话概要接口及日志落点。
-3. **渠道分时额度**：扩展 `model.Channel` 字段、迁移脚本；在 `model/channel_risk_control.go` 增加按额度的小时/天/周/月窗口校验与计数；在扣费/返还路径更新窗口值。
-4. **配置与文档**：补充部署说明（启用 Redis 才能跨节点保证粘性与准确限量）、前端/SDK 传递 `session_id` 的对接约定，以及错误码说明。
-5. **验证**：编写单元/集成用例覆盖：同 session 粘性、限额触发、限额回滚、会话上限触发、Redis 缺失降级。压测验证粘性命中率与限额准确性。
+
+为确保方案平稳落地，建议按以下步骤进行开发和迭代：
+
+1.  **数据模型与数据库迁移**:
+    - **任务**: 在 `model/channel.go` 的 `Channel` 结构体中添加 `HourlyQuotaLimit`, `DailyQuotaLimit`, `WeeklyQuotaLimit`, `MonthlyQuotaLimit` 四个 `int64` 类型的字段。
+    - **交付物**: 更新后的 Go 模型文件；一个新的数据库迁移SQL脚本（例如 `bin/migration_add_time_limits.sql`），用于在现有数据库中添加这些列。
+
+2.  **会话标识提取与粘性逻辑（核心）**:
+    - **位置**: `middleware/distributor.go`
+    - **任务**:
+        - 实现一个 `extractSessionID(c *gin.Context)` 辅助函数，按照 **4.1.2** 中定义的优先级顺序从请求中解析 `session_id`。
+        - 在 `Distribute()` 中间件的核心逻辑（调用 `service.CacheGetRandomSatisfiedChannelMultiGroup` 之前）增加会话粘性处理：
+            1.  调用 `extractSessionID` 获取会话ID。
+            2.  若 `session_id` 存在，构建 Redis Key (`session:{user_id}:{model}:{session_id}`) 并查询 HASH。
+            3.  若命中缓存，验证绑定的渠道是否依然可用（状态、模型、风控）。
+            4.  若可用，将 `channel_id` 和 `key_id` 注入 Gin 上下文，并**跳过**后续的 `CacheGetRandomSatisfiedChannelMultiGroup` 调用，直接进入下一步。
+            5.  若不可用，删除该 Redis 键。
+    - **交付物**: 修改后的 `distributor.go` 文件。
+
+3.  **绑定关系写入与更新**:
+    - **位置**: `controller/relay.go`
+    - **任务**:
+        - 在 `Relay` 函数成功转发请求后（`// DoResponse` 之后），检查当前请求是否为新会话（即，之前没有命中粘性绑定）。
+        - 如果是新会话，则异步地将 `channel_id`、`key_id` 等信息写入 Redis `HASH`，并设置 TTL。
+        - **重要**: 在 `Relay` 的**错误处理和重试逻辑**中，如果一个请求（尤其是粘性会话的请求）失败并准备重试，必须先删除其在 Redis 中的粘性绑定，确保重试时可以重新选路。
+    - **交付物**: 修改后的 `relay.go` 文件。
+
+4.  **分时额度检查与更新**:
+    - **位置**: `model/channel_risk_control.go`, `service/quota.go`
+    - **任务**:
+        - 在 `CheckChannelRiskControl` 中增加分时额度的**预检查**逻辑。对 `HourlyQuotaLimit` 到 `MonthlyQuotaLimit` 四个字段进行循环检查，只要有一个超限即返回错误。
+        - 在 `service/quota.go` 的 `postConsumeQuota`（或其调用的地方）函数中，增加一个步骤，调用新的 `UpdateChannelTimeWindowQuota` 函数。
+        - 实现 `UpdateChannelTimeWindowQuota` 函数，使用 `INCRBY` 原子地更新 Redis 中对应的四个时间窗口的计数器。
+    - **交付物**: 修改后的 `channel_risk_control.go` 和 `service/quota.go`。
+
+5.  **会话监控与并发限制**:
+    - **位置**: `middleware/distributor.go`, `controller/admin.go` (假设)
+    - **任务**:
+        - 在**步骤2**的会话粘性逻辑中，当判断为新会话时，在创建绑定前，使用 `SCARD session:user:{user_id}` 检查并执行并发限制。
+        - 在**步骤3**的绑定写入逻辑中，当成功创建新会话绑定时，同步执行 `SADD`, `HINCRBY`, `INCR` 来更新监控用的数据结构。
+        - 新增一个 `GET /api/admin/sessions/summary` 路由和对应的 `controller` 函数，用于从 Redis 读取并聚合会话监控数据。
+    - **交付物**: 修改后的 `distributor.go`；新增的 `controller` 文件及 `router` 配置。
+
+6.  **前端 UI 适配**:
+    - **位置**: `web/`
+    - **任务**:
+        - 在渠道编辑和权限设置的表单中，为 `Channel` 模型新增的四个分时额度字段提供输入框。
+        - （可选）在数据看板中新增一个模块，调用 `GET /api/admin/sessions/summary` 接口并以图表或列表形式展示会话监控数据。
+
+7.  **测试与验证**:
+    - **单元测试**: 为新增的辅助函数（如 `extractSessionID`, `UpdateChannelTimeWindowQuota`）编写单元测试。
+    - **集成测试**:
+        - 构造带有 `session_id` 的连续请求，验证它们是否始终被路由到同一个渠道。
+        - 设置渠道的并发或分时限额，发送超出限制的请求，验证是否能正确返回 `429` 错误或触发重试。
+        - 验证会话监控 API 是否能返回正确的数据。
 
 ## 6. 预期效果
-- 同一会话请求命中同一渠道/同一 key（在渠道健康前提下），避免上游缓存失效。
-- 运维可实时查看活跃会话数量、分布与渠道占用，支持用户级并发会话控制。
-- 渠道支持按额度的小时/天/周/月配额防护，超限可自动切换渠道或快速反馈。
+成功实施此方案后，NewAPI 系统将获得以下核心能力提升：
 
-## 7. 渠道剩余额度感知与自动启停预留
-- **统一接口定义**：在渠道模型/配置层新增“额度探针”接口约定（如 `QuotaProbe` 配置块），支持不同渠道的剩余额度获取方式：HTTP 查询（OpenAI billing、Anthropic usage）、SDK 调用、静态阈值、手工填报。
-- **探针适配层**：`service/channel_quota_probe`（预留），按渠道类型路由到具体实现，返回标准化结构：`{remaining_quota, currency, refresh_at, source}`；失败时降级为“未知”状态，不阻塞请求。
-- **自动启停策略**：
-  - 当探针返回剩余额度 <= 0 或低于警戒阈值时，将渠道置为“额度耗尽待恢复”状态（区别于故障禁用），暂停分发；记录原因和探针时间。
-  - 定期/手动触发探针刷新，若额度恢复则自动重启渠道；重启时清理相关会话粘性绑定以避免命中旧坏状态。
-- **交互与观测**：在管理端展示探针最近结果、来源和下一次刷新时间；支持 webhook/邮件告警；与现有分时限额并行存在，探针结果优先级高于分时限额（额度耗尽直接暂停）。
-- **数据一致性**：探针状态写入内存缓存并持久化 DB（状态 + 时间 + 来源）；多节点通过 Redis 或数据库轮询感知，避免单点决策。
+1.  **提升用户体验与性能**: 对于需要上下文的连续对话，所有请求将稳定地命中同一渠道和同一上游账户，确保了对话的连贯性，并有效利用了上游模型的缓存机制，降低了延迟和调用成本。
+2.  **增强系统可观测性**: 管理员将获得一个全新的监控维度，能够实时洞察当前系统的会话负载、用户活跃度以及渠道的会话占用情况，为容量规划和问题排查提供了有力的数据支持。
+3.  **强化风险控制能力**:
+    - 通过用户级的并发会话数限制，有效防止了资源滥用和潜在的攻击行为。
+    - 通过渠道级的分时“额度”限制，实现了对渠道成本的精细化、多维度预算管理，大大降低了渠道超额盗刷的风险。
+4.  **完善的自动化运维框架**: 预留的“额度感知与自动启停”设计，为未来实现更加智能、自动化的渠道生命周期管理奠定了基础，能够进一步减少人工干预，提升系统自愈能力。
+
+
+### 4.4 渠道剩余额度感知与自动启停（预留设计）
+
+#### **4.4.1 设计目标**
+此功能旨在让 NewAPI 从被动接收错误，转变为能主动感知上游渠道的实际剩余额度，并在额度即将耗尽时自动暂停渠道、额度恢复后自动重启。这是一个预留设计，为未来的智能化和自动化运维提供框架。
+
+#### **4.4.2 统一探针接口 (`QuotaProbe`)**
+为了适应不同供应商各异的额度查询方式，我们将定义一个统一的“额度探针”接口。该接口将在渠道配置中以一个可扩展的JSON对象形式存在。
+
+- **配置位置**: `model.Channel` 结构体中新增 `QuotaProbeConfig` 字段（`type: text`）。
+- **配置示例**:
+  ```json
+  // QuotaProbeConfig 字段的示例内容
+  {
+    "enabled": true,
+    "probe_interval": 3600, // 探测间隔（秒）
+    "type": "http_get", // 探针类型
+    "params": {
+      "url": "https://api.openai.com/v1/dashboard/billing/subscription",
+      "headers": {
+        "Authorization": "Bearer {api_key}" // 支持变量替换
+      },
+      "json_path_total": "hard_limit_usd", // 总额度
+      "json_path_used": "soft_limit_usd"   // 已用额度
+    }
+  }
+  ```
+- **探针类型**:
+  - `http_get`: 通过发送 HTTP GET 请求查询。
+  - `http_post`: 通过发送 HTTP POST 请求查询。
+  - `sdk_call`: （未来扩展）通过特定供应商的 Go SDK 调用。
+  - `static`: 静态配置，用于无法在线查询的渠道，由管理员手动更新。
+
+#### **4.4.3 探测与状态更新逻辑**
+1.  **探测调度器**: 系统将启动一个后台调度器，定期（例如，每5分钟）检查所有配置了 `QuotaProbe` 的渠道。
+2.  **探针执行器 (`service/channel_quota_probe`)**:
+    - 根据渠道配置的探针类型，调用相应的执行器（如 `httpProbeExecutor`）。
+    - 执行器负责发送请求、解析响应，并提取出标准化的额度信息：`{ remaining_quota, total_quota, currency, refreshed_at }`。
+3.  **状态决策与更新**:
+    - 获取到额度信息后，系统根据预设的阈值（例如，`remaining_quota <= 0` 或低于某个警戒线）来决策是否需要改变渠道状态。
+    - 我们将为渠道新增一个状态：`StatusQuotaExhausted (4)`，专门用于表示额度耗尽。
+    - **自动暂停**: 当探测到额度耗尽时，系统将渠道状态从 `Enabled (1)` 变为 `StatusQuotaExhausted (4)`。
+    - **自动恢复**: 对于状态为 `4` 的渠道，调度器会以更高的频率（例如，每10分钟）进行探测。一旦发现 `remaining_quota`恢复到健康水平，系统会自动将其状态改回 `Enabled (1)`。
+
+#### **4.4.4 渠道状态机（含额度感知）**
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "启用 (1)" as Enabled
+    state "手动禁用 (2)" as ManuallyDisabled
+    state "自动禁用 (3)" as AutoDisabled
+    state "额度耗尽 (4)" as QuotaExhausted
+
+    [*] --> Enabled: 创建/启用
+    
+    Enabled --> ManuallyDisabled: 管理员禁用
+    ManuallyDisabled --> Enabled: 管理员启用
+
+    Enabled --> AutoDisabled: 请求失败 (如401, 5xx)
+    AutoDisabled --> Enabled: 后台健康检查成功
+
+    Enabled --> QuotaExhausted: 额度探针检测到额度<=0
+    QuotaExhausted --> Enabled: 额度探针检测到额度恢复
+    
+    QuotaExhausted --> ManuallyDisabled: 管理员禁用
+    ManuallyDisabled --> QuotaExhausted: (特殊)若额度仍耗尽
+
+    AutoDisabled --> QuotaExhausted: (特殊)若健康检查失败原因是额度
+```
+- **状态优先级**: `手动禁用 (2)` 的优先级最高。即使一个渠道额度恢复，如果它处于手动禁用状态，也不会自动启用。
+- **与现有机制的交互**:
+  - 额度耗尽导致的自动暂停 (`StatusQuotaExhausted`) 独立于因请求失败导致的自动禁用 (`StatusAutoDisabled`)。
+  - 在渠道选择时，状态为 `3` 和 `4` 的渠道都将被过滤掉。
+  - 当一个会话粘滞在某个渠道上，而该渠道因额度耗尽被暂停时，下一次请求会因为找不到可用渠道而失败，并清除粘性绑定，触发重新选路。
+
+#### **4.4.5 UI 与监控**
+- **渠道列表**: 在“我的渠道”和管理员的渠道管理页面，为状态为 `4` 的渠道显示一个特殊的“额度耗尽”标签，并提供鼠标悬浮提示，显示最近一次探测到的剩余额度信息。
+- **告警**: 当渠道首次进入 `StatusQuotaExhausted` 状态时，系统应通过邮件或 Webhook 发送告警通知给渠道所有者和平台管理员。
+
