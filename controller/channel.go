@@ -665,7 +665,7 @@ func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
 		}
 		ch.Group = strings.Join(r.Groups, ",")
 	} else {
-		ch.Group = "default"
+		ch.Group = "user_default"
 	}
 
 	if r.Tag != "" {
@@ -1581,6 +1581,26 @@ func CreateUserChannel(c *gin.Context) {
 			"message": "P2P渠道仅支持单密钥模式",
 		})
 		return
+	}
+
+	// P2P用户创建渠道时，必须选择分组且不能选择default分组
+	if strings.TrimSpace(channel.Group) == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "必须选择分组",
+		})
+		return
+	}
+	// 检查是否包含default分组
+	groups := strings.Split(channel.Group, ",")
+	for _, g := range groups {
+		if strings.TrimSpace(g) == "default" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "不能选择default分组",
+			})
+			return
+		}
 	}
 
 	// Validate channel
