@@ -1,0 +1,474 @@
+site_name: New API
+site_url: https://docs.newapi.pro
+site_author: QuantumNous
+site_description: 新一代大模型网关与AI资产管理系统
+
+# Repository
+repo_name: QuantumNous/new-api
+repo_url: https://github.com/QuantumNous/new-api
+edit_uri: https://github.com/QuantumNous/new-api-docs/blob/main/docs/
+
+theme:
+  name: material
+  language: zh
+  custom_dir: newapi/overrides
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate 
+    - content.code.copy
+    - content.code.select
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/link
+        name: 切换到浅色模式
+    - media: "(prefers-color-scheme: light)" 
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch-off
+        name: 切换到系统主题
+  font: false
+    # text: Roboto
+    # code: Roboto Mono
+  favicon: assets/favicon.ico
+  logo: assets/logo.png
+  icon:
+    repo: fontawesome/brands/github
+
+extra:
+  alternate:
+    - name: 简体中文
+      link: /
+      lang: zh
+    - name: English
+      link: /en/
+      lang: en
+    - name: 日本語
+      link: /ja/
+      lang: ja
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/QuantumNous/new-api
+    - icon: fontawesome/brands/git-alt
+      link: https://gitee.com/QuantumNous/new-api
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/calciumion/new-api
+  analytics:
+    provider: google
+    property: G-VHJ4VGJB6N
+  consent:
+    title: Cookie 同意
+    description: >- 
+      我们使用 Cookie 来识别您的重复访问和偏好，以及衡量我们文档的有效性和用户是否找到他们要找的内容。
+    cookies:
+      analytics: Google Analytics
+  generator: false
+
+nav:
+  - 首页: index.md
+  - 开始使用: getting-started.md
+  - 维基百科:
+    - 📖 维基百科: wiki/index.md
+    - 📚 基本概念:
+      - 项目介绍: wiki/project-introduction.md
+      - 特性说明: wiki/features-introduction.md
+      - 技术架构: wiki/technical-architecture.md
+      - 网站访问数据分析: wiki/analytics-setup.md
+    - 📝 项目记录:
+      - 更新日志: wiki/changelog.md
+      - 特别鸣谢: wiki/special-thanks.md
+  - 使用指南:
+    - 使用指南: guide/index.md
+    - 🏠 首页: guide/home.md
+    - 🎯 控制台:
+      - 🎮 操练场: guide/console/playground.md
+      - 💬 聊天: guide/console/chat.md
+      - 📊 数据看板: guide/console/dashboard.md
+      - 🔑 API令牌: guide/console/api-token.md
+      - 📝 使用日志: guide/console/usage-log.md
+      - 🎨 绘图日志: guide/console/drawing-log.md
+      - 📝 任务日志: guide/console/task-log.md
+      - 💰 钱包: guide/console/wallet.md
+      - 🔧 个人设置: guide/console/profile.md
+      - 📦 渠道管理: guide/console/channel-management.md
+      - 🎫 兑换码管理: guide/console/redeem-code-management.md
+      - 🧑 用户管理: guide/console/user-management.md
+      - 🔧 系统设置:
+        - 运营设置: guide/console/settings/operation-settings.md
+        - 仪表盘设置: guide/console/settings/dashboard-settings.md
+        - 聊天设置: guide/console/settings/chat-settings.md
+        - 绘图设置: guide/console/settings/drawing-settings.md
+        - 支付设置: guide/console/settings/payment-settings.md
+        - 倍率设置: guide/console/settings/rate-settings.md
+        - 速率限制设置: guide/console/settings/rate-limit-settings.md
+        - 模型相关设置: guide/console/settings/model-settings.md
+        - 系统设置: guide/console/settings/system-settings.md
+        - 其他设置: guide/console/settings/other-settings.md
+    - 💰 定价: guide/pricing.md
+    - 📖 文档: guide/document.md
+    - 📝 关于: guide/about.md
+  - 安装指南:
+    - 🏠 安装指南: installation/index.md
+    - 🔧 部署方式:
+      - Docker 部署: installation/docker-installation.md
+      - Docker Compose 部署: installation/docker-compose-installation.md
+      - 1Panel 面板部署: installation/1panel-installation.md
+      - 宝塔面板部署: installation/bt-docker-installation.md
+      - 集群部署: installation/cluster-deployment.md
+      - 本地开发部署: installation/local-development.md
+    - ⚙️ 配置与维护:
+      - 系统更新: installation/system-update.md
+      - 环境变量配置: installation/environment-variables.md
+      - Docker Compose 配置文件: installation/docker-compose-yml.md
+  - 接口文档:
+    - 🏠 接口文档: api/index.md
+    - 中继接口:
+      - 💬 聊天（Chat）:
+        - OpenAI 格式（Chat Completions）: api/openai-chat.md
+        - OpenAI 格式（Responses）: api/openai-responses.md
+        - Anthropic 格式（Messages）: api/anthropic-chat.md
+        - Deepseek reasoning 格式（Reasoning Content）: api/deepseek-reasoning-chat.md
+        - 🆕 Google Gemini 格式（Generate Content）: api/google-gemini-chat.md
+      - 🔤 嵌入（Embeddings）:
+        - OpenAI 格式: api/openai-embedding.md
+      - 🔄 重排序（Rerank）:
+        - Jina AI 格式: api/jinaai-rerank.md
+        - Cohere 格式: api/cohere-rerank.md
+        - Xinference 格式: api/xinference-rerank.md
+      - ⚡ 实时对话（Realtime）:
+        - OpenAI 格式: api/openai-realtime.md
+      - 🖼️ 图像（Image）:
+        - OpenAI 格式（Image）: api/openai-image.md
+        - Midjourney 格式（Midjourney Proxy/Midjourney Proxy Plus）: api/midjourney-proxy-image.md
+      - 🔊 音频（Audio）:
+        - OpenAI 格式: api/openai-audio.md
+      - 🎵 音乐（Music）:
+        - Suno API 格式: api/suno-music.md
+      - 🎥 视频（Video）:
+        - 可灵AI (Kling)和即梦 (Jimeng)格式: api/kling-jimeng.md
+        - OpenAI 视频格式（Sora格式）: api/openai-video.md
+    - 查询接口:
+      - 令牌用量查询: api/token-usage.md
+    - 前端接口:
+        - 鉴权体系说明（Auth）: api/auth-system-description.md
+        - 获取可用模型列表（Model）: api/get-available-models-list.md
+        - 接口模块使用指南（Api）:
+            - 系统初始化模块: api/fei-system-initialization.md
+            - 公共信息模块: api/fei-public-info.md
+            - 邮箱身份验证模块: api/fei-email-authentication.md
+            - OAuth 第三方登录模块: api/fei-oauth-third-party-login.md
+            - 用户模块: api/fei-user.md
+            - 站点配置模块: api/fei-site-configuration.md
+            - 模型倍率同步模块: api/fei-model-rate-sync.md
+            - 渠道管理模块: api/fei-channel-management.md
+            - Token 管理模块: api/fei-token-management.md
+            - 兑换码管理模块: api/fei-redemption-code-management.md
+            - 日志模块: api/fei-log.md
+            - 数据统计模块: api/fei-data-statistics.md
+            - 分组模块: api/fei-group.md
+            - Midjourney 任务模块: api/fei-midjourney-task.md
+            - 任务中心模块: api/fei-task-center.md
+            - 账户计费面板模块: api/fei-account-billing-panel.md
+  - AI应用:
+    - 🍒 Cherry Studio - 桌面 AI 客户端: apps/cherry-studio.md
+    - 📦 LangBot - 即时通信机器人开发平台: apps/langbot.md
+    - 📱 Factory Droid CLI - AI 命令行开发工具: apps/factory-droid-cli.md
+    - 📖 FluentRead - 开源翻译插件: apps/fluent-read.md
+    - 💍 LunaTranslator - 开源GalGame翻译器: apps/luna-translator.md
+    - 🚀 OpenAI Codex CLI - AI 命令行编码助手: apps/codex-cli.md
+    - 💻 Claude Code - AI 终端编程助手: apps/claude-code.md
+  - 帮助支持:
+    - 🏠 帮助支持: support/index.md
+    - 🌐 社区交流: support/community-interaction.md
+    - 🐛 反馈问题: support/feedback-issues.md
+    - ❓ 常见问题: support/faq.md
+    - ☕ 请我们喝咖啡: support/buy-us-a-coffee.md
+  - 商务合作: business-cooperation.md
+
+plugins:
+  - search:
+      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - tags
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      default_language: zh
+      languages:
+        - locale: zh
+          name: 简体中文
+          build: true
+          default: true
+          site_name: "New API"
+        - locale: en
+          name: English
+          build: true
+          site_name: "New API"
+          nav_translations:
+            首页: Home
+            开始使用: "Getting Started"
+            维基百科: Wiki
+            "📖 维基百科": Wiki
+            "📚 基本概念": "Basic Concepts"
+            项目介绍: "Project Introduction"
+            特性说明: "Feature Overview"
+            技术架构: "Technical Architecture"
+            网站访问数据分析: "Website Analytics Setup"
+            "📝 项目记录": "Project Records"
+            更新日志: Changelog
+            特别鸣谢: "Special Thanks"
+            安装指南: "Installation Guide"
+            "🏠 安装指南": "Installation Guide"
+            "🔧 部署方式": "Deployment Methods"
+            "Docker 部署": "Docker Installation"
+            "Docker Compose 部署": "Docker Compose Installation"
+            "宝塔面板部署": "BT Panel Installation"
+            集群部署: "Cluster Deployment"
+            本地开发部署: "Local Development"
+            "⚙️ 配置与维护": "Config & Maintenance"
+            系统更新: "System Update"
+            环境变量配置: "Environment Variables"
+            "Docker Compose 配置文件": "Docker Compose Configuration"
+            接口文档: "API Reference"
+            "🏠 接口文档": Overview
+            中继接口: "Proxy APIs"
+            "💬 聊天（Chat）": "Chat APIs"
+            "OpenAI 格式（Chat Completions）": "OpenAI Chat Completions"
+            "OpenAI 格式（Responses）": "OpenAI Responses"
+            "Anthropic 格式（Messages）": "Anthropic Chat Messages"
+            "Deepseek reasoning 格式（Reasoning Content）": "Deepseek Reasoning Chat"
+            "🆕 Google Gemini 格式（Generate Content）": "Google Gemini Chat"
+            "🔤 嵌入（Embeddings）": Embeddings
+            "OpenAI 格式": "OpenAI"
+            "🔄 重排序（Rerank）": Rerank
+            "Jina AI 格式": "Jina AI Rerank"
+            "Cohere 格式": "Cohere Rerank"
+            "Xinference 格式": "Xinference Rerank"
+            "⚡ 实时对话（Realtime）": Realtime
+            "🖼️ 图像（Image）": Image
+            "OpenAI 格式（Image）": "OpenAI Image"
+            "Midjourney 格式（Midjourney Proxy/Midjourney Proxy Plus）": "Midjourney Proxy Image"
+            "🔊 音频（Audio）": Audio
+            "🎵 音乐（Music）": Music
+            Suno API 格式: "Suno Music"
+            "🎥 视频（Video）": Video
+            "可灵AI (Kling)和即梦 (Jimeng)格式": "Kling AI & Jimeng Format"
+            "OpenAI 视频格式（Sora格式）": "OpenAI Video Format (Sora Format)"
+            查询接口: "Query APIs"
+            令牌用量查询: "Token Usage"
+            前端接口: "Frontend APIs"
+            敬请期待: "Coming Soon"
+            AI应用: "AI Applications"
+            "🍒 Cherry Studio - 桌面 AI 客户端": "🍒 Cherry Studio - Desktop AI Client"
+            "📦 LangBot - 即时通信机器人开发平台": "📦 LangBot - IM Bot Development Platform"
+            "📱 Factory Droid CLI - AI 命令行开发工具": "📱 Factory Droid CLI - AI Command Line Tool"
+            "📖 FluentRead - 开源翻译插件": "📖 FluentRead - Open Source Translation Plugin"
+            "💍 LunaTranslator - 开源GalGame翻译器": "💍 LunaTranslator - Open Source GalGame Translator"
+            "🚀 OpenAI Codex CLI - AI 命令行编码助手": "🚀 OpenAI Codex CLI - AI Command Line Coding Assistant"
+            "💻 Claude Code - AI 终端编程助手": "💻 Claude Code - AI Terminal Coding Assistant"
+            帮助支持: Support
+            "🏠 帮助支持": "Support Home"
+            "🌐 社区交流": Community
+            "🐛 反馈问题": "Feedback & Issues"
+            "❓ 常见问题": FAQ
+            "☕ 请我们喝咖啡": "Buy Us a Coffee"
+            "商务合作": "Contact Us"
+            "使用指南": Guide
+            "🏠 首页": Home
+            "🎯 控制台": Console
+            "🎮 操练场": Playground
+            "💬 聊天": Chat
+            "📊 数据看板": Dashboard
+            "🔑 API令牌": API Token
+            "📝 使用日志": Usage Log
+            "🎨 绘图日志": Drawing Log
+            "📝 任务日志": Task Log
+            "💰 钱包": Wallet
+            "🔧 个人设置": Profile
+            "📦 渠道管理": Channel Management
+            "🎫 兑换码管理": Redeem Code Management
+            "🧑 用户管理": User Management
+            "🔧 系统设置": System Settings
+            "运营设置": Operation Settings
+            "仪表盘设置": Dashboard Settings
+            "聊天设置": Chat Settings
+            "绘图设置": Drawing Settings
+            "支付设置": Payment Settings
+            "倍率设置": Rate Settings
+            "速率限制设置": Rate Limit Settings
+            "模型相关设置": Model Settings
+            "系统设置": System Settings
+            "其他设置": Other Settings
+            "💰 定价": Pricing
+            "📖 文档": Documentation
+            "📝 关于": About
+        - locale: ja
+          name: 日本語
+          build: true
+          site_name: "New API"
+          nav_translations:
+            首页: ホーム
+            开始使用: "はじめに"
+            维基百科: Wiki
+            "📖 维基百科": Wiki
+            "📚 基本概念": "基本概念"
+            项目介绍: "プロジェクト紹介"
+            特性说明: "機能概要"
+            技术架构: "技術アーキテクチャ"
+            网站访问数据分析: "ウェブサイトアクセス分析設定"
+            "📝 项目记录": "プロジェクト記録"
+            更新日志: 変更履歴
+            特别鸣谢: "スペシャルサンクス"
+            安装指南: "インストールガイド"
+            "🏠 安装指南": "インストールガイド"
+            "🔧 部署方式": "デプロイ方法"
+            "Docker 部署": "Dockerインストール"
+            "Docker Compose 部署": "Docker Composeインストール"
+            "宝塔面板部署": "BTパネルインストール"
+            集群部署: "クラスターデプロイ"
+            本地开发部署: "ローカル開発"
+            "⚙️ 配置与维护": "設定とメンテナンス"
+            系统更新: "システム更新"
+            环境变量配置: "環境変数"
+            "Docker Compose 配置文件": "Docker Compose設定"
+            接口文档: "APIリファレンス"
+            "🏠 接口文档": 概要
+            中继接口: "プロキシAPI"
+            "💬 聊天（Chat）": "チャットAPI"
+            "OpenAI 格式（Chat Completions）": "OpenAI Chat Completions"
+            "OpenAI 格式（Responses）": "OpenAI Responses"
+            "Anthropic 格式（Messages）": "Anthropic Chat Messages"
+            "Deepseek reasoning 格式（Reasoning Content）": "Deepseek Reasoning Chat"
+            "🆕 Google Gemini 格式（Generate Content）": "Google Gemini Chat"
+            "🔤 嵌入（Embeddings）": 埋め込み
+            "OpenAI 格式": "OpenAI"
+            "🔄 重排序（Rerank）": 再ランク付け
+            "Jina AI 格式": "Jina AI Rerank"
+            "Cohere 格式": "Cohere Rerank"
+            "Xinference 格式": "Xinference Rerank"
+            "⚡ 实时对话（Realtime）": リアルタイム
+            "🖼️ 图像（Image）": 画像
+            "OpenAI 格式（Image）": "OpenAI Image"
+            "Midjourney 格式（Midjourney Proxy/Midjourney Proxy Plus）": "Midjourney Proxy Image"
+            "🔊 音频（Audio）": オーディオ
+            "🎵 音乐（Music）": 音楽
+            Suno API 格式: "Suno Music"
+            "🎥 视频（Video）": 動画
+            "可灵AI (Kling)和即梦 (Jimeng)格式": "Kling AI & Jimeng フォーマット"
+            "OpenAI 视频格式（Sora格式）": "OpenAI 動画フォーマット (Soraフォーマット)"
+            查询接口: "クエリAPI"
+            令牌用量查询: "トークン使用量"
+            前端接口: "フロントエンドAPI"
+            敬请期待: "近日公開"
+            AI应用: "AIアプリケーション"
+            "🍒 Cherry Studio - 桌面 AI 客户端": "🍒 Cherry Studio - デスクトップAIクライアント"
+            "📦 LangBot - 即时通信机器人开发平台": "📦 LangBot - IMボット開発プラットフォーム"
+            "📱 Factory Droid CLI - AI 命令行开发工具": "📱 Factory Droid CLI - AIコマンドラインツール"
+            "📖 FluentRead - 开源翻译插件": "📖 FluentRead - オープンソース翻訳プラグイン"
+            "💍 LunaTranslator - 开源GalGame翻译器": "💍 LunaTranslator - オープンソースGalGame翻訳機"
+            "🚀 OpenAI Codex CLI - AI 命令行编码助手": "🚀 OpenAI Codex CLI - AIコマンドラインコーディングアシスタント"
+            "💻 Claude Code - AI 终端编程助手": "💻 Claude Code - AIターミナルコーディングアシスタント"
+            帮助支持: サポート
+            "🏠 帮助支持": "サポートホーム"
+            "🌐 社区交流": コミュニティ
+            "🐛 反馈问题": "フィードバックと問題"
+            "❓ 常见问题": FAQ
+            "☕ 请我们喝咖啡": "コーヒーをおごる"
+            "商务合作": "お問い合わせ"
+            "使用指南": ガイド
+            "🏠 首页": ホーム
+            "🎯 控制台": コンソール
+            "🎮 操练场": プレイグラウンド
+            "💬 聊天": チャット
+            "📊 数据看板": ダッシュボード
+            "🔑 API令牌": APIトークン
+            "📝 使用日志": 使用ログ
+            "🎨 绘图日志": 描画ログ
+            "📝 任务日志": タスクログ
+            "💰 钱包": ウォレット
+            "🔧 个人设置": プロフィール
+            "📦 渠道管理": チャネル管理
+            "🎫 兑换码管理": 引き換えコード管理
+            "🧑 用户管理": ユーザー管理
+            "🔧 系统设置": システム設定
+            "运营设置": 運営設定
+            "仪表盘设置": ダッシュボード設定
+            "聊天设置": チャット設定
+            "绘图设置": 描画設定
+            "支付设置": 支払い設定
+            "倍率设置": レート設定
+            "速率限制设置": レート制限設定
+            "模型相关设置": モデル設定
+            "系统设置": システム設定
+            "其他设置": その他の設定
+            "💰 定价": 価格
+            "📖 文档": ドキュメント
+            "📝 关于": について
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+watch:
+  - newapi/overrides
+  - docs
+
+copyright: Copyright &copy; 2025 Quantum Nous. All Rights Reserved.

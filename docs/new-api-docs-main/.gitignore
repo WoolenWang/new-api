@@ -1,0 +1,37 @@
+# 忽略Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 忽略缓存目录
+.cache/
+.pytest_cache/
+
+# 也可能会有的其他Python相关的临时文件
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 忽略 python venv
+.venv
+
+# 忽略 .DS_Store 文件
+.DS_Store
+
+.idea/
+
+site/

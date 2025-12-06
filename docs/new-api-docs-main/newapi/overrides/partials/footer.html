@@ -1,0 +1,185 @@
+{% block footer %}
+{#- Load translations based on current language -#}
+{% if page and page.file and "en/" in page.file.src_uri %}
+  {% set translations = {
+    "slogan": "🍥Next-Gen LLM Gateway & AI Asset Platform",
+    "sections": {
+      "about": {
+        "title": "About Us",
+        "links": {
+          "project": "About Project",
+          "contact": "Contact Us",
+          "features": "Features"
+        }
+      },
+      "docs": {
+        "title": "Docs",
+        "links": {
+          "quickstart": "Quick Start",
+          "installation": "Installation Guide",
+          "api": "API Docs"
+        }
+      },
+      "related": {
+        "title": "Related Projects"
+      },
+      "friendship": {
+        "title": "Friendship Links"
+      }
+    }
+  } %}
+{% elif page and page.file and "ja/" in page.file.src_uri %}
+  {% set translations = {
+    "slogan": "🍥次世代LLMゲートウェイ & AI資産管理プラットフォーム",
+    "sections": {
+      "about": {
+        "title": "私たちについて",
+        "links": {
+          "project": "プロジェクトについて",
+          "contact": "お問い合わせ",
+          "features": "機能"
+        }
+      },
+      "docs": {
+        "title": "ドキュメント",
+        "links": {
+          "quickstart": "クイックスタート",
+          "installation": "インストールガイド",
+          "api": "APIドキュメント"
+        }
+      },
+      "related": {
+        "title": "関連プロジェクト"
+      },
+      "friendship": {
+        "title": "友好リンク"
+      }
+    }
+  } %}
+{% else %}
+  {% set translations = {
+    "slogan": "🍥新一代大模型网关与AI资产管理系统",
+    "sections": {
+      "about": {
+        "title": "关于我们",
+        "links": {
+          "project": "关于项目",
+          "contact": "联系我们",
+          "features": "功能特性"
+        }
+      },
+      "docs": {
+        "title": "文档",
+        "links": {
+          "quickstart": "快速开始",
+          "installation": "安装指南",
+          "api": "API 文档"
+        }
+      },
+      "related": {
+        "title": "相关项目"
+      },
+      "friendship": {
+        "title": "友情链接"
+      }
+    }
+  } %}
+{% endif %}
+<footer class="neo-footer">
+  <!-- 背景装饰元素 -->
+  <div class="neo-footer-bg">
+    <div class="bg-circle circle-1"></div>
+    <div class="bg-circle circle-2"></div>
+    <div class="bg-circle circle-3"></div>
+    <div class="bg-blur"></div>
+  </div>
+
+  <div class="neo-footer-container">
+    <!-- 顶部LOGO部分 -->
+    <div class="neo-footer-logo">
+      <div class="logo-glow"></div>
+      <h2>New API</h2>
+      <p>
+        {{ translations.slogan }}
+      </p>
+    </div>
+
+    <!-- 中间链接部分 -->
+    <div class="neo-footer-links">
+      <!-- 关于我们 -->
+      <div class="neo-footer-section">
+        <h3>{{ translations.sections.about.title }}</h3>
+        <ul>
+          <li><a href="{{ 'wiki/project-introduction/' | url }}"><span>{{ translations.sections.about.links.project }}</span></a></li>
+          <li><a href="{{ 'support/community-interaction/' | url }}"><span>{{ translations.sections.about.links.contact }}</span></a></li>
+          <li><a href="{{ 'wiki/features-introduction/' | url }}"><span>{{ translations.sections.about.links.features }}</span></a></li>
+        </ul>
+      </div>
+
+      <!-- 文档 -->
+      <div class="neo-footer-section">
+        <h3>{{ translations.sections.docs.title }}</h3>
+        <ul>
+          <li><a href="{{ 'getting-started/' | url }}"><span>{{ translations.sections.docs.links.quickstart }}</span></a></li>
+          <li><a href="{{ 'installation/' | url }}"><span>{{ translations.sections.docs.links.installation }}</span></a></li>
+          <li><a href="{{ 'api/' | url }}"><span>{{ translations.sections.docs.links.api }}</span></a></li>
+        </ul>
+      </div>
+
+      <!-- 相关项目 -->
+      <div class="neo-footer-section">
+        <h3>{{ translations.sections.related.title }}</h3>
+        <ul>
+          <li><a href="https://github.com/songquanpeng/one-api" target="_blank"><span>One API</span></a></li>
+          <li><a href="https://github.com/novicezk/midjourney-proxy" target="_blank"><span>Midjourney-Proxy</span></a>
+          </li>
+          <li><a href="https://github.com/Calcium-Ion/neko-api-key-tool"
+              target="_blank"><span>neko-api-key-tool</span></a></li>
+        </ul>
+      </div>
+
+      <!-- 友情链接 -->
+      <div class="neo-footer-section">
+        <h3>{{ translations.sections.friendship.title }}</h3>
+        <ul>
+          <li><a href="https://github.com/coaidev/coai" target="_blank"><span>CoAI</span></a></li>
+          <li><a href="https://github.com/Calcium-Ion/new-api-horizon" target="_blank"><span>new-api-horizon</span></a></li>
+          <li><a href="https://www.gpt-load.com" target="_blank"><span>GPT-Load</span></a></li>
+          <li><a href="https://langbot.app" target="_blank"><span>LangBot</span></a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 底部社交和版权部分 -->
+    <div class="neo-footer-bottom">
+      <div class="neo-social-icons">
+        <a href="https://github.com/QuantumNous/new-api" target="_blank" class="social-icon github" aria-label="GitHub">
+          {% include ".icons/fontawesome/brands/github.svg" %}
+        </a>
+        <a href="https://qm.qq.com/q/Y79glR8raU" target="_blank" class="social-icon qq" aria-label="QQ Group">
+          {% include ".icons/fontawesome/brands/qq.svg" %}
+        </a>
+      </div>
+
+      <div class="neo-copyright">
+        {% if config.copyright %}
+        <div class="copyright-text">{{ config.copyright }}</div>
+        {% endif %}
+        <div class="beian-info">
+          <a href="https://beian.miit.gov.cn/" target="_blank" style="margin-right: 8px;">浙ICP备2025190188号-2</a>
+          <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=33010602014019" target="_blank"
+            class="gongan-beian">
+            <img src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png" alt="公安备案"
+              style="width: 16px; height: 16px; vertical-align: middle;">
+            浙公网安备33010602014019号
+          </a>
+        </div>
+        <div class="powered-by">
+          Made with <span class="heart">❤</span> by
+          <a href="https://github.com/QuantumNous/new-api" target="_blank">QuantumNous</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+{% endblock %}

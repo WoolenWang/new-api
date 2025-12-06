@@ -1,0 +1,45 @@
+services:
+  # MkDocs主服务
+  mkdocs:
+    image: squidfunk/mkdocs-material:latest  # 使用官方镜像
+    container_name: mkdocs
+    restart: unless-stopped
+    ports:
+      - "2004:8000"
+    volumes:
+      - .:/docs
+    working_dir: /docs
+    entrypoint: ["/bin/sh", "-c"]
+    command: ./dev-server.sh
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - docs-network
+
+  # 辅助更新服务
+  docs-updater:
+    build:
+      context: ./docs_assistant
+      dockerfile: Dockerfile
+    container_name: docs-updater
+    restart: unless-stopped
+    volumes:
+      - .:/app/docs
+    environment:
+      - UPDATE_INTERVAL=1800  # 30分钟更新一次
+      - GITHUB_REPO=QuantumNous/new-api
+      - GITHUB_TOKEN=  # 推荐设置，提升API限制至5000次/小时
+      - DOCS_DIR=/app/docs
+      - USE_PROXY=false
+      - GITHUB_PROXY=
+      - AFDIAN_USER_ID=
+      - AFDIAN_TOKEN=
+      - TZ=Asia/Shanghai
+    networks:
+      - docs-network
+    depends_on:
+      - mkdocs
+
+networks:
+  docs-network:
+    driver: bridge
