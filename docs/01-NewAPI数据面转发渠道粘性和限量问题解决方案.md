@@ -79,8 +79,7 @@
 
 ```mermaid
 graph TD
-    subgraph Legend ["图例"]
-        direction LR
+    subgraph LegendSubGraph ["图例"]
         start_node[("开始")]
         end_node[("结束")]
         process_node["处理步骤"]
@@ -88,31 +87,31 @@ graph TD
         db_node[/"数据存储"/]
     end
 
-    A(("开始")) --> B{提取 Session ID};
-    B -- "无 Session ID" --> C[执行标准负载均衡选路];
-    B -- "有 Session ID" --> D{Redis中查询绑定};
+    A(("开始")) --> B{"提取 Session ID"};
+    B -->|"无 Session ID"| C["执行标准负载均衡选路"];
+    B -->|"有 Session ID"| D{"Redis中查询绑定"};
 
-    D -- "未命中" --> C;
-    C --> E{选路成功?};
-    E -- "是" --> F[转发请求至渠道];
-    E -- "否" --> G[返回无可用渠道错误];
+    D -->|"未命中"| C;
+    C --> E{"选路成功?"};
+    E -->|"是"| F["转发请求至渠道"];
+    E -->|"否"| G["返回无可用渠道错误"];
 
-    D -- "命中" --> H[获取绑定的 Channel ID 和 Key ID];
-    H --> I{验证绑定渠道是否有效?<br>(启用、模型支持、风控通过)};
-    I -- "是" --> J[复用绑定渠道<br>并刷新Redis TTL];
+    D -->|"命中"| H["获取绑定的 Channel ID 和 Key ID"];
+    H --> I{"验证绑定渠道是否有效?<br>(启用、模型支持、风控通过)"};
+    I -->|"是"| J["复用绑定渠道<br>并刷新Redis TTL"];
     J --> F;
-    I -- "否" --> K[从Redis删除绑定];
+    I -->|"否"| K["从Redis删除绑定"];
     K --> C;
 
-    F --> L{请求成功?};
-    L -- "是" --> M{是新会话?};
-    M -- "是" --> N[在Redis中创建新绑定];
-    M -- "否" --> O[结束];
+    F --> L{"请求成功?"};
+    L -->|"是"| M{"是新会话?"};
+    M -->|"是"| N["在Redis中创建新绑定"];
+    M -->|"否"| O["结束"];
 
-    L -- "否" --> P{达到重试上限?};
-    P -- "是" --> Q[返回最终错误];
-    P -- "否" --> R[从Redis删除绑定<br>(若存在)];
-    R --> S[执行重试选路];
+    L -->|"否"| P{"达到重试上限?"};
+    P -->|"是"| Q["返回最终错误"];
+    P -->|"否"| R["从Redis删除绑定<br>(若存在)"];
+    R --> S["执行重试选路"];
     S --> F;
     
     N --> O;
@@ -120,7 +119,7 @@ graph TD
     Q --> Z;
     O --> Z;
 
-    subgraph Redis 操作
+    subgraph RedisSubGraph ["Redis 操作"]
         D; K; N; R; J;
     end
 ```
@@ -253,8 +252,7 @@ type Channel struct {
 
 ```mermaid
 graph TD
-    subgraph Legend ["图例"]
-        direction LR
+    subgraph LegendSubGraph ["图例"]
         start_node[("开始")]
         end_node[("结束")]
         process_node["处理步骤"]
@@ -262,31 +260,31 @@ graph TD
         db_node[/"数据存储"/]
     end
 
-    A(("开始请求")) --> B[渠道选择逻辑<br>(Distribute 中间件)];
+    A(("开始请求")) --> B["渠道选择逻辑<br>(Distribute 中间件)"];
     B --> C{"对选定渠道<br>执行预检查"};
-    C --> D[计算预估消耗额度<br>(e.g., PreConsumedQuota)];
+    C --> D["计算预估消耗额度<br>(e.g., PreConsumedQuota)"];
     D --> E{"循环检查各时间窗口<br>(小时/天/周/月)"};
 
-    subgraph TimeWindowChecks ["时间窗口检查循环"]
+    subgraph TimeWindowChecksSubGraph ["时间窗口检查循环"]
         E --> F{"(Redis) GET 窗口已用额度"};
         F --> G{"已用额度 + 预估消耗 > 窗口限额?"};
-        G -- "是" --> H[预检查失败<br>渠道不可用];
-        G -- "否" --> I[继续检查下一个窗口];
+        G -->|"是"| H["预检查失败<br>渠道不可用"];
+        G -->|"否"| I["继续检查下一个窗口"];
     end
     
     I --> E;
-    E -- "所有窗口检查完毕" --> J[预检查通过];
-    H --> K[从候选列表移除<br>或触发重试];
-    J --> L[执行请求转发<br>(Relay 控制器)];
+    E -->|"所有窗口检查完毕"| J["预检查通过"];
+    H --> K["从候选列表移除<br>或触发重试"];
+    J --> L["执行请求转发<br>(Relay 控制器)"];
     L --> M{"请求成功处理"};
 
-    subgraph QuotaUpdate ["额度更新"]
-        M -- "是" --> N[获取本次请求的<br>精确消耗额度];
+    subgraph QuotaUpdateSubGraph ["额度更新"]
+        M -->|"是"| N["获取本次请求的<br>精确消耗额度"];
         N --> O["(Redis) INCRBY 更新所有<br>时间窗口的计数器"];
-        O --> P[更新渠道总消耗<br>和用户余额];
+        O --> P["更新渠道总消耗<br>和用户余额"];
     end
 
-    M -- "否 (请求失败)" --> Q[不更新额度计数器<br>(或执行回滚逻辑)];
+    M -->|"否 (请求失败)"| Q["不更新额度计数器<br>(或执行回滚逻辑)"];
     
     K --> Z(("结束"));
     P --> Z;
