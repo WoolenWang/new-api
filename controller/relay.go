@@ -69,7 +69,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	sessionID := common.GetContextKeyString(c, constant.ContextKeySessionID)
 	sessionBindingKey := common.GetContextKeyString(c, constant.ContextKeySessionBindingKey)
 	isNewSession := common.GetContextKeyBool(c, constant.ContextKeySessionIsNew)
-	bindingHit := common.GetContextKeyBool(c, constant.ContextKeySessionBindingHit)
+	_ = common.GetContextKeyBool(c, constant.ContextKeySessionBindingHit) // bindingHit - reserved for future use
 	sessionGroup := common.GetContextKeyString(c, constant.ContextKeySessionSelectedGroup)
 
 	var (
@@ -225,11 +225,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					KeyID:      common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
 					Group:      bindingGroup,
 				}
+				if key := common.GetContextKeyString(c, constant.ContextKeyChannelKey); key != "" {
+					entry.KeyHash = common.Sha1([]byte(key))
+				}
 				if err := service.SaveSessionBinding(c.Request.Context(), entry); err != nil {
 					logger.LogWarn(c, fmt.Sprintf("failed to save session binding %s: %v", sessionBindingKey, err))
 				} else {
 					isNewSession = false
-					bindingHit = true
+					// bindingHit = true // reserved for future use
 				}
 			}
 			return
@@ -243,7 +246,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				_, _ = service.RemoveSessionBinding(c.Request.Context(), sessionBindingKey)
 			}
 			isNewSession = true
-			bindingHit = false
+			// bindingHit = false // reserved for future use
 			common.SetContextKey(c, constant.ContextKeyChannelForcedKey, "")
 			common.SetContextKey(c, constant.ContextKeyChannelForcedKeyIndex, 0)
 			common.SetContextKey(c, constant.ContextKeyStickyChannelId, 0)

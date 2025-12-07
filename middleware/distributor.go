@@ -528,8 +528,13 @@ func validateSessionBinding(c *gin.Context, entry *service.SessionIndexEntry, ex
 		return nil, "", 0, false
 	}
 
-	if err := model.CheckChannelRiskControl(channel); err != nil {
+	if err := model.CheckChannelRiskControl(channel, 0); err != nil {
 		logger.LogWarn(c, fmt.Sprintf("session binding channel %d failed risk control: %v", channel.Id, err))
+		return nil, "", 0, false
+	}
+
+	if !channelSupportsModel(channel, entry.Model) {
+		logger.LogWarn(c, fmt.Sprintf("session binding model mismatch: channel_id=%d model=%s", channel.Id, entry.Model))
 		return nil, "", 0, false
 	}
 
@@ -544,6 +549,11 @@ func validateSessionBinding(c *gin.Context, entry *service.SessionIndexEntry, ex
 		forcedKey = key
 	} else {
 		forcedIndex = 0
+	}
+
+	if entry.KeyHash != "" && common.Sha1([]byte(forcedKey)) != entry.KeyHash {
+		logger.LogWarn(c, fmt.Sprintf("session binding key hash mismatch: channel_id=%d key_id=%d", channel.Id, forcedIndex))
+		return nil, "", 0, false
 	}
 
 	return channel, forcedKey, forcedIndex, true
@@ -602,6 +612,25 @@ func pickSessionField(payload map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func channelSupportsModel(channel *model.Channel, modelName string) bool {
+	if modelName == "" {
+		return false
+	}
+	target := strings.TrimSpace(modelName)
+	targetNormalized := ratio_setting.FormatMatchingModelName(target)
+	models := channel.GetModels()
+	for _, m := range models {
+		mTrim := strings.TrimSpace(m)
+		if mTrim == "" {
+			continue
+		}
+		if mTrim == target || ratio_setting.FormatMatchingModelName(mTrim) == targetNormalized {
+			return true
+		}
+	}
+	return false
 }
 
 // extractModelNameFromGeminiPath 从 Gemini API URL 路径中提取模型名
