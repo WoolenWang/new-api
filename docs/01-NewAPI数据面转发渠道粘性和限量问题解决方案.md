@@ -146,8 +146,9 @@ The `Relay` controller's retry mechanism is enhanced by this design. As shown in
 
 #### **4.1.5 边界条件与降级策略**
 - **多节点一致性**: 依赖 Redis 作为集中式存储，是保证多节点部署时会话粘性一致的关键。
-- **无 Redis 降级**: 如果部署环境中未启用 Redis，会话粘性功能将自动降级。系统会退化到使用本地内存缓存（如 LRU + TTL），但这仅在单节点部署或测试时有效。系统应在启动时检测并打印日志，明确提示此限制。
-- **渠道状态变更**: 当一个渠道被手动禁用、自动熔断或删除时，需要有一个机制来**主动失效**所有与该渠道相关的会话绑定，避免后续请求被粘滞到已不可用的渠道上。这可以通过发布/订阅消息或在状态变更时扫描并清理相关 Redis 键来实现。
+- **Redis 不可用降级**: 如果部署环境中未启用 Redis 或 Redis 连接失败，会话粘性功能将自动降级。系统会退化到使用本地内存缓存（如 LRU + TTL），但这仅在单节点部署时有效，无法保证多节点间的一致性。系统应在启动和运行时检测 Redis 可用性，并在降级时打印明确的警告日志。
+- **渠道状态变更**: 当一个渠道被手动禁用、自动熔断或删除时，必须有一个机制来**主动失效**所有与该渠道相关的会话绑定。这可以通过在状态变更操作中增加一个钩子（hook）来实现，该钩子会扫描并清理 Redis 中所有关联到该 `channel_id` 的 `session:*` 键。这可以防止后续请求被粘滞到已不可用的渠道上。
+- **多 Key 配置变更**: 当一个多 Key 渠道的密钥列表发生变化（增、删、改）时，之前缓存的 `key_id` 可能会变得陈旧或无效。为解决此问题，渠道更新操作应触发一个事件，批量删除与该渠道相关的所有会话绑定，强制所有相关会话在下一次请求时重新选路并绑定到新的有效 Key 上。
 
 
 ### 4.2 会话监控与用户并发上限
@@ -304,17 +305,17 @@ type Channel struct {
 
 ```mermaid
 stateDiagram-v2
-    Enabled["启用(1)"]
-    ManuallyDisabled["手动禁用(2)"]
-    AutoDisabled["自动禁用(3)"]
-    QuotaExhausted["额度耗尽(4)"]
+    Enabled: "启用(1)"
+    ManuallyDisabled: "手动禁用(2)"
+    AutoDisabled: "自动禁用(3)"
+    QuotaExhausted: "额度耗尽(4)"
 
     [*] --> Enabled: "创建/启用"
     
     Enabled --> ManuallyDisabled: "管理员禁用"
     ManuallyDisabled --> Enabled: "管理员启用"
 
-    Enabled --> AutoDisabled: "请求失败 (如401, 5xx)"
+    Enabled --> AutoDisabled: "请求失败(如401, 5xx)"
     AutoDisabled --> Enabled: "后台健康检查成功"
 
     Enabled --> QuotaExhausted: "额度探针检测到额度<=0"
@@ -392,38 +393,50 @@ stateDiagram-v2
         - 验证会话监控 API 是否能返回正确的数据。
         - 验证在 Redis 不可用的情况下，限流功能能够平滑降级。
 
-## 6. 预期效果
+## 7. 编码任务拆解与实现计划
 
+为确保高效并行开发，我们将整个实现过程划分为三个任务集。每个集合都包含独立但相关的任务，可以在不同的开发分支上进行，并在最后进行集成。
 
+---
 
-成功实施此方案后，NewAPI 系统将获得以下核心能力提升：
+### **任务集一：会话粘性与监控核心功能 (Task Set 1: Session Stickiness & Monitoring Core)**
 
+此任务集专注于实现会话保持的核心逻辑和基础的监控数据结构，是后续所有会话相关功能的基础。
 
+| **任务ID** | **任务描述** | **主要涉及文件** | **验收标准** |
+| :--- | :--- | :--- | :--- |
+| **TS1-1** | **实现会话ID提取器** | `middleware/distributor.go` (新增 `extractSessionID` 辅助函数) | 1. 能够按 `Header` > `Query` > `Body` > `Metadata` 的优先级正确提取 `session_id`。 <br> 2. 能够正确处理 `X-NewAPI-Session-ID`, `Conversation-ID` 等多种常见会话标识符。 <br> 3. 在所有位置都未找到时，返回空字符串。 |
+| **TS1-2** | **实现会话粘性选路逻辑** | `middleware/distributor.go` (`Distribute` 函数) | 1. 在 `Distribute` 函数中，对于携带 `session_id` 的请求，优先查询 Redis 绑定。 <br> 2. 若命中且渠道有效，则跳过标准选路，直接将 `channel_id` 和 `key_id` 注入上下文。 <br> 3. 若未命中或渠道失效，则删除绑定并执行标准选路。 |
+| **TS1-3** | **实现会话绑定创建与更新** | `controller/relay.go` (`Relay` 函数) | 1. 在请求成功后，能为新会话在 Redis 中创建 `session:{...}` 的 HASH 绑定，并设置 TTL。 <br> 2. 在请求失败且需要重试时，能正确删除 Redis 中的会话绑定，以触发重新选路。 <br> 3. 对于多 Key 渠道，`key_id` 被正确记录到 HASH 中。 |
+| **TS1-4** | **实现会话监控数据结构** | `controller/relay.go`, `middleware/distributor.go` | 1. 新会话创建时，原子地更新 `session:user:{id}` (SET), `session:channel:stats` (HASH), `session:global:count` (STRING)。 <br> 2. 实现基于 Redis Keyspace Notifications 的过期事件监听器，在会话过期时自动递减相关计数器。 <br> 3. **验收**: 经过一系列会话请求和等待过期后，各项统计数据与实际情况一致。 |
+| **TS1-5** | **实现用户并发会话限制** | `middleware/distributor.go`, `model/user.go` | 1. 在 `user` 表和 `group` 设置中增加 `max_concurrent_sessions` 字段。 <br> 2. 在 `Distribute` 中间件中，对新会话请求执行并发检查，超限则返回 429。 <br> 3. 对复用会话的请求，跳过并发检查。 <br> 4. **验收**: 模拟用户并发创建多个会话，在达到限制时请求被拒绝。 |
 
-1.  **提升用户体验与性能**:
+---
 
-    - **对话连贯性**: 对于需要上下文的连续对话（如使用 Claude、Codex 或进行多轮Function/Tool Calling），所有请求将稳定地命中同一渠道和同一上游账户，确保了对话逻辑的正确性。
+### **任务集二：统一渠道分时限额 (Task Set 2: Unified Time-based Quota)**
 
-    - **降低成本与延迟**: 有效利用上游模型的缓存机制，避免因请求分散到不同实例而导致的缓存频繁失效，从而降低推理成本和响应延迟。
+此任务集专注于重构和扩展现有的风控逻辑，实现统一的、基于额度的分时限额功能。
 
+| **任务ID** | **任务描述** | **主要涉及文件** | **验收标准** |
+| :--- | :--- | :--- | :--- |
+| **TS2-1** | **扩展渠道数据模型** | `model/channel.go` | 1. `Channel` 结构体中成功添加 `HourlyQuotaLimit`, `DailyQuotaLimit`, `WeeklyQuotaLimit`, `MonthlyQuotaLimit` 字段。 <br> 2. 提供并成功执行数据库迁移脚本。 |
+| **TS2-2** | **重构风控检查函数** | `model/channel_risk_control.go` | 1. 移除 `CheckChannelRiskControl` 中仅针对 P2P 渠道的限制，使其适用于所有渠道。 <br> 2. 在函数内部增加对 Redis 中 `channel_quota:{...}` 额度计数器的查询与比较逻辑。 <br> 3. **验收**: 单元测试覆盖平台渠道和P2P渠道的额度检查。 |
+| **TS2-3** | **集成风控到选路流程** | `service/channel_select.go` 或 `model/channel_cache.go` | 1. 在 `CacheGetRandomSatisfiedChannelMultiGroup` (或其调用的过滤函数) 中，确保对**每个**候选渠道都调用了 `CheckChannelRiskControl`。 <br> 2. **验收**: 集成测试中，已达到分时限额的渠道（无论平台或P2P）不会被选为候选渠道。 |
+| **TS2-4** | **实现额度精确结算** | `service/quota.go` | 1. 新增 `UpdateChannelTimeWindowQuota` 函数，使用 `INCRBY` 原子地更新 Redis 中四个时间窗口的计数器。 <br> 2. 在 `postConsumeQuota` 中，请求成功后同步调用此函数。 <br> 3. **验收**: 请求完成后，Redis 中对应渠道和时间窗口的额度计数增加量与请求消耗额度一致。 |
+| **TS2-5** | **实现 Redis 降级策略** | `model/channel_risk_control.go`, `service/quota.go` | 1. 在额度检查和更新逻辑中，增加对 Redis 连接状态的判断。 <br> 2. 如果 Redis 不可用，切换到内存计数器，并记录警告日志。 <br> 3. **验收**: 手动断开 Redis 连接后，系统能够继续提供服务（虽然限额不持久），并在日志中打印降级警告。 |
 
+---
 
-2.  **增强系统可观测性**:
+### **任务集三：管理与UI适配 (Task Set 3: Admin & UI Adaptation)**
 
-    - **实时会话监控**: 管理员将获得一个全新的监控维度，能够实时洞察当前系统的会话负载、用户活跃度以及渠道的会话占用情况。
+此任务集专注于为新功能提供必要的管理接口和前端用户界面。
 
-    - **精细化数据支持**: 为容量规划、用户行为分析和问题排查提供了有力的数据支持，例如可以快速定位到并发会话数异常的用户或负载过高的渠道。
+| **任务ID** | **任务描述** | **主要涉及文件** | **验收标准** |
+| :--- | :--- | :--- | :--- |
+| **TS3-1** | **实现会话监控API** | `controller/admin.go`, `router/api-router.go` | 1. 新增 `GET /api/admin/sessions/summary` 路由，仅限管理员访问。 <br> 2. 控制器函数能正确从 Redis 读取并聚合会话统计数据。 <br> 3. 返回的 JSON 格式与 **4.2.5** 中定义的结构一致。 |
+| **TS3-2** | **渠道编辑页面UI适配** | `web/src/pages/Channel/EditChannel.js` | 1. 在渠道编辑表单中，为**所有**渠道类型增加“总额度”、“并发数”、“每小时额度”、“每日额度”、“每周额度”、“每月额度”的输入框。 <br> 2. 提交表单时，这些新字段能被正确保存。 |
+| **TS3-3** | **用户与分组并发设置UI** | `web/src/pages/User/EditUser.js`, `web/src/pages/Group/EditGroup.js` (假设) | 1. 在用户编辑页面增加 `max_concurrent_sessions`（最大并发会话数）的输入框。 <br> 2. 在用户组编辑页面增加 `max_concurrent_sessions` 的输入框。 <br> 3. **验收**: 设置后，对应用户或组的并发限制在后端生效。 |
+| **TS3-4** | **会话监控数据看板 (可选)** | `web/src/pages/Dashboard/Analysis.js` | 1. 在数据看板页面新增一个“会话监控”标签页或卡片。 <br> 2. 该模块调用 `GET /api/admin/sessions/summary` 接口。 <br> 3. 使用图表（如仪表盘、条形图）或列表形式，清晰展示全局活跃会话数、各渠道会话负载和高并发用户排名。 |
+| **TS3-5** | **实现渠道状态变更钩子** | `model/channel.go` (`UpdateChannelStatus` 函数) | 1. 在渠道状态被更新为禁用/删除的逻辑中，增加一个清理函数调用。 <br> 2. 该清理函数负责扫描并删除 Redis 中所有与该 `channel_id` 相关的 `session:*` 键。 <br> 3. **验收**: 禁用一个正在被粘性会话使用的渠道后，下一次该会话的请求会重新选路到其他可用渠道。 |
 
-
-
-3.  **强化风险控制能力**:
-
-    - **防范资源滥用**: 通过用户级的并发会话数限制，有效防止了恶意或无意的用户通过开启大量并行会话来攻击或滥用服务，保护了平台资源。
-
-    - **精细化成本控制**: 通过对所有渠道类型统一实现基于“消耗额度”的分时限额，平台能够对渠道成本进行精细化、多维度的预算管理，大大降低了渠道超额盗刷的风险。
-
-
-
-4.  **完善的自动化运维框架**:
-
-    - **智能渠道管理**: 预留的“额度感知与自动启停”设计，为未来实现更加智能、自动化的渠道生命周期管理奠定了基础。系统将能够根据渠道的真实额度状况自动进行熔断和恢复，减少人工干预，提升系统自愈能力。
+通过以上任务集的划分，开发团队可以并行推进后端核心逻辑、风控机制和前端UI的实现，从而加速项目交付。
