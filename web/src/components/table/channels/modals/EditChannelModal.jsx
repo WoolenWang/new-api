@@ -163,6 +163,14 @@ const EditChannelModal = (props) => {
     allow_service_tier: false,
     disable_store: false, // false = 允许透传（默认开启）
     allow_safety_identifier: false,
+    // 额度与并发限制
+    total_quota: 0,
+    concurrency: 0,
+    // 分时额度限制
+    hourly_quota_limit: 0,
+    daily_quota_limit: 0,
+    weekly_quota_limit: 0,
+    monthly_quota_limit: 0,
   };
   const [batch, setBatch] = useState(false);
   const [multiToSingle, setMultiToSingle] = useState(false);
@@ -2647,6 +2655,108 @@ const EditChannelModal = (props) => {
                             handleInputChange('weight', value)
                           }
                           style={{ width: '100%' }}
+                        />
+                      </Col>
+                    </Row>
+
+                    {/* 额度与并发限制 */}
+                    <div className='mt-4 mb-2 text-sm font-medium text-gray-700'>
+                      {t('额度与并发限制')}
+                    </div>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='total_quota'
+                          label={t('总额度限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          step={500000}
+                          onNumberChange={(value) =>
+                            handleInputChange('total_quota', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('渠道总额度限制，0表示不限制')}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='concurrency'
+                          label={t('并发数限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          onNumberChange={(value) =>
+                            handleInputChange('concurrency', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('最大并发请求数，0表示不限制')}
+                        />
+                      </Col>
+                    </Row>
+
+                    {/* 分时额度限制 */}
+                    <div className='mt-4 mb-2 text-sm font-medium text-gray-700'>
+                      {t('分时额度限制')}
+                    </div>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='hourly_quota_limit'
+                          label={t('每小时额度限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          step={500000}
+                          onNumberChange={(value) =>
+                            handleInputChange('hourly_quota_limit', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('每小时最大消耗额度，0表示不限制')}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='daily_quota_limit'
+                          label={t('每日额度限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          step={500000}
+                          onNumberChange={(value) =>
+                            handleInputChange('daily_quota_limit', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('每日最大消耗额度，0表示不限制')}
+                        />
+                      </Col>
+                    </Row>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='weekly_quota_limit'
+                          label={t('每周额度限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          step={500000}
+                          onNumberChange={(value) =>
+                            handleInputChange('weekly_quota_limit', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('每周最大消耗额度，0表示不限制')}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Form.InputNumber
+                          field='monthly_quota_limit'
+                          label={t('每月额度限制')}
+                          placeholder={t('0 表示不限制')}
+                          min={0}
+                          step={500000}
+                          onNumberChange={(value) =>
+                            handleInputChange('monthly_quota_limit', value)
+                          }
+                          style={{ width: '100%' }}
+                          extraText={t('每月最大消耗额度，0表示不限制')}
                         />
                       </Col>
                     </Row>

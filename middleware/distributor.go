@@ -30,12 +30,34 @@ type ModelRequest struct {
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
+		var selectGroup string
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error())
 			return
 		}
+
+		sessionID := extractSessionID(c)
+		if sessionID != "" {
+			common.SetContextKey(c, constant.ContextKeySessionID, sessionID)
+		}
+		userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+		var sessionEntry *service.SessionIndexEntry
+		bindingKey := ""
+		if sessionID != "" && modelRequest.Model != "" && userId != 0 {
+			bindingKey = service.BuildSessionBindingKey(userId, modelRequest.Model, sessionID)
+			common.SetContextKey(c, constant.ContextKeySessionBindingKey, bindingKey)
+			entry, getErr := service.GetSessionBinding(c.Request.Context(), userId, modelRequest.Model, sessionID)
+			if getErr != nil {
+				logger.LogWarn(c, fmt.Sprintf("failed to load session binding %s: %v", bindingKey, getErr))
+			} else {
+				sessionEntry = entry
+			}
+		}
+		usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+		var routingGroups []string
+
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -79,8 +101,6 @@ func Distribute() func(c *gin.Context) {
 					abortWithOpenAiMessage(c, http.StatusBadRequest, "未指定模型名称，模型名称不能为空")
 					return
 				}
-				var selectGroup string
-				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}
@@ -99,29 +119,84 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 				// 计算 RoutingGroups (支持 P2P 分组多分组选路)
-				routingGroups := ComputeRoutingGroups(c, usingGroup)
+				routingGroups = ComputeRoutingGroups(c, usingGroup)
+			}
+		}
 
-				// 使用多分组选路函数
-				channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
-				if err != nil {
-					showGroup := usingGroup
-					if usingGroup == "auto" {
-						showGroup = fmt.Sprintf("auto(%s)", selectGroup)
-					}
-					message := fmt.Sprintf("获取分组 %s 下模型 %s 的可用渠道失败（distributor）: %s", showGroup, modelRequest.Model, err.Error())
-					// 如果错误，但是渠道不为空，说明是数据库一致性问题
-					//if channel != nil {
-					//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-					//	message = "数据库一致性已被破坏，请联系管理员"
-					//}
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
-					return
-				}
+		if sessionEntry != nil {
+			expectedChannelID := 0
+			if channel != nil {
+				expectedChannelID = channel.Id
+			}
+			boundChannel, forcedKey, forcedIndex, valid := validateSessionBinding(c, sessionEntry, expectedChannelID)
+			if valid {
 				if channel == nil {
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("分组 %s 下模型 %s 无可用渠道（distributor）", usingGroup, modelRequest.Model), string(types.ErrorCodeModelNotFound))
-					return
+					channel = boundChannel
+				}
+				shouldSelectChannel = false
+				common.SetContextKey(c, constant.ContextKeyChannelForcedKey, forcedKey)
+				common.SetContextKey(c, constant.ContextKeyChannelForcedKeyIndex, forcedIndex)
+				common.SetContextKey(c, constant.ContextKeyStickyChannelId, boundChannel.Id)
+				common.SetContextKey(c, constant.ContextKeySessionBindingHit, true)
+				common.SetContextKey(c, constant.ContextKeySessionIsNew, false)
+				if sessionEntry.Group != "" {
+					common.SetContextKey(c, constant.ContextKeySessionSelectedGroup, sessionEntry.Group)
+					selectGroup = sessionEntry.Group
+				}
+			} else {
+				_, _ = service.RemoveSessionBinding(c.Request.Context(), bindingKey)
+				sessionEntry = nil
+			}
+		}
+
+		if sessionID != "" && sessionEntry == nil {
+			common.SetContextKey(c, constant.ContextKeySessionIsNew, true)
+		}
+
+		if channel == nil && shouldSelectChannel {
+			if sessionID != "" && sessionEntry == nil {
+				limit := service.GetEffectiveSessionLimit(
+					common.GetContextKeyInt(c, constant.ContextKeyUserMaxConcurrentSessions),
+					common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+				)
+				if limit > 0 {
+					count, countErr := service.GetUserSessionCount(c.Request.Context(), userId)
+					if countErr != nil {
+						logger.LogWarn(c, fmt.Sprintf("failed to get user session count: %v", countErr))
+					} else if count >= int64(limit) {
+						abortWithOpenAiMessage(c, http.StatusTooManyRequests, "当前并发会话数已达上限")
+						return
+					}
 				}
 			}
+
+			if len(routingGroups) == 0 {
+				routingGroups = ComputeRoutingGroups(c, usingGroup)
+			}
+
+			channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
+			if err != nil {
+				showGroup := usingGroup
+				if usingGroup == "auto" {
+					showGroup = fmt.Sprintf("auto(%s)", selectGroup)
+				}
+				message := fmt.Sprintf("获取分组 %s 下模型 %s 的可用渠道失败（distributor）: %s", showGroup, modelRequest.Model, err.Error())
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
+				return
+			}
+			if channel == nil {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("分组 %s 下模型 %s 无可用渠道（distributor）", usingGroup, modelRequest.Model), string(types.ErrorCodeModelNotFound))
+				return
+			}
+		}
+
+		if selectGroup != "" {
+			common.SetContextKey(c, constant.ContextKeySessionSelectedGroup, selectGroup)
+		}
+
+		if channel == nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "未找到可用渠道（distributor）", string(types.ErrorCodeModelNotFound))
+			return
 		}
 
 		// P2P Channel Concurrency Tracking (Phase 1)
@@ -333,6 +408,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
+	forcedKey := common.GetContextKeyString(c, constant.ContextKeyChannelForcedKey)
+	forcedIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelForcedKeyIndex)
+	stickyChannelId := common.GetContextKeyInt(c, constant.ContextKeyStickyChannelId)
+
 	// Derive AccountHint for CLIProxyAPI channels.
 	// 优先使用独立的 account_hint 字段；若为空且为 CLIProxy 渠道，则尝试从 channel.Other JSON 中回退解析。
 	if channel.Type == constant.ChannelTypeCliProxy {
@@ -372,9 +451,25 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 	}
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
-	if newAPIError != nil {
-		return newAPIError
+	key := ""
+	index := 0
+	useStickyKey := stickyChannelId != 0 && stickyChannelId == channel.Id
+	if useStickyKey && forcedKey != "" {
+		key = forcedKey
+		index = forcedIndex
+	} else if useStickyKey && forcedIndex >= 0 {
+		var newAPIError *types.NewAPIError
+		key, newAPIError = channel.GetKeyByIndex(forcedIndex)
+		if newAPIError != nil {
+			return newAPIError
+		}
+		index = forcedIndex
+	} else {
+		var newAPIError *types.NewAPIError
+		key, index, newAPIError = channel.GetNextEnabledKey()
+		if newAPIError != nil {
+			return newAPIError
+		}
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
@@ -409,6 +504,104 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set("bot_id", channel.Other)
 	}
 	return nil
+}
+
+func validateSessionBinding(c *gin.Context, entry *service.SessionIndexEntry, expectedChannelID int) (*model.Channel, string, int, bool) {
+	if entry == nil {
+		return nil, "", 0, false
+	}
+
+	if expectedChannelID != 0 && entry.ChannelID != expectedChannelID {
+		return nil, "", 0, false
+	}
+
+	channel, err := model.CacheGetChannel(entry.ChannelID)
+	if err != nil || channel == nil {
+		channel, err = model.GetChannelById(entry.ChannelID, true)
+		if err != nil {
+			logger.LogWarn(c, fmt.Sprintf("session binding channel %d not found: %v", entry.ChannelID, err))
+			return nil, "", 0, false
+		}
+	}
+
+	if channel.Status != common.ChannelStatusEnabled {
+		return nil, "", 0, false
+	}
+
+	if err := model.CheckChannelRiskControl(channel); err != nil {
+		logger.LogWarn(c, fmt.Sprintf("session binding channel %d failed risk control: %v", channel.Id, err))
+		return nil, "", 0, false
+	}
+
+	forcedKey := channel.Key
+	forcedIndex := entry.KeyID
+	if channel.ChannelInfo.IsMultiKey {
+		key, apiErr := channel.GetKeyByIndex(entry.KeyID)
+		if apiErr != nil {
+			logger.LogWarn(c, fmt.Sprintf("session binding key invalid: channel_id=%d key_id=%d err=%v", channel.Id, entry.KeyID, apiErr))
+			return nil, "", 0, false
+		}
+		forcedKey = key
+	} else {
+		forcedIndex = 0
+	}
+
+	return channel, forcedKey, forcedIndex, true
+}
+
+func extractSessionID(c *gin.Context) string {
+	headerKeys := []string{
+		"X-NewAPI-Session-ID",
+		"Session-ID",
+		"Conversation-ID",
+		"X-Gemini-Api-Privileged-User-Id",
+	}
+	for _, key := range headerKeys {
+		if val := strings.TrimSpace(c.GetHeader(key)); val != "" {
+			return val
+		}
+	}
+
+	if val := strings.TrimSpace(c.Query("session_id")); val != "" {
+		return val
+	}
+
+	body, err := common.GetRequestBody(c)
+	if err == nil && len(body) > 0 {
+		payload := map[string]interface{}{}
+		if err := common.Unmarshal(body, &payload); err == nil {
+			if val := pickSessionField(payload, "session_id", "conversation_id", "chat_id"); val != "" {
+				return val
+			}
+			if meta, ok := payload["metadata"].(map[string]interface{}); ok {
+				if val := pickSessionField(meta, "session_id", "conversation_id"); val != "" {
+					return val
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+func pickSessionField(payload map[string]interface{}, keys ...string) string {
+	if payload == nil {
+		return ""
+	}
+	lower := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		lower[strings.ToLower(k)] = v
+	}
+	for _, key := range keys {
+		if v, ok := lower[strings.ToLower(key)]; ok {
+			if s, ok2 := v.(string); ok2 {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // extractModelNameFromGeminiPath 从 Gemini API URL 路径中提取模型名

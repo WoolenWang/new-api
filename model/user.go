@@ -46,24 +46,26 @@ type User struct {
 	InviteCode       string  `json:"invite_code" gorm:"type:varchar(32);column:invite_code;index"`       // WQuant同步过来的用户自身邀请码
 	ExternalId       string  `json:"external_id" gorm:"type:varchar(64);column:external_id;uniqueIndex"` // 外部系统用户ID（如WQuant UID）
 	// P2P Channel Sharing Fields (Phase 1)
-	ShareQuota        int            `json:"share_quota" gorm:"type:int;default:0;column:share_quota"`                 // 分享收益额度
-	HistoryShareQuota int            `json:"history_share_quota" gorm:"type:int;default:0;column:history_share_quota"` // 历史累计分享收益
-	DeletedAt         gorm.DeletedAt `gorm:"index"`
-	LinuxDOId         string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
-	Setting           string         `json:"setting" gorm:"type:text;column:setting"`
-	Remark            string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
-	StripeCustomer    string         `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	ShareQuota            int            `json:"share_quota" gorm:"type:int;default:0;column:share_quota"`                 // 分享收益额度
+	HistoryShareQuota     int            `json:"history_share_quota" gorm:"type:int;default:0;column:history_share_quota"` // 历史累计分享收益
+	DeletedAt             gorm.DeletedAt `gorm:"index"`
+	LinuxDOId             string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
+	Setting               string         `json:"setting" gorm:"type:text;column:setting"`
+	MaxConcurrentSessions int            `json:"max_concurrent_sessions" gorm:"type:int;default:0;column:max_concurrent_sessions"` // 0 means fallback to group/system default
+	Remark                string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	StripeCustomer        string         `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
 	cache := &UserBase{
-		Id:       user.Id,
-		Group:    user.Group,
-		Quota:    user.Quota,
-		Status:   user.Status,
-		Username: user.Username,
-		Setting:  user.Setting,
-		Email:    user.Email,
+		Id:                    user.Id,
+		Group:                 user.Group,
+		Quota:                 user.Quota,
+		Status:                user.Status,
+		Username:              user.Username,
+		Setting:               user.Setting,
+		Email:                 user.Email,
+		MaxConcurrentSessions: user.MaxConcurrentSessions,
 	}
 	return cache
 }

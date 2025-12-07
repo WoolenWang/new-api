@@ -105,6 +105,9 @@ func main() {
 	// 数据看板
 	go model.UpdateQuotaData()
 
+	// 初始化会话监控服务
+	service.InitSessionMonitor()
+
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {
@@ -269,6 +272,8 @@ func InitResources() error {
 	if err != nil {
 		return err
 	}
+
+	service.InitSessionManager()
 
 	// Initialize L1 Memory Cache for user data (including P2P groups)
 	model.InitUserMemoryCache()

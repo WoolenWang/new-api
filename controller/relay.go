@@ -66,6 +66,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	requestId := c.GetString(common.RequestIdKey)
 	group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	sessionID := common.GetContextKeyString(c, constant.ContextKeySessionID)
+	sessionBindingKey := common.GetContextKeyString(c, constant.ContextKeySessionBindingKey)
+	isNewSession := common.GetContextKeyBool(c, constant.ContextKeySessionIsNew)
+	bindingHit := common.GetContextKeyBool(c, constant.ContextKeySessionBindingHit)
+	sessionGroup := common.GetContextKeyString(c, constant.ContextKeySessionSelectedGroup)
 
 	var (
 		newAPIError *types.NewAPIError
@@ -168,6 +173,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		addUsedChannel(c, channel.Id)
+		sessionGroup = common.GetContextKeyString(c, constant.ContextKeySessionSelectedGroup)
 
 		if common.DataPlaneLogEnabled {
 			userId := c.GetInt("id")
@@ -202,7 +208,45 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if sessionID != "" && isNewSession {
+				if sessionBindingKey == "" {
+					sessionBindingKey = service.BuildSessionBindingKey(common.GetContextKeyInt(c, constant.ContextKeyUserId), originalModel, sessionID)
+				}
+				bindingGroup := sessionGroup
+				if bindingGroup == "" {
+					bindingGroup = group
+				}
+				entry := &service.SessionIndexEntry{
+					SessionKey: sessionBindingKey,
+					SessionID:  sessionID,
+					UserID:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
+					Model:      originalModel,
+					ChannelID:  channel.Id,
+					KeyID:      common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
+					Group:      bindingGroup,
+				}
+				if err := service.SaveSessionBinding(c.Request.Context(), entry); err != nil {
+					logger.LogWarn(c, fmt.Sprintf("failed to save session binding %s: %v", sessionBindingKey, err))
+				} else {
+					isNewSession = false
+					bindingHit = true
+				}
+			}
 			return
+		}
+
+		if sessionID != "" {
+			if sessionBindingKey == "" {
+				sessionBindingKey = service.BuildSessionBindingKey(common.GetContextKeyInt(c, constant.ContextKeyUserId), originalModel, sessionID)
+			}
+			if sessionBindingKey != "" {
+				_, _ = service.RemoveSessionBinding(c.Request.Context(), sessionBindingKey)
+			}
+			isNewSession = true
+			bindingHit = false
+			common.SetContextKey(c, constant.ContextKeyChannelForcedKey, "")
+			common.SetContextKey(c, constant.ContextKeyChannelForcedKeyIndex, 0)
+			common.SetContextKey(c, constant.ContextKeyStickyChannelId, 0)
 		}
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)

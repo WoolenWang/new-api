@@ -79,6 +79,7 @@ const EditUserModal = (props) => {
     quota: 0,
     group: 'default',
     remark: '',
+    max_concurrent_sessions: 0,
   });
 
   const fetchGroups = async () => {
@@ -305,6 +306,17 @@ const EditUserModal = (props) => {
                             onClick={() => setIsModalOpen(true)}
                           />
                         </Form.Slot>
+                      </Col>
+
+                      <Col span={24}>
+                        <Form.InputNumber
+                          field='max_concurrent_sessions'
+                          label={t('最大并发会话数')}
+                          placeholder={t('0 表示使用系统默认值')}
+                          min={0}
+                          style={{ width: '100%' }}
+                          extraText={t('限制用户同时进行的会话数，0表示使用系统默认值')}
+                        />
                       </Col>
                     </Row>
                   </Card>

@@ -37,16 +37,27 @@ const (
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 	ContextKeyChannelAccountHint       ContextKey = "account_hint"
+	ContextKeyChannelForcedKey         ContextKey = "channel_forced_key"
+	ContextKeyChannelForcedKeyIndex    ContextKey = "channel_forced_key_index"
+	ContextKeyStickyChannelId          ContextKey = "sticky_channel_id"
 
 	/* user related keys */
-	ContextKeyUserId      ContextKey = "id"
-	ContextKeyUserSetting ContextKey = "user_setting"
-	ContextKeyUserQuota   ContextKey = "user_quota"
-	ContextKeyUserStatus  ContextKey = "user_status"
-	ContextKeyUserEmail   ContextKey = "user_email"
-	ContextKeyUserGroup   ContextKey = "user_group"
-	ContextKeyUsingGroup  ContextKey = "group"
-	ContextKeyUserName    ContextKey = "username"
+	ContextKeyUserId                    ContextKey = "id"
+	ContextKeyUserSetting               ContextKey = "user_setting"
+	ContextKeyUserQuota                 ContextKey = "user_quota"
+	ContextKeyUserStatus                ContextKey = "user_status"
+	ContextKeyUserEmail                 ContextKey = "user_email"
+	ContextKeyUserGroup                 ContextKey = "user_group"
+	ContextKeyUsingGroup                ContextKey = "group"
+	ContextKeyUserName                  ContextKey = "username"
+	ContextKeyUserMaxConcurrentSessions ContextKey = "user_max_concurrent_sessions"
+
+	/* session related keys */
+	ContextKeySessionID            ContextKey = "session_id"
+	ContextKeySessionBindingKey    ContextKey = "session_binding_key"
+	ContextKeySessionBindingHit    ContextKey = "session_binding_hit"
+	ContextKeySessionIsNew         ContextKey = "session_is_new"
+	ContextKeySessionSelectedGroup ContextKey = "session_selected_group"
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 

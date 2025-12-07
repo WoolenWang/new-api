@@ -30,6 +30,7 @@ import AnnouncementsPanel from './AnnouncementsPanel';
 import FaqPanel from './FaqPanel';
 import UptimePanel from './UptimePanel';
 import SearchModal from './modals/SearchModal';
+import SessionMonitorPanel from './SessionMonitorPanel';
 
 import { useDashboardData } from '../../hooks/dashboard/useDashboardData';
 import { useDashboardStats } from '../../hooks/dashboard/useDashboardStats';
@@ -202,6 +203,13 @@ const Dashboard = () => {
           )}
         </div>
       </div>
+
+      {/* 会话监控面板 - 仅管理员可见 */}
+      {dashboardData.isAdminUser && (
+        <div className='mb-4'>
+          <SessionMonitorPanel />
+        </div>
+      )}
 
       {/* 系统公告和常见问答卡片 */}
       {dashboardData.hasInfoPanels && (

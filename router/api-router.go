@@ -307,5 +307,14 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsAdminRoute.GET("/owned", controller.GetUserOwnedGroups)   // Get specific user's owned groups (requires user_id param)
 			p2pGroupsAdminRoute.GET("/joined", controller.GetUserJoinedGroups) // Get specific user's joined groups (requires user_id param)
 		}
+
+		// Session Monitoring Routes (Admin only)
+		sessionsRoute := apiRouter.Group("/admin/sessions")
+		sessionsRoute.Use(middleware.AdminAuth())
+		{
+			sessionsRoute.GET("/summary", controller.GetSessionsSummary)                  // Get session monitoring summary
+			sessionsRoute.GET("/user/:id", controller.GetUserSessionCount)                // Get specific user's session count
+			sessionsRoute.POST("/cleanup/:channel_id", controller.CleanupChannelSessions) // Clean up sessions for a channel
+		}
 	}
 }

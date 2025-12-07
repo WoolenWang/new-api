@@ -16,14 +16,15 @@ import (
 
 // UserBase struct remains the same as it represents the cached data structure
 type UserBase struct {
-	Id             int    `json:"id"`
-	Group          string `json:"group"`
-	Email          string `json:"email"`
-	Quota          int    `json:"quota"`
-	Status         int    `json:"status"`
-	Username       string `json:"username"`
-	Setting        string `json:"setting"`
-	ExtendedGroups []int  `json:"extended_groups"` // P2P分组ID列表 (仅用于L1内存缓存,不存储到Redis)
+	Id                    int    `json:"id"`
+	Group                 string `json:"group"`
+	Email                 string `json:"email"`
+	Quota                 int    `json:"quota"`
+	Status                int    `json:"status"`
+	Username              string `json:"username"`
+	Setting               string `json:"setting"`
+	MaxConcurrentSessions int    `json:"max_concurrent_sessions"`
+	ExtendedGroups        []int  `json:"extended_groups"` // P2P分组ID列表 (仅用于L1内存缓存,不存储到Redis)
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
@@ -33,6 +34,7 @@ func (user *UserBase) WriteContext(c *gin.Context) {
 	common.SetContextKey(c, constant.ContextKeyUserEmail, user.Email)
 	common.SetContextKey(c, constant.ContextKeyUserName, user.Username)
 	common.SetContextKey(c, constant.ContextKeyUserSetting, user.GetSetting())
+	common.SetContextKey(c, constant.ContextKeyUserMaxConcurrentSessions, user.MaxConcurrentSessions)
 }
 
 func (user *UserBase) GetSetting() dto.UserSetting {
@@ -102,13 +104,14 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 
 	// Create cache object from user data
 	userCache = &UserBase{
-		Id:       user.Id,
-		Group:    user.Group,
-		Quota:    user.Quota,
-		Status:   user.Status,
-		Username: user.Username,
-		Setting:  user.Setting,
-		Email:    user.Email,
+		Id:                    user.Id,
+		Group:                 user.Group,
+		Quota:                 user.Quota,
+		Status:                user.Status,
+		Username:              user.Username,
+		Setting:               user.Setting,
+		Email:                 user.Email,
+		MaxConcurrentSessions: user.MaxConcurrentSessions,
 	}
 
 	return userCache, nil

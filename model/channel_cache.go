@@ -363,7 +363,7 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 
 			// Apply risk control check for P2P channels - skip channels that exceed limits
 			if channel.OwnerUserId != 0 {
-				if err := CheckChannelRiskControl(channel); err != nil {
+				if err := CheckChannelRiskControl(channel, 0); err != nil {
 					// Check error type and log specially for different limit types
 					var newAPIErr *types.NewAPIError
 					if errors.As(err, &newAPIErr) {
@@ -503,7 +503,7 @@ func GetRandomSatisfiedChannelWithPriorityMultiGroup(routingGroups []string, mod
 
 		// Apply risk control check for P2P channels - skip channels that exceed limits
 		if channel.OwnerUserId != 0 {
-			if err := CheckChannelRiskControl(channel); err != nil {
+			if err := CheckChannelRiskControl(channel, 0); err != nil {
 				// Log different limit types specially
 				var newAPIErr *types.NewAPIError
 				if errors.As(err, &newAPIErr) {

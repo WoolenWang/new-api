@@ -221,6 +221,8 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		// Update time-window quota counters (Task Set 2: TS2-6)
+		_ = model.UpdateChannelTimeWindowQuota(relayInfo.ChannelId, int64(quota))
 	}
 
 	logModel := modelName
@@ -315,6 +317,8 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		// Update time-window quota counters (Task Set 2: TS2-6)
+		_ = model.UpdateChannelTimeWindowQuota(relayInfo.ChannelId, int64(quota))
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota
@@ -444,6 +448,8 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		// Update time-window quota counters (Task Set 2: TS2-6)
+		_ = model.UpdateChannelTimeWindowQuota(relayInfo.ChannelId, int64(quota))
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota

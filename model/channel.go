@@ -58,13 +58,19 @@ type Channel struct {
 	AccountHint   *string `json:"account_hint" gorm:"type:varchar(255)"`         // CLIProxyAPI 凭证映射标识
 	TotalQuota    int64   `json:"total_quota" gorm:"type:bigint;default:0"`      // 总额度限制(quota单位)
 	Concurrency   int     `json:"concurrency" gorm:"type:int;default:0"`         // 并发数限制
-	HourlyLimit   int     `json:"hourly_limit" gorm:"type:int;default:0"`        // 每小时请求数限制
-	DailyLimit    int     `json:"daily_limit" gorm:"type:int;default:0"`         // 每日请求数限制
+	HourlyLimit   int     `json:"hourly_limit" gorm:"type:int;default:0"`        // 每小时请求数限制 (已废弃，使用HourlyQuotaLimit代替)
+	DailyLimit    int     `json:"daily_limit" gorm:"type:int;default:0"`         // 每日请求数限制 (已废弃，使用DailyQuotaLimit代替)
 	IsPrivate     bool    `json:"is_private" gorm:"type:boolean;default:false"`  // 是否为私有渠道
 	AllowedUsers  *string `json:"allowed_users" gorm:"type:text"`                // 允许访问的用户ID列表(JSON数组)
 	AllowedGroups *string `json:"allowed_groups" gorm:"type:text"`               // 允许访问的用户组列表(JSON数组)
 	AllowedModels *string `json:"allowed_models" gorm:"type:text"`               // P2P权限白名单：允许共享的模型列表(逗号分隔)，为空则回退使用Models字段
 	IPWhitelist   *string `json:"ip_whitelist" gorm:"type:text"`                 // IP白名单：允许访问的IP地址或CIDR网段列表(JSON数组)，为空则不限制IP
+
+	// 统一的分时额度限制字段 (适用于所有渠道类型)
+	HourlyQuotaLimit  int64 `json:"hourly_quota_limit" gorm:"type:bigint;default:0"`  // 每小时额度限制(quota单位)，0表示不限制
+	DailyQuotaLimit   int64 `json:"daily_quota_limit" gorm:"type:bigint;default:0"`   // 每日额度限制(quota单位)，0表示不限制
+	WeeklyQuotaLimit  int64 `json:"weekly_quota_limit" gorm:"type:bigint;default:0"`  // 每周额度限制(quota单位)，0表示不限制
+	MonthlyQuotaLimit int64 `json:"monthly_quota_limit" gorm:"type:bigint;default:0"` // 每月额度限制(quota单位)，0表示不限制
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -200,6 +206,28 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	}
+}
+
+// GetKeyByIndex returns the key at the given index when it is enabled.
+func (channel *Channel) GetKeyByIndex(index int) (string, *types.NewAPIError) {
+	keys := channel.GetKeys()
+	if index < 0 || index >= len(keys) {
+		return "", types.NewError(errors.New("invalid key index"), types.ErrorCodeChannelNoAvailableKey)
+	}
+
+	if channel.ChannelInfo.IsMultiKey {
+		lock := GetChannelPollingLock(channel.Id)
+		lock.Lock()
+		defer lock.Unlock()
+
+		if statusList := channel.ChannelInfo.MultiKeyStatusList; statusList != nil {
+			if status, ok := statusList[index]; ok && status != common.ChannelStatusEnabled {
+				return "", types.NewError(errors.New("selected key is disabled"), types.ErrorCodeChannelNoAvailableKey)
+			}
+		}
+	}
+
+	return keys[index], nil
 }
 
 func (channel *Channel) SaveChannelInfo() error {
@@ -687,6 +715,11 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
 			return false
 		}
+
+		// 如果渠道状态变为非启用状态，触发会话清理
+		if status != common.ChannelStatusEnabled {
+			go TriggerChannelSessionCleanup(channelId)
+		}
 	}
 	return true
 }
@@ -1062,4 +1095,27 @@ func (channel *Channel) GetAllowedGroupIDs() []int {
 	}
 
 	return groupIDs
+}
+
+// SessionCleanupCallback is a function type for session cleanup callbacks
+// It's used to decouple model package from service package (avoid circular imports)
+type SessionCleanupCallback func(channelId int)
+
+// sessionCleanupCallback stores the registered callback function
+var sessionCleanupCallback SessionCleanupCallback
+
+// RegisterSessionCleanupCallback registers a callback function for session cleanup
+// This should be called during service initialization
+func RegisterSessionCleanupCallback(callback SessionCleanupCallback) {
+	sessionCleanupCallback = callback
+	common.SysLog("Session cleanup callback registered")
+}
+
+// TriggerChannelSessionCleanup triggers session cleanup for a channel
+// This is called when channel status changes to disabled
+func TriggerChannelSessionCleanup(channelId int) {
+	if sessionCleanupCallback != nil {
+		common.SysLog(fmt.Sprintf("Triggering session cleanup for channel %d", channelId))
+		sessionCleanupCallback(channelId)
+	}
 }
