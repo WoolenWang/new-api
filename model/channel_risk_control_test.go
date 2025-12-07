@@ -1,9 +1,12 @@
 package model
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/types"
 )
 
@@ -140,7 +143,7 @@ func TestCheckChannelRiskControl(t *testing.T) {
 				} else {
 					// Verify error contains expected text
 					var newAPIErr *types.NewAPIError
-					if !types.IsNewAPIError(err, &newAPIErr) {
+					if !errors.As(err, &newAPIErr) {
 						t.Errorf("Expected NewAPIError, got: %T", err)
 					}
 					if tt.expectedError != "" && !contains(err.Error(), tt.expectedError) {
@@ -159,20 +162,13 @@ func TestCheckChannelRiskControl(t *testing.T) {
 
 // Helper function to check if string contains substring
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }
 
 // TestUpdateChannelTimeWindowQuota tests quota update function
 func TestUpdateChannelTimeWindowQuota(t *testing.T) {
+	common.RedisEnabled = false
+	common.RDB = nil
 	// Note: This test will only work if Redis is enabled
 	// If Redis is not available, the function should gracefully degrade to memory
 	channelId := 999

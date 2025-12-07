@@ -39,6 +39,8 @@ export default function RequestRateLimit(props) {
     ModelRequestRateLimitSuccessCount: 1000,
     ModelRequestRateLimitDurationMinutes: 1,
     ModelRequestRateLimitGroup: '',
+    SystemMaxConcurrentSessions: 5,
+    GroupMaxConcurrentSessions: '',
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
@@ -232,6 +234,87 @@ export default function RequestRateLimit(props) {
             <Row>
               <Button size='default' onClick={onSubmit}>
                 {t('保存模型速率限制')}
+              </Button>
+            </Row>
+          </Form.Section>
+
+          <Form.Section text={t('会话并发限制')}>
+            <Row gutter={16}>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('系统默认最大并发会话数')}
+                  field={'SystemMaxConcurrentSessions'}
+                  min={0}
+                  step={1}
+                  extraText={t('所有用户默认允许的最大并发会话数，0 表示不限制')}
+                  suffix={t('个会话')}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      SystemMaxConcurrentSessions: String(value),
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+
+            <Row>
+              <Col xs={24} sm={16}>
+                <Form.TextArea
+                  label={t('按分组配置最大并发会话数')}
+                  placeholder={t(
+                    '{\n  "default": 5,\n  "vip": 20\n}',
+                  )}
+                  field={'GroupMaxConcurrentSessions'}
+                  autosize={{ minRows: 5, maxRows: 15 }}
+                  trigger='blur'
+                  stopValidateWithError
+                  rules={[
+                    {
+                      validator: (rule, value) => verifyJSON(value),
+                      message: t('不是合法的 JSON 字符串'),
+                    },
+                  ]}
+                  extraText={
+                    <div>
+                      <p>{t('说明：')}</p>
+                      <ul>
+                        <li>
+                          {t(
+                            '使用 JSON 对象格式，格式为：{"分组名": 最大并发会话数}',
+                          )}
+                        </li>
+                        <li>
+                          {t(
+                            '示例：{"default": 5, "vip": 20}，表示 default 组最多 5 个会话，vip 组最多 20 个会话。',
+                          )}
+                        </li>
+                        <li>
+                          {t(
+                            '未在此处配置的分组将使用系统默认最大并发会话数。',
+                          )}
+                        </li>
+                        <li>
+                          {t(
+                            '同一用户的最终限制优先级为：用户级 > 分组级 > 系统默认。',
+                          )}
+                        </li>
+                      </ul>
+                    </div>
+                  }
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      GroupMaxConcurrentSessions: value,
+                    });
+                  }}
+                />
+              </Col>
+            </Row>
+
+            <Row>
+              <Button size='default' onClick={onSubmit}>
+                {t('保存会话并发限制')}
               </Button>
             </Row>
           </Form.Section>

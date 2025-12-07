@@ -21,7 +21,19 @@ type ChannelUsageStats struct {
 	DailyRequests      int       // Requests in current day (当前天请求数) - Legacy, for backward compatibility
 	HourStartTime      time.Time // Start of current hour window
 	DayStartTime       time.Time // Start of current day window
-	mu                 sync.RWMutex
+
+	// In-memory quota counters used as a fallback when Redis is unavailable.
+	// These are per-time-window, quota-based (单位与 UsedQuota 一致), and keyed by time bucket.
+	HourlyQuotaUsed    int64
+	HourlyQuotaBucket  string
+	DailyQuotaUsed     int64
+	DailyQuotaBucket   string
+	WeeklyQuotaUsed    int64
+	WeeklyQuotaBucket  string
+	MonthlyQuotaUsed   int64
+	MonthlyQuotaBucket string
+
+	mu sync.RWMutex
 }
 
 var (
@@ -39,30 +51,29 @@ const (
 	TimeWindowMonthly TimeWindow = "monthly"
 )
 
+// getCurrentTimeBucket returns the logical time bucket string for a given window
+// (e.g. hour "2025120708", day "20251207", week "2025_W49", month "202512").
+func getCurrentTimeBucket(window TimeWindow) string {
+	now := time.Now()
+	switch window {
+	case TimeWindowHourly:
+		return now.Format("2006010215")
+	case TimeWindowDaily:
+		return now.Format("20060102")
+	case TimeWindowWeekly:
+		year, week := now.ISOWeek()
+		return fmt.Sprintf("%d_W%02d", year, week)
+	case TimeWindowMonthly:
+		return now.Format("200601")
+	default:
+		return "unknown"
+	}
+}
+
 // getTimeBucketKey generates Redis key for time-window quota tracking
 // Format: channel_quota:{channel_id}:{period}:{timestamp_bucket}
 func getTimeBucketKey(channelId int, window TimeWindow) string {
-	now := time.Now()
-	var bucket string
-
-	switch window {
-	case TimeWindowHourly:
-		// Bucket: current hour (e.g., "2025120708" for 2025-12-07 08:00)
-		bucket = now.Format("2006010215")
-	case TimeWindowDaily:
-		// Bucket: current day (e.g., "20251207")
-		bucket = now.Format("20060102")
-	case TimeWindowWeekly:
-		// Bucket: Monday of current week (ISO 8601)
-		year, week := now.ISOWeek()
-		bucket = fmt.Sprintf("%d_W%02d", year, week)
-	case TimeWindowMonthly:
-		// Bucket: current month (e.g., "202512")
-		bucket = now.Format("200601")
-	default:
-		bucket = "unknown"
-	}
-
+	bucket := getCurrentTimeBucket(window)
 	return fmt.Sprintf("channel_quota:%d:%s:%s", channelId, window, bucket)
 }
 
@@ -82,8 +93,8 @@ func getTTLForWindow(window TimeWindow) time.Duration {
 	}
 }
 
-// getQuotaUsedInWindow retrieves the quota consumed in a specific time window from Redis
-// Falls back to in-memory counter if Redis is unavailable
+// getQuotaUsedInWindow retrieves the quota consumed in a specific time window from Redis.
+// Falls back to an in-memory, quota-based counter if Redis is unavailable.
 func getQuotaUsedInWindow(channelId int, window TimeWindow) (int64, error) {
 	// Primary: Try Redis
 	if common.RedisEnabled && common.RDB != nil {
@@ -109,34 +120,45 @@ func getQuotaUsedInWindow(channelId int, window TimeWindow) (int64, error) {
 		}
 	}
 
-	// Fallback: Use in-memory tracking (less accurate in multi-node deployments)
-	// This only supports hourly/daily for backward compatibility
-	if window == TimeWindowHourly || window == TimeWindowDaily {
-		stats := GetChannelUsageStats(channelId)
-		stats.mu.RLock()
-		defer stats.mu.RUnlock()
+	// Fallback: Use in-memory quota tracking (less accurate in multi-node deployments)
+	stats := GetChannelUsageStats(channelId)
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
 
-		// Check if time window has expired and needs reset
-		now := time.Now()
-		if window == TimeWindowHourly {
-			if now.Sub(stats.HourStartTime) >= time.Hour {
-				return 0, nil // Window expired, return 0
-			}
-			// Note: We're returning request count, not quota. This is a limitation of memory fallback.
-			// For true quota-based limiting, Redis is required.
-			return int64(stats.HourlyRequests), nil
+	bucket := getCurrentTimeBucket(window)
+	var used int64
+
+	switch window {
+	case TimeWindowHourly:
+		if stats.HourlyQuotaBucket != bucket {
+			stats.HourlyQuotaBucket = bucket
+			stats.HourlyQuotaUsed = 0
 		}
-		if window == TimeWindowDaily {
-			if now.Truncate(24 * time.Hour).After(stats.DayStartTime) {
-				return 0, nil
-			}
-			return int64(stats.DailyRequests), nil
+		used = stats.HourlyQuotaUsed
+	case TimeWindowDaily:
+		if stats.DailyQuotaBucket != bucket {
+			stats.DailyQuotaBucket = bucket
+			stats.DailyQuotaUsed = 0
 		}
+		used = stats.DailyQuotaUsed
+	case TimeWindowWeekly:
+		if stats.WeeklyQuotaBucket != bucket {
+			stats.WeeklyQuotaBucket = bucket
+			stats.WeeklyQuotaUsed = 0
+		}
+		used = stats.WeeklyQuotaUsed
+	case TimeWindowMonthly:
+		if stats.MonthlyQuotaBucket != bucket {
+			stats.MonthlyQuotaBucket = bucket
+			stats.MonthlyQuotaUsed = 0
+		}
+		used = stats.MonthlyQuotaUsed
+	default:
+		return 0, fmt.Errorf("unknown time window: %s", window)
 	}
 
-	// For weekly/monthly, memory fallback is not supported
-	common.SysLog(fmt.Sprintf("Warning: Redis unavailable and window %s not supported by memory fallback for channel %d", window, channelId))
-	return 0, nil
+	common.SysLog(fmt.Sprintf("Warning: Redis disabled/unavailable for channel %d window %s, using in-memory quota fallback (used=%d)", channelId, window, used))
+	return used, nil
 }
 
 // CheckChannelRiskControl checks if channel passes risk control limits
@@ -329,12 +351,16 @@ func GetChannelUsageStats(channelId int) *ChannelUsageStats {
 	// Load persisted used_quota from database
 	var persistedQuota int64 = 0
 	var channel Channel
-	err := DB.Select("used_quota").Where("id = ?", channelId).First(&channel).Error
-	if err == nil {
-		persistedQuota = channel.UsedQuota
-		common.SysLog(fmt.Sprintf("Loaded persisted used_quota for channel #%d: %d", channelId, persistedQuota))
+	if DB != nil {
+		err := DB.Select("used_quota").Where("id = ?", channelId).First(&channel).Error
+		if err == nil {
+			persistedQuota = channel.UsedQuota
+			common.SysLog(fmt.Sprintf("Loaded persisted used_quota for channel #%d: %d", channelId, persistedQuota))
+		} else {
+			common.SysLog(fmt.Sprintf("Warning: Failed to load used_quota for channel #%d, starting from 0: %v", channelId, err))
+		}
 	} else {
-		common.SysLog(fmt.Sprintf("Warning: Failed to load used_quota for channel #%d, starting from 0: %v", channelId, err))
+		common.SysLog(fmt.Sprintf("Warning: DB is nil when loading used_quota for channel #%d, starting from 0", channelId))
 	}
 
 	now := time.Now()
@@ -383,13 +409,47 @@ func UpdateChannelTimeWindowQuota(channelId int, quota int64) error {
 			if common.DebugEnabled {
 				common.SysLog(fmt.Sprintf("Updated time-window quota for channel %d: +%d", channelId, quota))
 			}
-			// Redis update successful, still update in-memory for legacy request counters
 		}
 	}
 
-	// Fallback/Supplement: Update in-memory statistics (for backward compatibility)
-	// This updates the legacy HourlyRequests/DailyRequests counters
-	// Note: These are request-count based, not quota-based, but we keep them for compatibility
+	// Always update in-memory statistics so that, when Redis is unavailable,
+	// we still have a quota-based time-window view for risk control.
+	stats := GetChannelUsageStats(channelId)
+	stats.mu.Lock()
+
+	// Update per-window quota buckets
+	for _, window := range []TimeWindow{TimeWindowHourly, TimeWindowDaily, TimeWindowWeekly, TimeWindowMonthly} {
+		bucket := getCurrentTimeBucket(window)
+		switch window {
+		case TimeWindowHourly:
+			if stats.HourlyQuotaBucket != bucket {
+				stats.HourlyQuotaBucket = bucket
+				stats.HourlyQuotaUsed = 0
+			}
+			stats.HourlyQuotaUsed += quota
+		case TimeWindowDaily:
+			if stats.DailyQuotaBucket != bucket {
+				stats.DailyQuotaBucket = bucket
+				stats.DailyQuotaUsed = 0
+			}
+			stats.DailyQuotaUsed += quota
+		case TimeWindowWeekly:
+			if stats.WeeklyQuotaBucket != bucket {
+				stats.WeeklyQuotaBucket = bucket
+				stats.WeeklyQuotaUsed = 0
+			}
+			stats.WeeklyQuotaUsed += quota
+		case TimeWindowMonthly:
+			if stats.MonthlyQuotaBucket != bucket {
+				stats.MonthlyQuotaBucket = bucket
+				stats.MonthlyQuotaUsed = 0
+			}
+			stats.MonthlyQuotaUsed += quota
+		}
+	}
+	stats.mu.Unlock()
+
+	// Also update legacy request-count based counters for backward compatibility
 	IncrementChannelRequest(channelId)
 
 	return nil

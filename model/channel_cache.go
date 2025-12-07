@@ -361,33 +361,33 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 				continue
 			}
 
-			// Apply risk control check for P2P channels - skip channels that exceed limits
-			if channel.OwnerUserId != 0 {
-				if err := CheckChannelRiskControl(channel, 0); err != nil {
-					// Check error type and log specially for different limit types
-					var newAPIErr *types.NewAPIError
-					if errors.As(err, &newAPIErr) {
-						switch newAPIErr.GetErrorCode() {
-						case types.ErrorCodeChannelConcurrencyExceeded:
-							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
-								channel.Id, channel.Name, err.Error()))
-						case types.ErrorCodeChannelHourlyLimitExceeded:
-							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to hourly rate limit: %s",
-								channel.Id, channel.Name, err.Error()))
-						case types.ErrorCodeChannelDailyLimitExceeded:
-							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to daily rate limit: %s",
-								channel.Id, channel.Name, err.Error()))
-						case types.ErrorCodeChannelTotalQuotaExceeded:
-							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to total quota limit: %s",
-								channel.Id, channel.Name, err.Error()))
-						default:
-							common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to risk control: %s",
-								channel.Id, channel.Name, err.Error()))
-						}
+			// Apply unified risk control check for all channels using an estimated quota
+			// This enables pre-filtering by total and time-window quota limits before selection.
+			const estimatedQuota int64 = 2500 // Approximate quota for a typical request
+			if err := CheckChannelRiskControl(channel, estimatedQuota); err != nil {
+				// Check error type and log specially for different limit types
+				var newAPIErr *types.NewAPIError
+				if errors.As(err, &newAPIErr) {
+					switch newAPIErr.GetErrorCode() {
+					case types.ErrorCodeChannelConcurrencyExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to concurrency limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelHourlyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to hourly quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelDailyLimitExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to daily quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					case types.ErrorCodeChannelTotalQuotaExceeded:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to total quota limit: %s",
+							channel.Id, channel.Name, err.Error()))
+					default:
+						common.SysLog(fmt.Sprintf("Channel #%d (%s) skipped due to risk control: %s",
+							channel.Id, channel.Name, err.Error()))
 					}
-					// Skip this channel if it exceeds risk control limits
-					continue
 				}
+				// Skip this channel if it exceeds risk control limits
+				continue
 			}
 
 			// Classify into appropriate tier based on ownership and privacy settings
@@ -501,32 +501,31 @@ func GetRandomSatisfiedChannelWithPriorityMultiGroup(routingGroups []string, mod
 			continue
 		}
 
-		// Apply risk control check for P2P channels - skip channels that exceed limits
-		if channel.OwnerUserId != 0 {
-			if err := CheckChannelRiskControl(channel, 0); err != nil {
-				// Log different limit types specially
-				var newAPIErr *types.NewAPIError
-				if errors.As(err, &newAPIErr) {
-					switch newAPIErr.GetErrorCode() {
-					case types.ErrorCodeChannelConcurrencyExceeded:
-						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to concurrency limit: %s",
-							channel.Id, channel.Name, err.Error()))
-					case types.ErrorCodeChannelHourlyLimitExceeded:
-						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to hourly rate limit: %s",
-							channel.Id, channel.Name, err.Error()))
-					case types.ErrorCodeChannelDailyLimitExceeded:
-						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to daily rate limit: %s",
-							channel.Id, channel.Name, err.Error()))
-					case types.ErrorCodeChannelTotalQuotaExceeded:
-						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to total quota limit: %s",
-							channel.Id, channel.Name, err.Error()))
-					default:
-						common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to risk control: %s",
-							channel.Id, channel.Name, err.Error()))
-					}
+		// Apply unified risk control check for all channels using an estimated quota
+		const estimatedQuota int64 = 2500
+		if err := CheckChannelRiskControl(channel, estimatedQuota); err != nil {
+			// Log different limit types specially
+			var newAPIErr *types.NewAPIError
+			if errors.As(err, &newAPIErr) {
+				switch newAPIErr.GetErrorCode() {
+				case types.ErrorCodeChannelConcurrencyExceeded:
+					common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to concurrency limit: %s",
+						channel.Id, channel.Name, err.Error()))
+				case types.ErrorCodeChannelHourlyLimitExceeded:
+					common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to hourly quota limit: %s",
+						channel.Id, channel.Name, err.Error()))
+				case types.ErrorCodeChannelDailyLimitExceeded:
+					common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to daily quota limit: %s",
+						channel.Id, channel.Name, err.Error()))
+				case types.ErrorCodeChannelTotalQuotaExceeded:
+					common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to total quota limit: %s",
+						channel.Id, channel.Name, err.Error()))
+				default:
+					common.SysLog(fmt.Sprintf("Multi-group routing: Channel #%d (%s) skipped due to risk control: %s",
+						channel.Id, channel.Name, err.Error()))
 				}
-				continue
 			}
+			continue
 		}
 
 		// Find which group this channel belongs to (for logging)

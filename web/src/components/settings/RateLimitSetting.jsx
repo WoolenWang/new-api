@@ -32,6 +32,8 @@ const RateLimitSetting = () => {
     ModelRequestRateLimitSuccessCount: 1000,
     ModelRequestRateLimitDurationMinutes: 1,
     ModelRequestRateLimitGroup: '',
+    SystemMaxConcurrentSessions: 0,
+    GroupMaxConcurrentSessions: '',
   });
 
   let [loading, setLoading] = useState(false);
@@ -44,6 +46,14 @@ const RateLimitSetting = () => {
       data.forEach((item) => {
         if (item.key === 'ModelRequestRateLimitGroup') {
           item.value = JSON.stringify(JSON.parse(item.value), null, 2);
+        }
+        if (item.key === 'GroupMaxConcurrentSessions') {
+          // Pretty-print group concurrency limits JSON for editing
+          try {
+            item.value = JSON.stringify(JSON.parse(item.value), null, 2);
+          } catch (e) {
+            // If parsing fails, keep original string so admin can fix it
+          }
         }
 
         if (item.key.endsWith('Enabled')) {
