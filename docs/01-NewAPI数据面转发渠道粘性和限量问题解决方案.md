@@ -88,7 +88,11 @@
 
 - **过期时间 (TTL)**: 我们会为每个会话绑定键设置一个滑动过期时间（例如，30分钟）。每次请求成功命中并复用此绑定时，都会刷新其 TTL，确保活跃的会话能持续保持粘性。
 
-#### **4.1.4 带有粘性会话的请求处理流程**
+**Note on Multi-Key Stickiness**:
+For channels configured with multiple keys, storing the `key_id` (index of the key) is crucial. When a session binding is hit, the `relay` logic will use this `key_id` to directly select the specific key, bypassing the standard `GetNextEnabledKey()` round-robin or random selection. This ensures that all requests within the same session are sent to the exact same upstream account, preserving session consistency and respecting upstream rate limits.
+
+
+#### **4.1.4 带有粘性会G话的请求处理流程**
 
 ```mermaid
 graph TD
@@ -136,6 +140,9 @@ graph TD
         D; K; N; R; J;
     end
 ```
+
+**Note on Retry Logic**:
+The `Relay` controller's retry mechanism is enhanced by this design. As shown in the diagram, if a request fails (`L` node), and it is not the final retry attempt (`P` node), the system **must** delete the existing session binding from Redis (`R` node) before re-executing the channel selection logic (`S` node). This critical step ensures that the session is not "locked" to a failed or temporarily unavailable channel, allowing the retry to select a new, healthy channel.
 
 #### **4.1.5 边界条件与降级策略**
 - **多节点一致性**: 依赖 Redis 作为集中式存储，是保证多节点部署时会话粘性一致的关键。
@@ -185,12 +192,12 @@ graph TD
   2.  **分组覆盖**: 在用户分组（`groups`）的设置中，增加 `max_concurrent_sessions` 字段，其优先级高于系统默认值。
   3.  **用户级覆盖**: 在用户（`users`）表中增加 `max_concurrent_sessions` 字段，优先级最高。
 - **校验逻辑**:
-  - **时机**: 在`Distribute`中间件中，当一个请求被识别为新会话（即 Redis 中不存在其绑定）时，在创建绑定之前执行此检查。
+  - **时机**: 在`Distribute`中间件中，当一个请求被识别为**新会话**（即 Redis 中不存在其绑定关系）时，在创建绑定之前执行此检查。
   - **步骤**:
     1. 获取当前用户的并发会话数限制。
     2. 使用 `SCARD session:user:{user_id}` 命令获取该用户当前的活跃会话数。
     3. 如果 `当前会话数 >= 并发会话数限制`，则直接拒绝本次请求，返回 HTTP `429 Too Many Requests` 错误，并附带清晰的错误信息（如“并发会话数已达上限”）。
-  - **例外**: 如果请求携带的 `session_id` 已存在于用户的活跃会话集合中，则视为对现有会话的复用，**不计入**并发数检查，直接允许通过。
+  - **例外**: 如果一个请求携带的 `session_id` 已经存在于 Redis 中（即，这是一个**复用会话**的请求），系统将**跳过**并发数检查，直接允许请求通过。这确保了同一会话的后续请求不会被错误地计入新的并发。
 
 #### **4.2.5 监控接口**
 为了让管理员能够实时了解系统会话状态，我们将新增一个只读的管理 API 端点。
@@ -227,13 +234,16 @@ graph TD
 - **实现**: 该接口将直接从 Redis 中读取 `session:global:count`、`session:channel:stats` 等键，并结合查询用户表来聚合数据，实现高效的实时监控。
 
 
-### 4.3 渠道额度分时限额（统一机制）
+### 4.3 渠道额度分时限额（统一风控机制）
 
 #### **4.3.1 设计目标**
-将原先仅针对P2P渠道的、基于“请求数”的简单限流，升级为一套统一的、适用于**所有渠道类型**的、基于“消耗额度”的精细化预算管理体系，覆盖小时、天、周、月四个时间维度。
+将原先仅针对P2P渠道的、基于“请求数”的简单限流，升级为一套统一的、适用于**所有渠道类型**的、基于“消耗额度”的精细化预算管理体系，覆盖小时、天、周、月四个时间维度。风控检查将前置到渠道选择阶段，确保在选路前就过滤掉不满足条件的渠道。
 
-#### **4.3.2 数据模型扩展**
-在 `model/channel.go` 的 `Channel` 结构体中统一增加以下字段。这些字段的单位与 `UsedQuota` 保持一致，为0则表示不限制。
+#### **4.3.2 统一风控入口**
+`CheckChannelRiskControl` 函数将被重构，以支持所有渠道类型，并集中处理所有类型的限额检查。它将在 `service.CacheGetRandomSatisfiedChannelMultiGroup` (或其DB实现)内部，对每一个候选渠道进行调用。这确保了无论是平台渠道还是P2P渠道，都在统一的入口点应用一致的风控逻辑。
+
+#### **4.3.3 数据模型扩展**
+在 `model/channel.go` 的 `Channel` 结构体中统一增加以下字段，用于支持额度型分时限额。这些字段的单位与 `UsedQuota` 保持一致，为0则表示不限制。
 
 ```go
 // in model/channel.go
@@ -251,63 +261,20 @@ type Channel struct {
 ```
 - **数据库迁移**: 需要提供相应的数据库迁移SQL脚本以应用这些字段变更。
 
-#### **4.3.3 Redis 额度计数器设计**
+#### **4.3.4 Redis 额度计数器设计**
 我们将使用 Redis 的 `INCRBY` 命令来原子地累加每个时间窗口的消耗额度，并利用 `EXPIRE` 为每个键设置等于其窗口长度的 TTL，实现窗口的自动滚动。
 
 - **键 (Key) 格式**: `channel_quota:{channel_id}:{period}:{timestamp_bucket}`
   - `channel_id`: 渠道的唯一ID。
   - `period`: 时间窗口类型，可选值为 `hourly`, `daily`, `weekly`, `monthly`。
-  - `timestamp_bucket`: 当前时间窗口的起始时间戳。
+  - `timestamp_bucket`: 当前时间窗口的起始时间戳（例如，对于小时级，是当前小时的整点时间戳）。
 
 - **降级策略**: 如果 Redis 不可用，此功能将自动降级。系统会在内存中维护一个临时的计数器，并在应用重启或定时任务触发时尝试将数据回写数据库。同时，会记录警告日志，提示数据非持久化带来的超卖风险。
 
-#### **4.3.4 额度检查与更新流程**
-
-```mermaid
-graph TD
-    subgraph LegendSubGraph ["图例"]
-        start_node[("开始")]
-        end_node[("结束")]
-        process_node["处理步骤"]
-        decision_node{"决策判断"}
-        db_node[/"数据存储"/]
-    end
-
-    A(("开始请求")) --> B["渠道选择逻辑<br>(Distribute 中间件)"];
-    B --> C{"对选定渠道<br>执行预检查"};
-    C --> D["计算预估消耗额度<br>(e.g., PreConsumedQuota)"];
-    D --> E{"循环检查各时间窗口<br>(小时/天/周/月)"};
-
-    subgraph TimeWindowChecksSubGraph ["时间窗口检查循环"]
-        E --> F{"(Redis) GET 窗口已用额度"};
-        F --> G{"已用额度 + 预估消耗 > 窗口限额?"};
-        G -->|"是"| H["预检查失败<br>渠道不可用"];
-        G -->|"否"| I["继续检查下一个窗口"];
-    end
-    
-    I --> E;
-    E -->|"所有窗口检查完毕"| J["预检查通过"];
-    H --> K["从候选列表移除<br>或触发重试"];
-    J --> L["执行请求转发<br>(Relay 控制器)"];
-    L --> M{"请求成功处理"};
-
-    subgraph QuotaUpdateSubGraph ["额度更新"]
-        M -->|"是"| N["获取本次请求的<br>精确消耗额度"];
-        N --> O["(Redis) INCRBY 更新所有<br>时间窗口的计数器"];
-        O --> P["更新渠道总消耗<br>和用户余额"];
-    end
-
-    M -->|"否 (请求失败)"| Q["不更新额度计数器<br>(或执行回滚逻辑)"];
-    
-    K --> Z(("结束"));
-    P --> Z;
-    Q --> Z;
-```
-
-**流程详解**:
-1.  **预检查 (Pre-check)**: 在渠道选择阶段，对每个候选渠道，使用预估消耗额度与Redis中各时间窗口的已用额度进行比较，快速过滤掉已超限的渠道。
-2.  **精确结算与更新 (Settlement)**: 在请求成功并获取到精确用量后，在 `postConsumeQuota` 函数中，同步调用一个新的函数 `UpdateChannelTimeWindowQuota`，原子地将精确消耗额度累加到 Redis 中对应的 `hourly`, `daily`, `weekly`, `monthly` 四个键上。
-3.  **与重试机制的交互**: 如果一个渠道因分时额度超限而在预检查阶段被过滤，负载均衡逻辑会自然选择下一个。如果一个粘性会话命中了超限渠道，必须先删除绑定关系再重试，以确保重新选路。
+#### **4.3.5 额度检查与更新流程**
+1.  **预检查 (Pre-check)**: 在渠道选择阶段，对每个候选渠道，使用预估消耗额度与Redis中各时间窗口的已用额度进行比较。如果`已用额度 + 预估消耗 > 窗口限额`，该渠道将被从候选列表中**过滤**，不会进入负载均衡选择。
+2.  **精确结算与更新 (Post-request)**: 在请求成功并获取到精确用量后，在 `postConsumeQuota` 函数中，同步调用一个新的函数 `UpdateChannelTimeWindowQuota`，原子地将精确消耗额度累加到 Redis 中对应的 `hourly`, `daily`, `weekly`, `monthly` 四个键上。
+3.  **与重试机制的交互**: 如果一个粘性会话命中了已超限的渠道，`Distribute` 中间件中的粘性逻辑会发现该渠道不可用，删除绑定关系，并重新执行标准选路逻辑，从而实现自动切换。
 
 
 ### 4.4 渠道剩余额度感知与自动启停（预留设计）
