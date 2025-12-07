@@ -198,3 +198,255 @@ func TestUpdateChannelTimeWindowQuota(t *testing.T) {
 	// Cleanup
 	ResetChannelUsageStats(channelId)
 }
+
+// TestTimeBucketTransition tests time window boundary transitions
+func TestTimeBucketTransition(t *testing.T) {
+	channelId := 888
+	common.RedisEnabled = false
+
+	// Test hourly bucket transition
+	stats := GetChannelUsageStats(channelId)
+	oldBucket := getCurrentTimeBucket(TimeWindowHourly)
+
+	stats.mu.Lock()
+	stats.HourlyQuotaBucket = oldBucket
+	stats.HourlyQuotaUsed = 5000
+	stats.mu.Unlock()
+
+	// Simulate checking quota in same bucket
+	used1, _ := getQuotaUsedInWindow(channelId, TimeWindowHourly)
+	if used1 != 5000 {
+		t.Errorf("Expected quota 5000, got %d", used1)
+	}
+
+	// Simulate bucket change by setting a different bucket
+	stats.mu.Lock()
+	stats.HourlyQuotaBucket = "2025120700" // Old bucket
+	stats.HourlyQuotaUsed = 5000
+	stats.mu.Unlock()
+
+	// Should reset to 0 when bucket changes
+	used2, _ := getQuotaUsedInWindow(channelId, TimeWindowHourly)
+	if used2 != 0 {
+		t.Errorf("Expected quota to reset to 0 on bucket change, got %d", used2)
+	}
+
+	t.Logf("Bucket transition test - Old: %d, New (after reset): %d", used1, used2)
+	ResetChannelUsageStats(channelId)
+}
+
+// TestQuotaAtExactThreshold tests behavior when quota exactly equals limit
+func TestQuotaAtExactThreshold(t *testing.T) {
+	tests := []struct {
+		name           string
+		channel        *Channel
+		currentUsed    int64
+		estimatedQuota int64
+		shouldPass     bool
+	}{
+		{
+			name: "Quota exactly at total limit should fail",
+			channel: &Channel{
+				Id:         100,
+				TotalQuota: 10000,
+			},
+			currentUsed:    10000,
+			estimatedQuota: 1,
+			shouldPass:     false,
+		},
+		{
+			name: "Quota just below limit should pass",
+			channel: &Channel{
+				Id:         101,
+				TotalQuota: 10000,
+			},
+			currentUsed:    9999,
+			estimatedQuota: 1,
+			shouldPass:     true,
+		},
+		{
+			name: "Estimated quota would exactly reach limit should fail",
+			channel: &Channel{
+				Id:         102,
+				TotalQuota: 10000,
+			},
+			currentUsed:    9500,
+			estimatedQuota: 501,
+			shouldPass:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := GetChannelUsageStats(tt.channel.Id)
+			stats.mu.Lock()
+			stats.UsedQuota = tt.currentUsed
+			stats.mu.Unlock()
+
+			err := CheckChannelRiskControl(tt.channel, tt.estimatedQuota)
+
+			if tt.shouldPass && err != nil {
+				t.Errorf("Expected pass, but got error: %v", err)
+			}
+			if !tt.shouldPass && err == nil {
+				t.Error("Expected failure at threshold, but check passed")
+			}
+
+			ResetChannelUsageStats(tt.channel.Id)
+		})
+	}
+}
+
+// TestMultipleTimeWindowLimits tests channel with limits in multiple dimensions
+func TestMultipleTimeWindowLimits(t *testing.T) {
+	common.RedisEnabled = false
+
+	channel := &Channel{
+		Id:                200,
+		TotalQuota:        100000,
+		HourlyQuotaLimit:  5000,
+		DailyQuotaLimit:   50000,
+		WeeklyQuotaLimit:  200000,
+		MonthlyQuotaLimit: 500000,
+	}
+
+	// Should pass with no usage
+	err := CheckChannelRiskControl(channel, 2500)
+	if err != nil {
+		t.Errorf("Should pass with no usage, got: %v", err)
+	}
+
+	// Simulate hourly limit reached
+	stats := GetChannelUsageStats(channel.Id)
+	bucket := getCurrentTimeBucket(TimeWindowHourly)
+	stats.mu.Lock()
+	stats.HourlyQuotaBucket = bucket
+	stats.HourlyQuotaUsed = 5000
+	stats.mu.Unlock()
+
+	err = CheckChannelRiskControl(channel, 100)
+	if err == nil {
+		t.Error("Should fail when hourly limit exceeded")
+	} else {
+		var newAPIErr *types.NewAPIError
+		if errors.As(err, &newAPIErr) {
+			if newAPIErr.GetErrorCode() != types.ErrorCodeChannelHourlyLimitExceeded {
+				t.Errorf("Expected hourly limit error, got: %v", newAPIErr.GetErrorCode())
+			}
+		}
+		t.Logf("Correctly blocked by hourly limit: %v", err)
+	}
+
+	ResetChannelUsageStats(channel.Id)
+}
+
+// TestConcurrencyLimit tests concurrent request blocking
+func TestConcurrencyLimit(t *testing.T) {
+	channel := &Channel{
+		Id:          300,
+		Concurrency: 5,
+	}
+
+	stats := GetChannelUsageStats(channel.Id)
+
+	// Simulate 5 concurrent requests
+	for i := 0; i < 5; i++ {
+		IncrementChannelConcurrency(channel.Id)
+	}
+
+	// 6th request should be blocked
+	err := CheckChannelRiskControl(channel, 2500)
+	if err == nil {
+		t.Error("Should fail when concurrency limit reached")
+	} else {
+		var newAPIErr *types.NewAPIError
+		if errors.As(err, &newAPIErr) {
+			if newAPIErr.GetErrorCode() != types.ErrorCodeChannelConcurrencyExceeded {
+				t.Errorf("Expected concurrency error, got: %v", newAPIErr.GetErrorCode())
+			}
+		}
+		t.Logf("Correctly blocked by concurrency limit: %v", err)
+	}
+
+	// Cleanup - release all concurrent requests
+	for i := 0; i < 5; i++ {
+		DecrementChannelConcurrency(channel.Id)
+	}
+
+	stats.mu.RLock()
+	finalConcurrency := stats.CurrentConcurrency
+	stats.mu.RUnlock()
+
+	if finalConcurrency != 0 {
+		t.Errorf("Expected concurrency to be 0 after cleanup, got %d", finalConcurrency)
+	}
+
+	ResetChannelUsageStats(channel.Id)
+}
+
+// TestWeeklyAndMonthlyQuotaTracking tests longer time window tracking
+func TestWeeklyAndMonthlyQuotaTracking(t *testing.T) {
+	common.RedisEnabled = false
+	channelId := 400
+
+	// Test weekly quota update
+	weeklyBucket := getCurrentTimeBucket(TimeWindowWeekly)
+	t.Logf("Current weekly bucket: %s", weeklyBucket)
+
+	stats := GetChannelUsageStats(channelId)
+	stats.mu.Lock()
+	stats.WeeklyQuotaBucket = weeklyBucket
+	stats.WeeklyQuotaUsed = 15000
+	stats.mu.Unlock()
+
+	weeklyUsed, _ := getQuotaUsedInWindow(channelId, TimeWindowWeekly)
+	if weeklyUsed != 15000 {
+		t.Errorf("Expected weekly quota 15000, got %d", weeklyUsed)
+	}
+
+	// Test monthly quota update
+	monthlyBucket := getCurrentTimeBucket(TimeWindowMonthly)
+	t.Logf("Current monthly bucket: %s", monthlyBucket)
+
+	stats.mu.Lock()
+	stats.MonthlyQuotaBucket = monthlyBucket
+	stats.MonthlyQuotaUsed = 80000
+	stats.mu.Unlock()
+
+	monthlyUsed, _ := getQuotaUsedInWindow(channelId, TimeWindowMonthly)
+	if monthlyUsed != 80000 {
+		t.Errorf("Expected monthly quota 80000, got %d", monthlyUsed)
+	}
+
+	t.Logf("Weekly/Monthly tracking - Weekly: %d, Monthly: %d", weeklyUsed, monthlyUsed)
+	ResetChannelUsageStats(channelId)
+}
+
+// TestZeroAndNegativeQuota tests edge cases with zero and negative values
+func TestZeroAndNegativeQuota(t *testing.T) {
+	channelId := 500
+
+	// Test zero quota update (should not error, but should not increment)
+	err := UpdateChannelTimeWindowQuota(channelId, 0)
+	if err != nil {
+		t.Errorf("Zero quota update should not error: %v", err)
+	}
+
+	// Test negative quota (should not update)
+	err = UpdateChannelTimeWindowQuota(channelId, -100)
+	if err != nil {
+		t.Errorf("Negative quota should not error: %v", err)
+	}
+
+	stats := GetChannelUsageStats(channelId)
+	stats.mu.RLock()
+	requests := stats.HourlyRequests
+	stats.mu.RUnlock()
+
+	// Negative/zero should not increment request counters
+	if requests != 0 {
+		t.Errorf("Expected no request increment for zero/negative quota, got %d", requests)
+	}
+
+	ResetChannelUsageStats(channelId)
+}
