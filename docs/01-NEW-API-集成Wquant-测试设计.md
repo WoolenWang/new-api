@@ -133,15 +133,21 @@ graph TD
 | **E-02** | **渠道授权大量分组** | 一个渠道Ch-X被授权给100个P2P分组。用户A仅属于其中一个分组。 | a) 用户A能正确访问到Ch-X。<br>b) 路由性能无明显下降。 | P2 |
 | **E-03** | **Token拥有全部权限** | 用户A加入所有（100+）P2P分组，其Token不设任何P2P限制。 | a) 路由逻辑能正确处理“全集”权限。<br>b) 请求路由性能无明显下降。 | P2 |
 
-### 2.7 CLIProxyAPI 渠道集成与兼容性测试
-**核心风险**: 验证 NewAPI 与 CLIProxyAPI 作为特殊上游渠道的集成是否无缝，包括 OAuth 流程模拟、多凭证路由和协议转换。
+### 2.8 令牌与安全测试 (Token & Security)
+**核心风险**: 验证令牌级别的访问控制（如模型、IP白名单）是否按预期生效。
+
+| ID | 测试场景 | 变量控制 | 预期行为 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| **TKN-01** | **令牌模型白名单** | 1. 创建令牌，`model_limits` 设置为 `['gpt-4o']`。<br>2. 使用该令牌请求 `claude-3-opus`。 | 请求被拒绝，返回权限错误。 | P1 |
+| **TKN-02** | **令牌IP白名单** | 1. 创建令牌，`ip_whitelist` 设置为 `['192.168.1.100']`。<br>2. 从 `192.168.1.101` 发起请求。 | 请求被拒绝，返回IP受限错误。 | P2 |
+
+### 2.9 数据看板接口测试 (Dashboard API)
+**核心风险**: 验证 `/api/dashboard/*` 接口返回的聚合数据是否准确，与底层明细日志保持一致。
 
 | ID | 测试场景 | 操作步骤 | 预期行为 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- |
-| **CLI-01** | **渠道创建与OAuth模拟** | 1. 在NewAPI中创建 `CLIProxyAPI` 类型渠道。<br>2. 模拟WQuant后端调用，发起认证流程。<br>3. Mock CLIProxyAPI管理接口，返回授权URL。<br>4. 模拟回调，完成凭证创建。 | a) 渠道状态最终变为“已启用”。<br>b) CLIProxyAPI侧（Mock）收到正确的凭证完成请求。<br>c) `account_hint` 被正确设置。 | **P0** |
-| **CLI-02** | **`account_hint` 精确路由** | 1. 创建两个指向同一模型的CLIProxyAPI渠道 (Ch-CLI1, Ch-CLI2)，分别设置 `account_hint` 为 `user1.json` 和 `user2.json`。<br>2. 发起请求，强制路由到 Ch-CLI1。 | a) NewAPI向CLIProxyAPI发送的请求头中必须包含 `X-CLIProxy-Account-Hint: user1.json`。 | **P0** |
-| **CLI-03** | **协议转换兼容性** | 1. 使用OpenAI格式的请求体调用一个通过CLIProxyAPI代理的Claude模型。<br>2. CLIProxyAPI Mock配置为只接受Claude原生格式。 | a) 请求在CLIProxyAPI层被正确转换为Claude格式。<br>b) 响应被正确转换回OpenAI格式并返回给客户端。 | P1 |
-| **CLI-04** | **凭证失效与删除同步** | 1. Mock CLIProxyAPI返回“凭证刷新失败”。<br>2. 在NewAPI删除一个CLIProxyAPI渠道。 | a) 对应渠道在NewAPI中被自动禁用。<br>b) NewAPI会向CLIProxyAPI发出删除凭证的管理请求。 | P1 |
+| **DASH-01** | **核心指标一致性** | 1. 记录初始看板数据 D1。<br>2. 执行一次消费1000额度的操作，并产生500的分享收益。<br>3. 再次查询看板数据 D2。 | a) D2.总消耗 = D1.总消耗 + 1000<br>b) D2.总收益 = D1.总收益 + 500<br>c) D2.模型分布图表中对应模型消耗增加。 | P2 |
+
 ---
 
 ## 三、 测试数据准备 (Test Data Preparation)
