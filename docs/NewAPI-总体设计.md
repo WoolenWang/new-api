@@ -354,7 +354,7 @@ flowchart TD
     Ban --> Retry{剩余重试次数?}
     LogWarn --> Retry
     
-    Retry -- Yes --> ChannelB[切换渠道 B (同组/同模型)]
+    Retry -- Yes --> ChannelB["切换渠道 B (同组/同模型)"]
     ChannelB --> ChannelA
     
     Retry -- No --> Failure[返回最后一次错误给用户]
@@ -484,9 +484,7 @@ stateDiagram-v2
 
 采用 Token 计费，公式如下：
 
-```math
-Quota = ( \text{InputQuota} + \text{OutputQuota} ) \times \text{ModelRatio} \times \text{FinalGroupRatio}
-```
+$$ Quota = ( \text{InputQuota} + \text{OutputQuota} ) \times \text{ModelRatio} \times \text{FinalGroupRatio} $$
 
 其中：
 
@@ -499,9 +497,8 @@ Quota = ( \text{InputQuota} + \text{OutputQuota} ) \times \text{ModelRatio} \tim
 
 针对 Midjourney, Sora 等无法计算 Token 的模型：
 
-```math
-Quota = \text{ModelFixedPrice} \times \text{QuotaPerUnit} \times \text{FinalGroupRatio}
-```
+$$ Quota = \text{ModelFixedPrice} \times \text{QuotaPerUnit} \times \text{FinalGroupRatio} $$
+
 #### 7.1.2 分组倍率逻辑 (Group Ratios)
 
 最终分组倍率 (`FinalGroupRatio`) 决定了不同用户访问不同资源时的折扣或溢价。
