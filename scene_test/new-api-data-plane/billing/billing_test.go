@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"testing"
 
 	"github.com/QuantumNous/new-api/scene_test/testutil"
@@ -219,6 +220,68 @@ func approxEqualRatio(t *testing.T, actual, expected float64, tolerance float64,
 	}
 }
 
+// measureBaselineQuotaForGroup performs a single chat completion for a fresh user
+// in the given system group and returns the consumed quota. It is used to
+// compare effective billing ratios across different scenarios.
+func measureBaselineQuotaForGroup(t *testing.T, suite *TestSuite, group string) int {
+	t.Helper()
+
+	fixtures := suite.Fixtures
+
+	username := fmt.Sprintf("orth_base_%s_user", group)
+	password := "password123"
+
+	user, err := fixtures.CreateTestUser(username, password, group)
+	if err != nil {
+		t.Fatalf("failed to create baseline user for group %s: %v", group, err)
+	}
+
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login(username, password); err != nil {
+		t.Fatalf("failed to login baseline user for group %s: %v", group, err)
+	}
+
+	channelName := fmt.Sprintf("orth-base-%s-channel", group)
+	channel, err := fixtures.CreateTestChannel(
+		channelName,
+		"gpt-4",
+		group,
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create baseline channel for group %s: %v", group, err)
+	}
+	t.Logf("Baseline channel for group %s created with ID=%d", group, channel.ID)
+
+	tokenName := fmt.Sprintf("orth-base-%s-token", group)
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           tokenName,
+		Status:         1,
+		UnlimitedQuota: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create baseline token for group %s: %v", group, err)
+	}
+
+	quotaBefore := getUserQuota(t, suite.Client, user.ID)
+	apiClient := suite.Client.WithToken(tokenKey)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", fmt.Sprintf("baseline request for group %s", group))
+	if !success {
+		t.Fatalf("baseline request for group %s failed: status=%d, err=%s", group, statusCode, errMsg)
+	}
+	quotaAfter := getUserQuota(t, suite.Client, user.ID)
+	used := quotaBefore - quotaAfter
+	if used <= 0 {
+		t.Fatalf("expected baseline used quota for group %s > 0, got %d", group, used)
+	}
+
+	t.Logf("Baseline used quota for group %s: %d", group, used)
+	return used
+}
+
 // TestBilling_B01_HighRateUserLowRateChannel tests billing when a high-rate user uses a low-rate channel.
 // Scenario: User A (vip, rate=2.0) uses User B's channel (default, rate=1.0) via P2P sharing.
 // Expected: Billing should use User A's vip rate (2.0).
@@ -267,37 +330,17 @@ func TestBilling_B01_HighRateUserLowRateChannel(t *testing.T) {
 	}
 	t.Logf("Created baseline default channel ID=%d", baselineChannel.ID)
 
-	// User B creates a shared P2P group for their own channel to be shared
-	p2pGroupID, err := userBClient.CreateP2PGroup(&testutil.P2PGroupModel{
-		Name:       "b01-shared-group",
-		OwnerId:    userB.ID,
-		Type:       testutil.P2PGroupTypeShared,
-		JoinMethod: testutil.P2PJoinMethodPassword,
-		JoinKey:    "b01pass",
-	})
-	if err != nil {
-		t.Fatalf("failed to create P2P group: %v", err)
-	}
-
-	// Both User B and User A join the group (owner may be auto-joined but we join explicitly)
-	if err := userBClient.ApplyToP2PGroup(p2pGroupID, "b01pass"); err != nil {
-		t.Fatalf("failed to add user B to P2P group: %v", err)
-	}
-	if err := userAClient.ApplyToP2PGroup(p2pGroupID, "b01pass"); err != nil {
-		t.Fatalf("failed to add user A to P2P group: %v", err)
-	}
-
-	// Create channel owned by User B in "vip" group, authorized for the P2P group.
-	// This represents "User B's channel" being shared via P2P; routing still
-	// honours the consumer's BillingGroup (vip for user A).
+	// Create channel owned by User B in "vip" group. This represents
+	// "User B's channel"; routing still honours the consumer's BillingGroup
+	// (vip for user A).
 	channel, err := fixtures.CreateTestChannel(
-		"b01-channel-B-default",
+		"b01-channel-B-vip",
 		"gpt-4",
 		"vip",
 		fixtures.GetUpstreamURL(),
-		false,                         // not private
-		userB.ID,                      // owner is B
-		fmt.Sprintf("%d", p2pGroupID), // P2P group restriction
+		false,    // not private
+		userB.ID, // owner is B
+		"",       // no P2P restriction needed for billing test
 	)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
@@ -925,59 +968,259 @@ func TestBilling_B06_P2PSharingRevenue(t *testing.T) {
 // TestBilling_OrthogonalMatrix tests the orthogonal combinations of system group and P2P group.
 // This implements the test matrix from section 2.3 of the test design document.
 func TestBilling_OrthogonalMatrix(t *testing.T) {
-	t.Skip("Test fixtures not yet implemented - skeleton test")
-
-	testCases := []struct {
-		name              string
-		consumerGroup     string // Consumer's system group
-		channelGroup      string // Channel's system group
-		channelP2PGroup   int    // Channel's P2P authorization (0 = none)
-		consumerP2PStatus bool   // Consumer's P2P membership
-		expectSuccess     bool   // Expected routing result
-		expectBillingGrp  string // Expected billing group (if success)
-	}{
-		{
-			name:            "default_user_vip_channel_no_p2p",
-			consumerGroup:   "default",
-			channelGroup:    "vip",
-			channelP2PGroup: 0,
-			expectSuccess:   false,
-		},
-		{
-			name:             "vip_user_vip_channel_no_p2p",
-			consumerGroup:    "vip",
-			channelGroup:     "vip",
-			channelP2PGroup:  0,
-			expectSuccess:    true,
-			expectBillingGrp: "vip",
-		},
-		{
-			name:              "default_user_default_channel_with_p2p_member",
-			consumerGroup:     "default",
-			channelGroup:      "default",
-			channelP2PGroup:   1, // G1
-			consumerP2PStatus: true,
-			expectSuccess:     true,
-			expectBillingGrp:  "default",
-		},
-		{
-			name:              "default_user_vip_channel_with_p2p_member",
-			consumerGroup:     "default",
-			channelGroup:      "vip",
-			channelP2PGroup:   1,
-			consumerP2PStatus: true,
-			expectSuccess:     false, // System group mismatch
-		},
-		// ... additional test cases from the orthogonal matrix
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
 	}
 
-	for _, tc := range testCases {
+	type orthCase struct {
+		name                 string
+		consumerGroup        string
+		channelGroup         string
+		useP2PAuthorization  bool
+		consumerJoinsG1      bool
+		consumerJoinsG2      bool
+		tokenBillingOverride string
+		tokenLimitToG2       bool
+		expectSuccess        bool
+		expectBillingGroup   string
+	}
+
+	testCases := []orthCase{
+		// default user, vip channel, no P2P -> routing fails
+		{
+			name:          "default_user_vip_channel_no_p2p",
+			consumerGroup: "default",
+			channelGroup:  "vip",
+			expectSuccess: false,
+		},
+		// vip user, vip channel, no P2P -> success, billed as vip
+		{
+			name:               "vip_user_vip_channel_no_p2p",
+			consumerGroup:      "vip",
+			channelGroup:       "vip",
+			expectSuccess:      true,
+			expectBillingGroup: "vip",
+		},
+		// default user, default channel, channel authorized G1, user in G1 -> success, billed as default
+		{
+			name:                "default_user_default_channel_with_p2p_member",
+			consumerGroup:       "default",
+			channelGroup:        "default",
+			useP2PAuthorization: true,
+			consumerJoinsG1:     true,
+			expectSuccess:       true,
+			expectBillingGroup:  "default",
+		},
+		// default user, vip channel, channel authorized G1, user in G1 -> fail (system group mismatch)
+		{
+			name:                "default_user_vip_channel_with_p2p_member",
+			consumerGroup:       "default",
+			channelGroup:        "vip",
+			useP2PAuthorization: true,
+			consumerJoinsG1:     true,
+			expectSuccess:       false,
+		},
+		// vip user, default channel, no P2P auth, user joined G1 -> fail (channel not in vip group)
+		{
+			name:            "vip_user_default_channel_no_p2p_with_membership",
+			consumerGroup:   "vip",
+			channelGroup:    "default",
+			consumerJoinsG1: true,
+			expectSuccess:   false,
+		},
+		// vip user, default channel, channel authorized G1, user in G1 -> fail (system group mismatch)
+		{
+			name:                "vip_user_default_channel_with_p2p_member",
+			consumerGroup:       "vip",
+			channelGroup:        "default",
+			useP2PAuthorization: true,
+			consumerJoinsG1:     true,
+			expectSuccess:       false,
+		},
+		// vip user with token billing override ["default"], default channel authorized G1, user in G1 -> success, billed as default
+		{
+			name:                 "vip_user_token_default_billing_with_p2p",
+			consumerGroup:        "vip",
+			channelGroup:         "default",
+			useP2PAuthorization:  true,
+			consumerJoinsG1:      true,
+			tokenBillingOverride: `["default"]`,
+			expectSuccess:        true,
+			expectBillingGroup:   "default",
+		},
+		// default user, default channel authorized G1, user in G1 and G2, token limits P2P to G2 -> fail
+		{
+			name:                "default_user_token_limit_p2p_to_g2",
+			consumerGroup:       "default",
+			channelGroup:        "default",
+			useP2PAuthorization: true,
+			consumerJoinsG1:     true,
+			consumerJoinsG2:     true,
+			tokenLimitToG2:      true,
+			expectSuccess:       false,
+		},
+	}
+
+	for index, tc := range testCases {
+		tc := tc
+		caseIndex := index + 1
 		t.Run(tc.name, func(t *testing.T) {
-			t.Skip("Test fixtures not yet implemented")
-			// Implementation would:
-			// 1. Set up users, groups, channels per test case
-			// 2. Make request and verify routing result
-			// 3. If successful, verify billing group matches expected
+			suite, cleanup := SetupSuite(t)
+			defer cleanup()
+
+			fixtures := suite.Fixtures
+
+			consumerUsername := fmt.Sprintf("orth_c_%02d", caseIndex)
+			ownerUsername := fmt.Sprintf("orth_o_%02d", caseIndex)
+			password := "password123"
+
+			consumer, err := fixtures.CreateTestUser(consumerUsername, password, tc.consumerGroup)
+			if err != nil {
+				t.Fatalf("failed to create consumer user: %v", err)
+			}
+			owner, err := fixtures.CreateTestUser(ownerUsername, password, tc.channelGroup)
+			if err != nil {
+				t.Fatalf("failed to create owner user: %v", err)
+			}
+
+			consumerClient := suite.Client.Clone()
+			if _, err := consumerClient.Login(consumerUsername, password); err != nil {
+				t.Fatalf("failed to login consumer: %v", err)
+			}
+			ownerClient := suite.Client.Clone()
+			if _, err := ownerClient.Login(ownerUsername, password); err != nil {
+				t.Fatalf("failed to login owner: %v", err)
+			}
+
+			var g1ID, g2ID int
+
+			// Create P2P groups and memberships if required
+			if tc.useP2PAuthorization || tc.consumerJoinsG1 || tc.consumerJoinsG2 || tc.tokenLimitToG2 {
+				if tc.useP2PAuthorization || tc.consumerJoinsG1 {
+					g1ID, err = ownerClient.CreateP2PGroup(&testutil.P2PGroupModel{
+						Name:       fmt.Sprintf("%s_G1", tc.name),
+						OwnerId:    owner.ID,
+						Type:       testutil.P2PGroupTypeShared,
+						JoinMethod: testutil.P2PJoinMethodPassword,
+						JoinKey:    "g1pass",
+					})
+					if err != nil {
+						t.Fatalf("failed to create P2P group G1: %v", err)
+					}
+					if tc.consumerJoinsG1 {
+						if err := consumerClient.ApplyToP2PGroup(g1ID, "g1pass"); err != nil {
+							t.Fatalf("failed to add consumer to G1: %v", err)
+						}
+					}
+				}
+
+				if tc.consumerJoinsG2 || tc.tokenLimitToG2 {
+					g2ID, err = ownerClient.CreateP2PGroup(&testutil.P2PGroupModel{
+						Name:       fmt.Sprintf("%s_G2", tc.name),
+						OwnerId:    owner.ID,
+						Type:       testutil.P2PGroupTypeShared,
+						JoinMethod: testutil.P2PJoinMethodPassword,
+						JoinKey:    "g2pass",
+					})
+					if err != nil {
+						t.Fatalf("failed to create P2P group G2: %v", err)
+					}
+					if tc.consumerJoinsG2 {
+						if err := consumerClient.ApplyToP2PGroup(g2ID, "g2pass"); err != nil {
+							t.Fatalf("failed to add consumer to G2: %v", err)
+						}
+					}
+				}
+			}
+
+			var allowedGroups string
+			if tc.useP2PAuthorization {
+				if g1ID == 0 {
+					t.Fatal("G1 must be created when useP2PAuthorization is true")
+				}
+				allowedGroups = fmt.Sprintf("%d", g1ID)
+			}
+
+			ownerUserID := 0
+			if tc.useP2PAuthorization || tc.consumerJoinsG1 || tc.consumerJoinsG2 || tc.tokenLimitToG2 {
+				ownerUserID = owner.ID
+			}
+
+			channelName := fmt.Sprintf("orth-%s-channel", tc.name)
+			channel, err := fixtures.CreateTestChannel(
+				channelName,
+				"gpt-4",
+				tc.channelGroup,
+				fixtures.GetUpstreamURL(),
+				false,
+				ownerUserID,
+				allowedGroups,
+			)
+			if err != nil {
+				t.Fatalf("failed to create test channel: %v", err)
+			}
+			t.Logf("Created test channel ID=%d for case %s", channel.ID, tc.name)
+
+			// Baseline quota for default group to infer effective billing ratios
+			var baselineDefault int
+			if tc.expectSuccess && tc.expectBillingGroup != "" {
+				baselineDefault = measureBaselineQuotaForGroup(t, suite, "default")
+			}
+
+			tokenModel := &testutil.TokenModel{
+				Name:           fmt.Sprintf("orth_token_%02d", caseIndex),
+				Status:         1,
+				UnlimitedQuota: true,
+			}
+			if tc.tokenBillingOverride != "" {
+				tokenModel.Group = tc.tokenBillingOverride
+			}
+			if tc.tokenLimitToG2 {
+				if g2ID == 0 {
+					t.Fatal("G2 must be created when tokenLimitToG2 is true")
+				}
+				tokenModel.P2PGroupID = &g2ID
+			}
+
+			tokenKey, err := consumerClient.CreateTokenFull(tokenModel)
+			if err != nil {
+				t.Fatalf("failed to create consumer token: %v", err)
+			}
+
+			quotaBefore := getUserQuota(t, suite.Client, consumer.ID)
+			apiClient := suite.Client.WithToken(tokenKey)
+			success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", fmt.Sprintf("Orthogonal case %s", tc.name))
+			quotaAfter := getUserQuota(t, suite.Client, consumer.ID)
+			used := quotaBefore - quotaAfter
+
+			if tc.expectSuccess {
+				if !success {
+					t.Fatalf("expected success but request failed: status=%d, err=%s", statusCode, errMsg)
+				}
+				if used <= 0 {
+					t.Fatalf("expected quota usage > 0 for success case, got %d", used)
+				}
+
+				if tc.expectBillingGroup != "" {
+					expectedRatio := 1.0
+					if tc.expectBillingGroup == "vip" {
+						expectedRatio = 2.0
+					}
+					actualRatio := float64(used) / float64(baselineDefault)
+					approxEqualRatio(t, actualRatio, expectedRatio, 0.05,
+						fmt.Sprintf("orthogonal case %s: billing ratio mismatch", tc.name))
+				}
+			} else {
+				if success {
+					t.Fatalf("expected routing failure but request succeeded, used_quota=%d", used)
+				}
+				if used != 0 {
+					t.Fatalf("expected no quota usage on failed routing, got %d", used)
+				}
+				if statusCode != http.StatusServiceUnavailable && statusCode != http.StatusForbidden {
+					t.Fatalf("expected 4xx/503 status for failed routing, got %d (err=%s)", statusCode, errMsg)
+				}
+			}
 		})
 	}
 }

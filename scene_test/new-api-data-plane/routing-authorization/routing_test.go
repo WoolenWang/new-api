@@ -734,6 +734,201 @@ func TestRouting_R07_TokenP2PGroupRestriction(t *testing.T) {
 	t.Log("R-07: Token P2P group restriction - PASSED")
 }
 
+// TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels verifies that when a Token does NOT specify
+// any p2p_group_id, the request will not use P2P-restricted channels and will only route via
+// public / non-P2P channels (or fail if no such channel exists).
+func TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// Setup basic users and P2P groups/channels (User1 owns P2P group/channel, User2 is member)
+	if err := fixtures.SetupRoutingTestFixtures(); err != nil {
+		t.Fatalf("SetupRoutingTestFixtures failed: %v", err)
+	}
+
+	// User2 client and token WITHOUT any P2P restriction
+	user2Client := fixtures.ClientForUser2()
+
+	// Send request for model only available via P2P group channel (owned by User1)
+	apiClient := user2Client
+	t.Log("Sending request without p2p_group_id, expecting NOT to use P2P channel...")
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P no-token-restriction test")
+
+	if success {
+		t.Errorf("Expected request to fail (no public/default channel for gpt-4), but it succeeded")
+	}
+	if statusCode == 200 {
+		t.Errorf("Expected non-200 when no non-P2P route available, got 200")
+	}
+	t.Logf("Request correctly did not use P2P channel: status=%d, err=%s", statusCode, errMsg)
+}
+
+// TestRouting_P2P_NoTokenRestriction_UsesPublicChannel verifies that when there is both a public
+// (non-P2P) channel and a P2P channel for the same model, and Token has no p2p_group_id,
+// routing prefers the public channel and will not utilize the P2P-restricted channel.
+func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// Create basic user in "default" group with unlimited token
+	user, err := fixtures.CreateTestUser("p2p_norestr_public_user", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("p2p_norestr_public_user", "password123"); err != nil {
+		t.Fatalf("failed to login user: %v", err)
+	}
+
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "p2p-norestr-public-token",
+		Status:         1,
+		UnlimitedQuota: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	// Create a public channel (no P2P restriction) and a P2P-restricted channel for same model
+	publicChannel, err := fixtures.CreateTestChannel(
+		"p2p-norestr-public-channel",
+		"gpt-4",
+		"default",
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create public channel: %v", err)
+	}
+	t.Logf("Created public channel ID=%d", publicChannel.ID)
+
+	// Create a P2P group and a P2P-restricted channel
+	ownerClient := userClient
+	group, err := fixtures.CreateTestP2PGroup(
+		"p2p-norestr-public-group",
+		ownerClient,
+		user.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"p2ppass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2P group: %v", err)
+	}
+
+	p2pChannel, err := fixtures.CreateTestChannel(
+		"p2p-norestr-p2p-channel",
+		"gpt-4",
+		"default",
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		fmt.Sprintf("%d", group.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2P channel: %v", err)
+	}
+	t.Logf("Created P2P channel ID=%d", p2pChannel.ID)
+
+	// Using a token WITHOUT p2p_group_id, request should succeed via public channel
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P no-token-restriction public channel test")
+	if !success {
+		t.Fatalf("expected request to succeed via public channel, got status=%d, err=%s", statusCode, errMsg)
+	}
+	if suite.Upstream.GetRequestCount() == 0 {
+		t.Fatalf("expected upstream to receive request via public channel")
+	}
+	t.Log("Request succeeded via public channel without using P2P channel")
+}
+
+// TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P verifies that even when Token has no
+// p2p_group_id, channel owner仍然可以访问自己的 P2P 渠道（owner 权限优先级最高）。
+func TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// Owner user
+	owner, err := fixtures.CreateTestUser("p2p_norestr_owner_user", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create owner user: %v", err)
+	}
+
+	ownerClient := suite.Client.Clone()
+	if _, err := ownerClient.Login("p2p_norestr_owner_user", "password123"); err != nil {
+		t.Fatalf("failed to login owner user: %v", err)
+	}
+
+	// Token without p2p_group_id
+	token, err := ownerClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "p2p-norestr-owner-token",
+		Status:         1,
+		UnlimitedQuota: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create owner token: %v", err)
+	}
+
+	// P2P group owned by owner
+	group, err := fixtures.CreateTestP2PGroup(
+		"p2p-norestr-owner-group",
+		ownerClient,
+		owner.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"ownerpass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create owner P2P group: %v", err)
+	}
+
+	// P2P channel owned by owner (OwnerUserId = owner.ID)
+	p2pChannel, err := fixtures.CreateTestChannel(
+		"p2p-norestr-owner-channel",
+		"gpt-4",
+		"default",
+		fixtures.GetUpstreamURL(),
+		false,
+		owner.ID,
+		fmt.Sprintf("%d", group.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create owner P2P channel: %v", err)
+	}
+	t.Logf("Created owner P2P channel ID=%d", p2pChannel.ID)
+
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P owner self-use test")
+	if !success {
+		t.Fatalf("expected owner to access own P2P channel, got status=%d, err=%s", statusCode, errMsg)
+	}
+	if suite.Upstream.GetRequestCount() == 0 {
+		t.Fatalf("expected upstream to receive request via owner's P2P channel")
+	}
+	t.Log("Owner successfully accessed own P2P channel without specifying p2p_group_id")
+}
+
 // TestRoutingSkeleton is a placeholder test to verify the test file compiles.
 func TestRoutingSkeleton(t *testing.T) {
 	t.Log("Routing test suite loaded successfully")

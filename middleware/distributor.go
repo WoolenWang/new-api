@@ -745,17 +745,22 @@ func ComputeRoutingGroupsForBillingGroup(c *gin.Context, billingGroup string) []
 }
 
 // computeEffectiveP2PGroupIDs 计算有效的 P2P 分组 ID 列表
-// 如果 Token 配置了 P2P 分组限制，则取用户 P2P 分组与 Token 限制的交集
+// 新语义：
+//   - 当 Token 未配置 P2P 分组限制时（无 p2p_group_id），不使用任何 P2P 分组（仅允许公开、无 P2P 组渠道）
+//   - 当 Token 配置了 P2P 分组限制时，仅在该分组内选路：取用户已加入的 P2P 分组与 Token 限制的交集
 func computeEffectiveP2PGroupIDs(c *gin.Context, userP2PGroupIDs []int, userId int) []int {
 	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
 	if !exists || tokenAllowedP2PGroupIDs == nil {
-		return userP2PGroupIDs
+		// Token 未选择任何 P2P 分组：不使用用户的任何 P2P 分组
+		// 后续仅依赖系统分组进行选路，P2P 渠道需要显式的 p2p_group_id 才可访问
+		return []int{}
 	}
 
 	tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
 	if !ok {
 		common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d in distributor", userId))
-		return userP2PGroupIDs
+		// 类型断言失败时，为避免意外放宽权限，同样不使用任何 P2P 分组
+		return []int{}
 	}
 
 	// 构建 Token 允许的 P2P 分组 map

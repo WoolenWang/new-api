@@ -262,19 +262,36 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 		}
 	}
 
+	// Determine whether this request carries an effective P2P 约束
+	hasP2PConstraint := false
+	for _, g := range routingGroups {
+		if strings.HasPrefix(g, "p2p_") {
+			hasP2PConstraint = true
+			break
+		}
+	}
+
+	// Track whitelist configuration & matches
+	hasWhitelist := false
+	whitelistMatched := false
+
 	// Check allowed users whitelist
 	if channel.AllowedUsers != nil && *channel.AllowedUsers != "" {
+		hasWhitelist = true
 		allowedUsers := strings.Split(*channel.AllowedUsers, ",")
 		userIdStr := strconv.Itoa(userId)
 		for _, allowedUser := range allowedUsers {
 			if strings.TrimSpace(allowedUser) == userIdStr {
-				return true
+				whitelistMatched = true
+				break
 			}
 		}
 	}
 
 	// Check allowed groups whitelist (supports both system groups and P2P group IDs)
+	p2pGroupMatched := false
 	if channel.AllowedGroups != nil && *channel.AllowedGroups != "" {
+		hasWhitelist = true
 		// Try to parse as JSON array (P2P group IDs)
 		allowedGroupIDs := channel.GetAllowedGroupIDs()
 		if len(allowedGroupIDs) > 0 {
@@ -283,33 +300,64 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 				p2pGroupName := fmt.Sprintf("p2p_%d", groupID)
 				for _, routingGroup := range routingGroups {
 					if routingGroup == p2pGroupName {
-						return true
+						p2pGroupMatched = true
+						whitelistMatched = true
+						break
 					}
+				}
+				if p2pGroupMatched {
+					break
 				}
 			}
 		} else {
-			// Fallback: treat as comma-separated system group names (legacy mode)
+			// Fallback: treat as comma-separated system group names (legacy mode, system-group whitelisting)
 			allowedGroups := strings.Split(*channel.AllowedGroups, ",")
 			for _, allowedGroup := range allowedGroups {
 				trimmedGroup := strings.TrimSpace(allowedGroup)
+				if trimmedGroup == "" {
+					continue
+				}
 				// Check against user's system group
 				if trimmedGroup == userGroup {
-					return true
+					whitelistMatched = true
+					break
 				}
 				// Also check against routingGroups (for flexibility)
 				for _, routingGroup := range routingGroups {
 					if routingGroup == trimmedGroup {
-						return true
+						whitelistMatched = true
+						break
 					}
+				}
+				if whitelistMatched {
+					break
 				}
 			}
 		}
 	}
 
-	// If channel has either allowed_users or allowed_groups set, but user didn't match, deny access
-	if (channel.AllowedUsers != nil && *channel.AllowedUsers != "") ||
-		(channel.AllowedGroups != nil && *channel.AllowedGroups != "") {
-		return false
+	// P2P AND semantics:
+	// 当本次请求携带有效的 P2P 分组约束时（routingGroups 中包含 p2p_*），
+	// 对于非平台渠道（owner_user_id != 0）：
+	//   1. 必须显式声明其 P2P 授权（AllowedGroups 为 JSON 数组 ID 模式）；
+	//   2. 且其授权的 P2P 组 ID 必须与请求的 P2P 组有交集。
+	if hasP2PConstraint && channel.OwnerUserId != 0 {
+		// 未配置 AllowedGroups：视为未加入任何 P2P 组，在有 P2P 约束时不允许访问
+		if channel.AllowedGroups == nil || *channel.AllowedGroups == "" {
+			return false
+		}
+
+		allowedGroupIDs := channel.GetAllowedGroupIDs()
+		// 仅在显式使用 P2P 组 ID 模式时才认为渠道加入了某个 P2P 组；
+		// 旧的字符串分组模式在有 P2P 约束时不再视为有效的 P2P 归属。
+		if len(allowedGroupIDs) == 0 || !p2pGroupMatched {
+			return false
+		}
+	}
+
+	// If any whitelist is configured, user must match at least one whitelist rule
+	if hasWhitelist {
+		return whitelistMatched
 	}
 
 	// If no access control is set (not private, no whitelist), it's a shared/public P2P channel

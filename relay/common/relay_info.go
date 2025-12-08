@@ -418,19 +418,23 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		userP2PGroupIDs = []int{} // 使用空列表
 	}
 
-	// Step 3: 应用 Token 的 P2P 分组限制 (取交集)
+	// Step 3: 应用 Token 的 P2P 分组限制
+	// 新语义：
+	//   - Token 未配置 p2p_group_id 时，不携带任何 P2P 分组（仅记录系统分组维度）
+	//   - Token 配置了 p2p_group_id 时，仅记录该分组与用户实际加入分组的交集
 	var effectiveP2PGroupIDs []int
 	// 从 Context 读取 Token 的 P2P 分组限制 (已由 middleware.SetupContextForToken 设置)
 	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
 	if !exists || tokenAllowedP2PGroupIDs == nil {
-		// Token 未配置限制,使用用户的全部 P2P 分组
-		effectiveP2PGroupIDs = userP2PGroupIDs
+		// Token 未配置限制：不记录任何 P2P 分组
+		effectiveP2PGroupIDs = []int{}
 	} else {
 		// Token 配置了限制,取交集
 		tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
 		if !ok {
 			common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d", userId))
-			effectiveP2PGroupIDs = userP2PGroupIDs
+			// 类型异常时，为避免放宽权限，同样不记录任何 P2P 分组
+			effectiveP2PGroupIDs = []int{}
 		} else {
 			// 构建 tokenP2PList 的 map 用于快速查找
 			allowedMap := make(map[int]bool)
