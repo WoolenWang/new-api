@@ -207,36 +207,37 @@ The retry mechanism is enhanced to handle sticky session failover gracefully. As
 #### **4.2.5 监控接口**
 为了让管理员能够实时了解系统会话状态，我们将新增一个只读的管理 API 端点。
 
-- **API 端点**: `GET /api/admin/sessions/summary`
+- **API 端点**: 
+  - `GET /api/admin/sessions/summary` (获取总体摘要)
+  - `GET /api/admin/sessions/users?page=1&limit=20` (分页获取各用户会话详情)
+
 - **权限**: 仅限管理员访问。
-- **返回数据结构**:
+
+- **返回数据结构 (`/summary`)**:
   ```json
   {
-    "total_active_sessions": 1234, // 全局活跃会话总数
+    "total_active_sessions": 1234,
+    "new_sessions_per_minute": 60,
     "sessions_by_channel": {
-      "1": 50,  // channel_id: count
-      "8": 120,
-      "...": "..."
-    },
-    "top_users_by_session": [
+      "1": 50,
+      "8": 120
+    }
+  }
+  ```
+
+- **返回数据结构 (`/users`)**:
+  ```json
+  {
+    "total": 500, // 总用户数
+    "page": 1,
+    "limit": 20,
+    "data": [
       { "user_id": 101, "username": "user_a", "session_count": 15 },
-      { "user_id": 205, "username": "user_b", "session_count": 12 },
-      // ... more users
-    ],
-    "recent_sessions": [
-      {
-        "session_id": "conv_xyz...",
-        "user_id": 101,
-        "model": "claude-3-opus",
-        "channel_id": 8,
-        "created_at": "2025-12-06T10:00:00Z",
-        "expires_in_seconds": 1780
-      }
-      // ... more recent sessions
+      { "user_id": 205, "username": "user_b", "session_count": 12 }
     ]
   }
   ```
-- **实现**: 该接口将直接从 Redis 中读取 `session:global:count`、`session:channel:stats` 等键，并结合查询用户表来聚合数据，实现高效的实时监控。
+- **实现**: `/summary` 接口从 Redis 读取全局统计数据。`/users` 接口则通过扫描 `session:user:*` 键，结合 `SCARD` 命令和用户表信息，实现分页查询各用户的会话数。
 
 #### **4.2.6 额度消耗监控接口**
 为了对渠道的预算和消耗情况进行有效监控，我们将新增一个独立的管理接口，专门用于展示各渠道在不同时间窗口的额度使用情况。
@@ -273,6 +274,29 @@ The retry mechanism is enhanced to handle sticky session failover gracefully. As
   1.  从数据库查询所有渠道的基础信息（ID, Name, TotalQuota, UsedQuota, 以及四个分时限额字段）。
   2.  对于每个渠道，构建对应的 Redis `channel_quota:*` 键，并使用 `MGET` 批量查询各时间窗口的已用额度。
   3.  组合数据并计算 `is_exhausted` 状态后返回。该接口为运维人员提供了一个强大的渠道预算监控视图。
+
+#### **4.2.7 并发会话限制配置接口**
+为了让管理员能够灵活控制不同层级的并发数，系统将提供相应的配置接口。
+
+- **配置层级与优先级**:
+  1.  **用户级 (最高)**: 通过 `PUT /api/user/:id` 接口更新用户 `max_concurrent_sessions` 字段。
+  2.  **分组级**: 在“用户分组”管理页面，为每个分组设置 `max_concurrent_sessions`。
+  3.  **系统级 (最低)**: 在系统设置中，配置 `SystemMaxConcurrentSessions`。
+
+- **用户级配置接口**:
+  - **API 端点**: `PUT /api/user/concurrency`
+  - **权限**: 管理员
+  - **请求体**:
+    ```json
+    {
+      "user_id": 101,
+      "max_concurrent_sessions": 10
+    }
+    ```
+  - **实现**: 该接口直接更新 `users` 表中对应用户的 `max_concurrent_sessions` 字段。设置为 0 表示使用分组或系统默认值。
+
+- **分组与系统级配置**:
+  - 这两层级的配置将集成到现有的**系统设置**和**用户组管理**页面中，作为新的可配置项。
 
 
 ### 4.3 渠道额度分时限额（统一风控机制）
@@ -321,7 +345,7 @@ type Channel struct {
 新的分时限额机制与 NewAPI 原有的渠道健康检查、自动禁/启用功能是互补的，其协同工作方式如下：
 - **健康检查 (`service/channel_test.go`)**: 定时测试任务将**跳过**因“分时额度耗尽”而被禁用的渠道。这类渠道的物理链路通常是正常的，对其进行健康检查没有意义，反而会产生不必要的请求。
 - **额度恢复**: 因分时额度（小时/天/周/月）耗尽而被禁用的渠道，其状态恢复将依赖于下一个时间窗口的到来。例如，小时额度用尽的渠道，在进入下一个小时后，`CheckChannelRiskControl` 函数在选路时会发现其 Redis 计数器已过期或不存在，从而重新将其视为可用渠道。
-- **失败禁用**: 如果一个渠道因常规错误（如 API Key 失效、网络超时）被 `Relay` 逻辑自动禁用（`AutoDisabled`），它仍将接受健康检查。当健康检查成功后，系统会将其恢复为 `Enabled` 状态，此时分时额度检查逻辑依然会对其生效。
+- **失败禁用**: 如果一个渠道因常规错误（如 API Key 失效、网络超时）被 `Relay` 逻辑自动禁用，系统会根据 **4.4.5 节** 的配置，匹配错误信息并记录下具体的禁用原因（如 `"invalid_key"`）。该渠道此后仍将接受健康检查，当检查成功后，系统会将其恢复为 `Enabled` 状态，此时分时额度检查逻辑依然会对其生效。健康检查服务也可以利用记录的原因来调整其行为，例如，对于因 `"invalid_key"` 禁用的渠道，可以适当降低检查的频率。
 - **状态优先级**: `手动禁用` > `自动禁用（健康检查失败）` > `自动禁用（额度耗尽）`。一个渠道只有在未被手动或常规自动禁用的情况下，才会因为额度问题被过滤。
 - **监控视图**: 分时额度的引入，使得渠道不再仅仅是“可用”或“不可用”两种状态，而是增加了“额度不足”的中间状态，为运营提供了更精细的渠道状态监控维度。
 
@@ -363,7 +387,7 @@ stateDiagram-v2
     Enabled --> ManuallyDisabled: "管理员禁用"
     ManuallyDisabled --> Enabled: "管理员启用"
 
-    Enabled --> AutoDisabled: "请求失败(如401, 5xx)"
+    Enabled --> AutoDisabled: "请求失败(如401, 5xx)<br>记录禁用原因"
     AutoDisabled --> Enabled: "后台健康检查成功"
 
     Enabled --> QuotaExhausted: "额度探针检测到额度<=0"
@@ -375,6 +399,77 @@ stateDiagram-v2
     AutoDisabled --> QuotaExhausted: "(特殊)若健康检查失败原因是额度"
 ```
 - **通用性**: 此状态机适用于所有渠道，`手动禁用 (2)` 拥有最高优先级。在渠道选择时，状态为 `3` 和 `4` 的渠道都将被统一过滤。
+
+#### **4.4.5 细化的自动禁用机制**
+为了更精确地管理渠道状态，我们将现有的“自动禁用关键词”列表升级为结构化的、带原因分类的配置。这使得系统能够区分是因“额度不足”还是“密钥失效”等不同原因导致的禁用。
+
+- **配置结构**: 在系统设置中，将 `AutomaticDisableKeywords` 字段从简单的字符串列表，修改为一个 JSON 对象，其键为禁用原因（如 `quota`, `invalid_key`），值为触发该原因的关键词列表。
+  ```json
+  // 系统设置中的 "automatic_disable_keywords_config"
+  {
+    "quota": [
+      "your credit balance is too low",
+      "insufficient quota",
+      "usage limit"
+    ],
+    "invalid_key": [
+      "invalid api key",
+      "organization has been disabled",
+      "permission denied"
+    ],
+    "overload": [
+      "service is currently overloaded",
+      "rate limit"
+    ]
+  }
+  ```
+
+- **记录禁用原因**: 当 `Relay` 过程中的错误处理逻辑匹配到上述任意关键词时，系统会将对应的**原因键**（如 `"quota"`）记录到渠道的 `OtherInfo` 字段中，例如：`{"status_reason": "quota"}`。
+
+- **协同处理**:
+  - **健康检查**: 健康检查服务将根据 `status_reason` 决定其行为。例如，如果原因是 `"quota"`，健康检查可以被跳过或以更长的间隔执行，因为额度问题通常无法通过简单的连通性测试解决。
+  - **额度探针**: 对于 `status_reason` 为 `"quota"` 的渠道，额度探针（见 4.4.2）可以被优先调度，以更快地确认额度是否已恢复。
+  - **UI 展示**: 管理后台的渠道列表将直接显示每个被禁用渠道的具体原因，使管理员能够一目了然地知道是需要充值、更换密钥还是排查上游服务问题。
+  - **状态优先级**: `手动禁用` 的优先级仍然最高。因不同原因自动禁用的渠道，在渠道选择时都将被统一过滤。
+
+#### **4.4.6 禁用状态统计接口**
+为了向管理员提供一个关于渠道禁用情况的宏观视图，我们将新增一个统计接口，用于展示按原因分类的被禁用渠道数量。
+
+- **API 端点**: `GET /api/admin/channels/disabled_summary`
+- **权限**: 仅限管理员访问。
+- **核心功能**:
+  - 统计当前系统中所有处于非“启用”状态的渠道总数。
+  - 按禁用原因对这些渠道进行分类计数。
+
+- **禁用原因归类**:
+  - `manual`: 渠道状态为 `ManuallyDisabled (2)`。
+  - `quota_exhausted`: 渠道状态为 `QuotaExhausted (4)`。
+  - `auto_disabled`: 渠道状态为 `AutoDisabled (3)`，并根据 `OtherInfo.status_reason` 字段进一步细分：
+    - 如果 `status_reason` 存在（如 `"invalid_key"`, `"quota"`），则使用该值作为分类键。
+    - 如果 `status_reason` 不存在，则归类为 `"unknown"`。
+
+- **返回数据结构**:
+  ```json
+  {
+    "total_disabled_channels": 25,
+    "reasons": {
+      "manual": 5,
+      "quota_exhausted": 10,
+      "auto_disabled": {
+        "total": 10,
+        "details": {
+          "invalid_key": 4,
+          "timeout": 3,
+          "unknown": 3
+        }
+      }
+    }
+  }
+  ```
+- **实现**:
+  1.  从数据库查询所有 `status != 1` 的渠道。
+  2.  遍历查询结果，根据每个渠道的 `status` 和 `OtherInfo.status_reason` 字段进行累加计数。
+  3.  返回聚合后的统计数据。这个接口将极大地帮助管理员快速诊断是密钥问题、额度问题还是上游服务稳定性问题。
 
 ## 5. 落地步骤（开发拆解）
 为确保方案平稳落地，建议按以下步骤进行开发和迭代：

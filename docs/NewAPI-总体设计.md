@@ -277,8 +277,9 @@ func SelectChannel(candidates []*Channel) *Channel {
 
 3.  **分组 (Group) 判定**:
     *   **Token分组优先**: 检查 `Token.Group`。如果 Token 设置了特定分组（非空），则请求使用该分组 (`UsingGroup = Token.Group`)。
+        *   **特殊值 `auto`**: 如果 `Token.Group` 为 `auto`，系统会从一组预定义的自动分组（`AutoGroups`，默认为 `default`）中选择一个作为 `UsingGroup`。这允许令牌动态地使用最佳可用分组，而不是被硬编码到单个分组。
     *   **用户分组兜底**: 如果 Token 未设置分组，则使用用户的主分组 (`UsingGroup = User.Group`)。
-    *   **权限检查**: 系统校验 `UsingGroup` 是否在用户的 `UserUsableGroups` 列表中。如果用户无权使用该分组，请求将被拒绝。
+    *   **权限检查**: 系统校验 `UsingGroup` 是否在用户的可用分组列表（`UserUsableGroups`）中。如果用户无权使用该分组，请求将被拒绝。此列表由**系统默认可用分组**（在管理员“用户分组设置”中配置）和针对用户所在组的**特殊规则**（`GroupSpecialUsableGroup`）共同决定，实现了灵活的权限控制。
 
 #### 5.5.2 数据结构关系图
 
@@ -290,7 +291,7 @@ classDiagram
     }
     class Token {
         +Int UserId
-        +String Group (Optional)
+        +String Group (Optional, can be "auto")
         +Int RemainQuota
     }
     class User {
@@ -501,21 +502,33 @@ $$ Quota = \text{ModelFixedPrice} \times \text{QuotaPerUnit} \times \text{FinalG
 
 #### 7.1.2 分组倍率逻辑 (Group Ratios)
 
-最终分组倍率 (`FinalGroupRatio`) 决定了不同用户访问不同资源时的折扣或溢价。
+最终分组倍率 (`FinalGroupRatio`) 决定了不同用户访问不同资源时的折扣或溢价。其计算逻辑遵循“特殊规则优先”的原则。
+
+*   **组间特殊倍率 (`GroupGroupRatio`)**:
+    *   定义：为特定用户组（`UserGroup`）访问特定渠道组（`UsingGroup`）时设置的**覆盖倍率**。
+    *   *场景示例*: 系统可以为 `svip` 用户组访问 `premium_channels` 渠道组设置一个 0.5 的特殊倍率。当 `svip` 用户请求 `premium_channels` 中的模型时，将直接使用 0.5 倍率，而忽略 `premium_channels` 自身的基础倍率。
+    *   **优先级**: 最高。
 
 *   **普通分组倍率 (`GroupRatio`)**:
-    *   定义：访问特定分组渠道的基础倍率。例如 `vip` 分组倍率为 0.8。
-*   **组间特殊倍率 (`GroupGroupRatio`)**:
-    *   定义：特定用户组访问特定渠道组时的覆盖倍率。
-    *   *场景*: `svip` 用户访问 `vip` 渠道时，可配置特殊倍率 0.5，覆盖默认的 0.8。
-    *   **逻辑**:
-        ```go
-        if ratio, exists := GroupGroupRatio[UserGroup][UsingGroup]; exists {
-            FinalGroupRatio = ratio
-        } else {
-            FinalGroupRatio = GroupRatio[UsingGroup]
-        }
-        ```
+    *   定义：访问特定分组渠道的基础倍率。例如，`default` 分组倍率为 1.0，而 `vip` 分组倍率为 0.8。
+    *   **优先级**: 次于 `GroupGroupRatio`。
+
+*   **计算逻辑 (`FinalGroupRatio`)**:
+    1.  首先，系统会检查是否存在 `GroupGroupRatio[UserGroup][UsingGroup]` 的配置。
+    2.  如果存在，则 `FinalGroupRatio` 直接取该特殊倍率值。
+    3.  如果不存在，系统会回退，使用 `UsingGroup` 的基础分组倍率，即 `FinalGroupRatio = GroupRatio[UsingGroup]`。
+
+    ```go
+    // FinalGroupRatio 计算伪代码
+    userGroup := user.Group
+    usingGroup := c.GetString("using_group")
+    
+    if ratio, exists := GroupGroupRatio[userGroup][usingGroup]; exists {
+        FinalGroupRatio = ratio
+    } else {
+        FinalGroupRatio = GroupRatio[usingGroup]
+    }
+    ```
 ### 7.2 数据定义 (Data Definitions)
 
 | 术语 | 定义 | 包含内容 |
@@ -541,6 +554,90 @@ $$ Quota = \text{ModelFixedPrice} \times \text{QuotaPerUnit} \times \text{FinalG
     *   **TPM (Tokens Per Minute)**: (可选) 限制每分钟消耗的 Token 数。
 
     *   **IP 限流**: 针对高频异常 IP 进行自动封禁。
+
+### 7.4 权限与计费逻辑示例
+
+为了更好地理解令牌、用户和渠道分组之间的协同关系，以下将通过一个具体场景进行说明。
+
+#### 7.4.1 系统配置
+
+1.  **用户 (Users)**
+    *   **User A**: 所属主分组为 `default`。
+    *   **User B**: 所属主分组为 `vip`。
+
+2.  **渠道 (Channels)**
+    *   **Channel 1 (C1)**:
+        *   支持模型: `gpt-4o`, `claude-3-opus`
+        *   所属分组: `default`, `fast`
+    *   **Channel 2 (C2)**:
+        *   支持模型: `gpt-4o-mini`, `claude-3-sonnet`
+        *   所属分组: `vip`
+    *   **Channel 3 (C3)**:
+        *   支持模型: `gpt-4o`, `gpt-4o-mini`
+        *   所属分组: `default`
+
+3.  **令牌 (Tokens)**
+    *   **Token A1**: 属于 `User A`，未设置特定分组（将使用 `User A` 的主分组 `default`）。
+    *   **Token A2**: 属于 `User A`，分组设置为 `auto`。
+    *   **Token B1**: 属于 `User B`，分组设置为 `default`。
+
+4.  **分组倍率 (Ratios)**
+    *   **基础倍率 (`GroupRatio`)**:
+        *   `default`: 1.0
+        *   `vip`: 0.8
+        *   `fast`: 1.2
+    *   **特殊倍率 (`GroupGroupRatio`)**:
+        *   `vip` 用户访问 `default` 渠道组时，倍率为 0.9。
+        *   `vip` 用户访问 `fast` 渠道组时，倍率为 1.1。
+
+5.  **可用分组 (`UserUsableGroups`)**
+    *   默认对所有用户开放 `default`, `vip`, `fast` 分组。
+
+6.  **自动分组 (`AutoGroups`)**
+    *   系统配置的自动分组列表为 `default`, `fast`。
+
+#### 7.4.2 场景分析
+
+**场景 1: User A 使用 Token A1 请求 `gpt-4o`**
+
+1.  **分组确定**: `Token A1` 未指定分组，使用 `User A` 的主分组 `default`。`UsingGroup = "default"`。
+2.  **渠道筛选**:
+    *   系统查找属于 `default` 分组且支持 `gpt-4o` 的渠道。
+    *   `C1` 和 `C3` 满足条件，进入候选列表。
+    *   `C2` 不满足分组要求，被排除。
+3.  **负载均衡**: 系统将在 `C1` 和 `C3` 之间根据优先级和权重选择一个渠道处理请求。
+4.  **计费计算**:
+    *   用户组为 `default`，渠道组为 `default`，无特殊倍率。
+    *   `FinalGroupRatio` = `GroupRatio["default"]` = **1.0**。
+
+**场景 2: User A 使用 Token A2 请求 `claude-3-opus`**
+
+1.  **分组确定**: `Token A2` 分组为 `auto`。系统将从 `AutoGroups` (`default`, `fast`) 中选择。
+2.  **渠道筛选**:
+    *   系统在 `default` 和 `fast` 分组中寻找支持 `claude-3-opus` 的渠道。
+    *   `C1` 满足条件（同时属于 `default` 和 `fast`，且支持模型）。
+    *   `C2` 和 `C3` 被排除。
+3.  **负载均衡**: 只有 `C1` 可用，请求将被发送到 `C1`。
+    *   `UsingGroup` 将被确定为 `C1` 匹配上的分组（可能是 `default` 或 `fast`，取决于负载均衡策略）。
+4.  **计费计算**:
+    *   假设最终选定 `C1` 并且 `UsingGroup` 为 `fast`。
+    *   用户组 `default` 访问 `fast` 渠道组，无特殊倍率。
+    *   `FinalGroupRatio` = `GroupRatio["fast"]` = **1.2**。
+
+**场景 3: User B 使用 Token B1 请求 `gpt-4o`**
+
+1.  **分组确定**: `Token B1` 分组设置为 `default`。`UsingGroup = "default"`。
+2.  **权限检查**:
+    *   `User B` 的主分组是 `vip`，但请求强制使用 `default` 分组。
+    *   系统检查 `User B` 是否有权使用 `default` 分组（在 `UserUsableGroups` 中）。
+    *   检查通过。
+3.  **渠道筛选**:
+    *   系统查找 `default` 分组下支持 `gpt-4o` 的渠道，`C1` 和 `C3` 满足。
+4.  **负载均衡**: 在 `C1` 和 `C3` 之间选择。
+5.  **计费计算**:
+    *   用户组为 `vip`，使用的渠道组为 `default`。
+    *   系统检查到 `GroupGroupRatio["vip"]["default"]` 存在特殊倍率。
+    *   `FinalGroupRatio` = `GroupGroupRatio["vip"]["default"]` = **0.9**，覆盖了 `default` 组的 1.0 基础倍率。
 
 ---
 
