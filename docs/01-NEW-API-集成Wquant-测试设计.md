@@ -97,16 +97,21 @@ graph TD
 | **B-04** | **Token计费防降级** | 用户A(vip, rate=2) 使用了强制`group=default`(rate=1)的Token<br>但系统开启**防降级** (`can_downgrade=false`) | `can_downgrade=false` | 按用户A自身的 **rate=2** 计费 (Token降级无效) | P2 |
 | **B-05** | **P2P分享收益** | 用户B(消费者)使用用户A(提供者)的共享渠道。<br>假设消费1000额度。 | `ShareRatio` = 0.5 | **消费者(B)**: 正常扣费1000<br>**提供者(A)**: `share_quota`增加 `500` | **P0** |
 
-### 2.3 P2P分组管理API测试 (Group Management)
-**核心风险**: 验证分组创建、加入、审批、退出等全生命周期管理的正确性。
+### 2.3 计费与P2P分组正交测试 (Orthogonal Test for Billing & P2P)
+**核心风险**: 深入验证当渠道同时归属于系统分组和P2P分组时，路由与计费的决策是否依然遵循“路由看并集，计费看自己”的核心原则。
 
-| ID | 测试子项 | 操作步骤 | 预期DB状态/API响应 | 优先级 |
-| :--- | :--- | :--- | :--- | :--- |
-| **G-01** | **创建私有/共享分组** | POST /api/groups, `type`=1 & `type`=2 | `groups` 表新增记录, `owner_id` 正确 | P1 |
-| **G-02** | **密码加入** | POST /api/groups/apply, 密码正确/错误 | 正确: `user_groups` status=1<br>错误: 报错 | P1 |
-| **G-03** | **申请与审批** | 1. 申请加入(审核制)<br>2. Owner审批通过/拒绝 | 1. status=0 (Pending)<br>2. status=1(Active) / status=2(Rejected) | **P0** |
-| **G-04** | **成员退出/被踢** | POST /api/groups/leave 或 PUT /api/groups/members | `user_groups` 记录被删除或状态变更 | P1 |
-| **G-05** | **删除分组** | DELETE /api/groups | `groups` 和 `user_groups` 关联记录被级联删除 | P2 |
+| 消费者系统分组<br>(Consumer's Group) | 渠道系统分组<br>(Channel's Group) | 渠道P2P授权<br>(Channel's P2P) | 消费者P2P状态<br>(Consumer's P2P Status) | **预期路由结果 (Routing)** | **预期计费分组 (Billing)** |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `default` | `vip` | *无* | *未加入* | **失败** (无任何权限) | - |
+| `vip` | `vip` | *无* | *未加入* | **成功** (通过系统分组匹配) | `vip` |
+| `default` | `default` | G1 | **已加入 G1** | **成功** (系统分组和P2P都匹配) | `default` |
+| `default` | `vip` | G1 | **已加入 G1** | **成功** (通过P2P分组匹配) | `default` |
+| `vip` | `default` | G1 | *未加入* | **失败** (系统分组不匹配, P2P也无权限) | - |
+| `vip` | `default` | G1 | **已加入 G1** | **成功** (通过P2P分组匹配) | `vip` |
+| `vip` (Token覆盖为`default`) | `default` | G1 | **已加入 G1** | **成功** (通过系统分组或P2P) | `default` |
+| `vip` (Token覆盖为`svip`) | `default` | G1 | **已加入 G1** | **成功** (仅通过P2P匹配) | `svip` |
+| `default` (Token限制P2P为`G2`) | `vip` | G1 | **已加入 G1, G2** | **失败** (渠道P2P授权G1, 但Token限制为G2) | - |
+
 
 ### 2.4 缓存一致性测试 (Cache Consistency)
 

@@ -58,6 +58,8 @@
     - `Session-ID`
     - `Conversation-ID`
     - `X-Gemini-Api-Privileged-User-Id`
+    - `X-Stainless-Request-Id`
+    - `X-Request-ID`
     - *示例 1: `codex_cli_rs` 客户端会发送 `Conversation_id: 019af39a-...` 和 `Session_id: 019af39a-...`，这些都将被正确捕获。*
     - *示例 2: Gemini CLI 可能会发送 `X-Gemini-Api-Privileged-User-Id: 703ed9b0-...`，我们同样可以将其作为会话标识。*
 2.  **URL 查询参数 (Query Parameter)**:
@@ -96,7 +98,7 @@ For channels configured with multiple keys, storing the `key_id` (index of the k
 
 ```mermaid
 graph TD
-    subgraph LegendSubGraph ["图例"]
+    subgraph legend_sub ["图例"]
         start_node[("开始")]
         end_node[("结束")]
         process_node["处理步骤"]
@@ -104,8 +106,8 @@ graph TD
         db_node[/"数据存储"/]
     end
 
-    A(("开始")) --> B{"提取 Session ID"};
-    B -->|"无 Session ID"| C["执行标准负载均衡选路"];
+    A[("开始")] --> B{"提取 Session ID"};
+    B -->|无 Session ID| C["执行标准负载均衡选路"];
     B -->|"有 Session ID"| D{"Redis中查询绑定"};
 
     D -->|"未命中"| C;
@@ -136,18 +138,20 @@ graph TD
     Q --> Z;
     O --> Z;
 
-    subgraph RedisSubGraph ["Redis 操作"]
+    subgraph redis_ops ["Redis 操作"]
         D; K; N; R; J;
     end
 ```
 
-**Note on Retry Logic**:
-The `Relay` controller's retry mechanism is enhanced by this design. As shown in the diagram, if a request fails (`L` node), and it is not the final retry attempt (`P` node), the system **must** delete the existing session binding from Redis (`R` node) before re-executing the channel selection logic (`S` node). This critical step ensures that the session is not "locked" to a failed or temporarily unavailable channel, allowing the retry to select a new, healthy channel.
+**Note on Retry and Stickiness Failover**:
+The retry mechanism is enhanced to handle sticky session failover gracefully. As shown in the diagram:
+1.  **Proactive Validation (`I` node)**: Before using a sticky channel, the system validates its status (enabled, model support, risk control). If the channel is unavailable (e.g., manually disabled, out of quota), the binding is deleted, and the request is rerouted via standard load balancing. This ensures sessions do not get "stuck" on a known bad channel.
+2.  **Reactive Failover (`L` -> `R` node)**: If a request to a sticky channel fails *during* the relay attempt, the system **must** delete the session binding from Redis before retrying. This critical step prevents subsequent requests in the same session from being locked to a temporarily failed channel, allowing the retry logic to select a new, healthy one. This reactive approach ensures resilience against transient upstream issues.
 
 #### **4.1.5 边界条件与降级策略**
 - **多节点一致性**: 依赖 Redis 作为集中式存储，是保证多节点部署时会话粘性一致的关键。
 - **Redis 不可用降级**: 如果部署环境中未启用 Redis 或 Redis 连接失败，会话粘性功能将自动降级。系统会退化到使用本地内存缓存（如 LRU + TTL），但这仅在单节点部署时有效，无法保证多节点间的一致性。系统应在启动和运行时检测 Redis 可用性，并在降级时打印明确的警告日志。
-- **渠道状态变更**: 当一个渠道被手动禁用、自动熔断或删除时，必须有一个机制来**主动失效**所有与该渠道相关的会话绑定。这可以通过在状态变更操作中增加一个钩子（hook）来实现，该钩子会扫描并清理 Redis 中所有关联到该 `channel_id` 的 `session:*` 键。这可以防止后续请求被粘滞到已不可用的渠道上。
+- **渠道状态变更**: 当一个渠道的状态变为不可用时（例如，被管理员手动禁用、因错误自动熔断、或因额度耗尽而被暂停），必须有一个机制来**主动失效**所有与该渠道相关的会话绑定。这可以通过在状态变更操作中增加一个钩子（hook）来实现，该钩子会扫描并清理 Redis 中所有关联到该 `channel_id` 的 `session:*` 键。这可以防止后续请求被粘滞到已不可用的渠道上，确保会话能够及时切换到健康的渠道。
 - **多 Key 配置变更**: 当一个多 Key 渠道的密钥列表发生变化（增、删、改）时，之前缓存的 `key_id` 可能会变得陈旧或无效。为解决此问题，渠道更新操作应触发一个事件，批量删除与该渠道相关的所有会话绑定，强制所有相关会话在下一次请求时重新选路并绑定到新的有效 Key 上。
 
 
@@ -234,6 +238,42 @@ The `Relay` controller's retry mechanism is enhanced by this design. As shown in
   ```
 - **实现**: 该接口将直接从 Redis 中读取 `session:global:count`、`session:channel:stats` 等键，并结合查询用户表来聚合数据，实现高效的实时监控。
 
+#### **4.2.6 额度消耗监控接口**
+为了对渠道的预算和消耗情况进行有效监控，我们将新增一个独立的管理接口，专门用于展示各渠道在不同时间窗口的额度使用情况。
+
+- **API 端点**: `GET /api/admin/quotas/summary`
+- **权限**: 仅限管理员访问。
+- **核心功能**:
+  - 实时展示所有渠道的总额度（`TotalQuota`）、已用额度（`UsedQuota`）。
+  - 对于设置了分时限额的渠道，动态从 Redis 查询并展示其在当前小时/日/周/月时间窗口内的已用额度。
+  - 高亮标记已达到或超过限额的渠道。
+
+- **返回数据结构**:
+  ```json
+  [
+    {
+      "channel_id": 1,
+      "channel_name": "OpenAI-Main",
+      "total_quota": 50000000, // 渠道总额度
+      "used_quota": 1234567,  // 渠道累计已用
+      "hourly_limit": 100000,  // 小时限额
+      "hourly_used": 58230,    // 当前小时已用
+      "daily_limit": 1000000,  // 每日限额
+      "daily_used": 345678,    // 当日已用
+      "weekly_limit": 0,       // 每周限额 (0为未设置)
+      "weekly_used": 0,
+      "monthly_limit": 0,      // 每月限额 (0为未设置)
+      "monthly_used": 0,
+      "is_exhausted": false    // 标记是否有任何一个限额已达到
+    },
+    // ... more channels
+  ]
+  ```
+- **实现**:
+  1.  从数据库查询所有渠道的基础信息（ID, Name, TotalQuota, UsedQuota, 以及四个分时限额字段）。
+  2.  对于每个渠道，构建对应的 Redis `channel_quota:*` 键，并使用 `MGET` 批量查询各时间窗口的已用额度。
+  3.  组合数据并计算 `is_exhausted` 状态后返回。该接口为运维人员提供了一个强大的渠道预算监控视图。
+
 
 ### 4.3 渠道额度分时限额（统一风控机制）
 
@@ -276,6 +316,14 @@ type Channel struct {
 1.  **预检查 (Pre-check)**: 在渠道选择阶段，对每个候选渠道，使用预估消耗额度与Redis中各时间窗口的已用额度进行比较。如果`已用额度 + 预估消耗 > 窗口限额`，该渠道将被从候选列表中**过滤**，不会进入负载均衡选择。
 2.  **精确结算与更新 (Post-request)**: 在请求成功并获取到精确用量后，在 `postConsumeQuota` 函数中，同步调用一个新的函数 `UpdateChannelTimeWindowQuota`，原子地将精确消耗额度累加到 Redis 中对应的 `hourly`, `daily`, `weekly`, `monthly` 四个键上。
 3.  **与重试机制的交互**: 如果一个粘性会话命中了已超限的渠道，`Distribute` 中间件中的粘性逻辑会发现该渠道不可用，删除绑定关系，并重新执行标准选路逻辑，从而实现自动切换。
+
+#### **4.3.6 与现有监控机制的协同**
+新的分时限额机制与 NewAPI 原有的渠道健康检查、自动禁/启用功能是互补的，其协同工作方式如下：
+- **健康检查 (`service/channel_test.go`)**: 定时测试任务将**跳过**因“分时额度耗尽”而被禁用的渠道。这类渠道的物理链路通常是正常的，对其进行健康检查没有意义，反而会产生不必要的请求。
+- **额度恢复**: 因分时额度（小时/天/周/月）耗尽而被禁用的渠道，其状态恢复将依赖于下一个时间窗口的到来。例如，小时额度用尽的渠道，在进入下一个小时后，`CheckChannelRiskControl` 函数在选路时会发现其 Redis 计数器已过期或不存在，从而重新将其视为可用渠道。
+- **失败禁用**: 如果一个渠道因常规错误（如 API Key 失效、网络超时）被 `Relay` 逻辑自动禁用（`AutoDisabled`），它仍将接受健康检查。当健康检查成功后，系统会将其恢复为 `Enabled` 状态，此时分时额度检查逻辑依然会对其生效。
+- **状态优先级**: `手动禁用` > `自动禁用（健康检查失败）` > `自动禁用（额度耗尽）`。一个渠道只有在未被手动或常规自动禁用的情况下，才会因为额度问题被过滤。
+- **监控视图**: 分时额度的引入，使得渠道不再仅仅是“可用”或“不可用”两种状态，而是增加了“额度不足”的中间状态，为运营提供了更精细的渠道状态监控维度。
 
 
 ### 4.4 渠道剩余额度感知与自动启停（预留设计）
