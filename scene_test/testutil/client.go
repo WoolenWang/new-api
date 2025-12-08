@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"time"
 )
 
@@ -14,27 +15,33 @@ import (
 type APIClient struct {
 	BaseURL    string
 	Token      string
+	UserID     int // For New-Api-User header
 	HTTPClient *http.Client
 }
 
 // NewAPIClient creates a new API client for the given test server.
 func NewAPIClient(server *TestServer) *APIClient {
+	// Create a cookie jar for session-based auth
+	jar, _ := cookiejar.New(nil)
 	return &APIClient{
 		BaseURL: server.BaseURL,
 		Token:   server.AdminToken,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
+			Jar:     jar,
 		},
 	}
 }
 
 // NewAPIClientWithToken creates a new API client with a specific token.
 func NewAPIClientWithToken(baseURL, token string) *APIClient {
+	jar, _ := cookiejar.New(nil)
 	return &APIClient{
 		BaseURL: baseURL,
 		Token:   token,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
+			Jar:     jar,
 		},
 	}
 }
@@ -65,6 +72,10 @@ func (c *APIClient) Request(method, path string, body interface{}) (*http.Respon
 	req.Header.Set("Content-Type", "application/json")
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	// Add New-Api-User header for session-based auth
+	if c.UserID > 0 {
+		req.Header.Set("New-Api-User", fmt.Sprintf("%d", c.UserID))
 	}
 
 	return c.HTTPClient.Do(req)
@@ -163,12 +174,29 @@ func (c *APIClient) DeleteJSON(path string, result interface{}) error {
 	return nil
 }
 
-// WithToken returns a new client with the specified token.
+// WithToken returns a new client with the specified token (for API authentication).
 func (c *APIClient) WithToken(token string) *APIClient {
+	jar, _ := cookiejar.New(nil) // New jar for new session
 	return &APIClient{
-		BaseURL:    c.BaseURL,
-		Token:      token,
-		HTTPClient: c.HTTPClient,
+		BaseURL: c.BaseURL,
+		Token:   token,
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Jar:     jar, // Fresh cookie jar
+		},
+	}
+}
+
+// Clone returns a new client with a fresh session (new cookie jar).
+func (c *APIClient) Clone() *APIClient {
+	jar, _ := cookiejar.New(nil)
+	return &APIClient{
+		BaseURL: c.BaseURL,
+		Token:   c.Token,
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Jar:     jar,
+		},
 	}
 }
 
@@ -180,27 +208,37 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// LoginResponse represents the login response.
+// LoginResponse represents the login response (returns user data, not token).
 type LoginResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
-	Data    string `json:"data"` // token
+	Data    struct {
+		ID          int    `json:"id"`
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+		Role        int    `json:"role"`
+		Status      int    `json:"status"`
+		Group       string `json:"group"`
+	} `json:"data"`
 }
 
-// Login performs a login and returns the access token.
-func (c *APIClient) Login(username, password string) (string, error) {
+// Login performs a login and stores session cookies. Returns the user ID.
+// It also sets the UserID on the client for subsequent API calls.
+func (c *APIClient) Login(username, password string) (int, error) {
 	var resp LoginResponse
 	err := c.PostJSON("/api/user/login", LoginRequest{
 		Username: username,
 		Password: password,
 	}, &resp)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	if !resp.Success {
-		return "", fmt.Errorf("login failed: %s", resp.Message)
+		return 0, fmt.Errorf("login failed: %s", resp.Message)
 	}
-	return resp.Data, nil
+	// Store the user ID for New-Api-User header
+	c.UserID = resp.Data.ID
+	return resp.Data.ID, nil
 }
 
 // CreateUserRequest represents the user creation request.
@@ -380,4 +418,514 @@ func (c *APIClient) GetStatus() (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := c.GetJSON("/api/status", &result)
 	return result, err
+}
+
+// --- System Setup Methods ---
+
+// SetupRequest represents the system setup request.
+type SetupRequest struct {
+	Username           string `json:"username"`
+	Password           string `json:"password"`
+	ConfirmPassword    string `json:"confirmPassword"`
+	SelfUseModeEnabled bool   `json:"SelfUseModeEnabled"`
+	DemoSiteEnabled    bool   `json:"DemoSiteEnabled"`
+}
+
+// SetupResponse represents the setup API response.
+type SetupResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Status       bool   `json:"status"`
+		RootInit     bool   `json:"root_init"`
+		DatabaseType string `json:"database_type"`
+	} `json:"data"`
+}
+
+// GetSetup retrieves the current setup status.
+func (c *APIClient) GetSetup() (*SetupResponse, error) {
+	var resp SetupResponse
+	err := c.GetJSON("/api/setup", &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PostSetup initializes the system with root user.
+func (c *APIClient) PostSetup(username, password string) error {
+	var resp APIResponse
+	err := c.PostJSON("/api/setup", SetupRequest{
+		Username:           username,
+		Password:           password,
+		ConfirmPassword:    password,
+		SelfUseModeEnabled: false,
+		DemoSiteEnabled:    false,
+	}, &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("setup failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// InitializeSystem checks if system needs setup and initializes it.
+// Returns the root user credentials used.
+func (c *APIClient) InitializeSystem() (username, password string, err error) {
+	// Check current setup status
+	setup, err := c.GetSetup()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get setup status: %w", err)
+	}
+
+	// If already set up, just return default credentials
+	if setup.Data.Status {
+		return "root", "rootpass123", nil
+	}
+
+	// Need to initialize
+	username = "root"
+	password = "rootpass123"
+	if err := c.PostSetup(username, password); err != nil {
+		return "", "", fmt.Errorf("failed to setup system: %w", err)
+	}
+
+	return username, password, nil
+}
+
+// --- Extended API Methods for Testing ---
+
+// ChannelModel wraps channel data for API requests
+type ChannelModel struct {
+	ID            int     `json:"id,omitempty"`
+	Type          int     `json:"type"`
+	Key           string  `json:"key"`
+	Name          string  `json:"name"`
+	BaseURL       *string `json:"base_url,omitempty"`
+	Models        string  `json:"models"`
+	Group         string  `json:"group,omitempty"`
+	Priority      *int64  `json:"priority,omitempty"`
+	Weight        *uint   `json:"weight,omitempty"`
+	Status        int     `json:"status,omitempty"`
+	OwnerUserId   int     `json:"owner_user_id,omitempty"`
+	IsPrivate     bool    `json:"is_private,omitempty"`
+	AllowedUsers  *string `json:"allowed_users,omitempty"`
+	AllowedGroups *string `json:"allowed_groups,omitempty"`
+}
+
+// AddChannelRequest matches the backend's AddChannelRequest structure
+type AddChannelRequest struct {
+	Mode    string        `json:"mode,omitempty"`
+	Channel *ChannelModel `json:"channel"`
+}
+
+// AddChannel creates a new channel using the admin API.
+func (c *APIClient) AddChannel(channel *ChannelModel) (int, error) {
+	req := AddChannelRequest{
+		Mode:    "single", // Use single mode for one channel with one key
+		Channel: channel,
+	}
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	err := c.PostJSON("/api/channel/", req, &resp)
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("add channel failed: %s", resp.Message)
+	}
+
+	// The API doesn't return the ID directly, we need to query it
+	// For now, return 0 and let caller handle it
+	return 0, nil
+}
+
+// AddChannelWithResponse creates a channel and returns full response for inspection
+func (c *APIClient) AddChannelWithResponse(channel *ChannelModel) (*http.Response, error) {
+	req := AddChannelRequest{
+		Channel: channel,
+	}
+	return c.Post("/api/channel/", req)
+}
+
+// GetAllChannels retrieves all channels.
+func (c *APIClient) GetAllChannels() ([]ChannelModel, error) {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			Items []ChannelModel `json:"items"`
+			Total int            `json:"total"`
+		} `json:"data"`
+	}
+	err := c.GetJSON("/api/channel/?p=0&page_size=100", &resp)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get channels failed: %s", resp.Message)
+	}
+	return resp.Data.Items, nil
+}
+
+// DeleteChannel deletes a channel by ID.
+func (c *APIClient) DeleteChannel(id int) error {
+	var resp APIResponse
+	err := c.DeleteJSON(fmt.Sprintf("/api/channel/%d", id), &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("delete channel failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// UserModel represents user data
+type UserModel struct {
+	ID          int    `json:"id"`
+	Username    string `json:"username"`
+	Password    string `json:"password,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Group       string `json:"group,omitempty"`
+	Quota       int64  `json:"quota,omitempty"`
+	Role        int    `json:"role,omitempty"`
+	Status      int    `json:"status,omitempty"`
+	ExternalId  string `json:"external_id,omitempty"`
+}
+
+// CreateUserFull creates a user with full control over fields
+func (c *APIClient) CreateUserFull(user *UserModel) (int, error) {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			ID int `json:"id"`
+		} `json:"data"`
+	}
+	err := c.PostJSON("/api/user/", user, &resp)
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("create user failed: %s", resp.Message)
+	}
+	return resp.Data.ID, nil
+}
+
+// GetUser retrieves a user by ID.
+func (c *APIClient) GetUser(id int) (*UserModel, error) {
+	var resp struct {
+		Success bool       `json:"success"`
+		Message string     `json:"message"`
+		Data    *UserModel `json:"data"`
+	}
+	err := c.GetJSON(fmt.Sprintf("/api/user/%d", id), &resp)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get user failed: %s", resp.Message)
+	}
+	return resp.Data, nil
+}
+
+// DeleteUser deletes a user by ID.
+func (c *APIClient) DeleteUser(id int) error {
+	var resp APIResponse
+	err := c.DeleteJSON(fmt.Sprintf("/api/user/%d", id), &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("delete user failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// AdjustUserQuota adjusts a user's quota by delta amount (requires admin).
+// Delta can be positive (add quota) or negative (subtract quota).
+func (c *APIClient) AdjustUserQuota(userID int, delta int) error {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			UserId   int `json:"user_id"`
+			Delta    int `json:"delta"`
+			NewQuota int `json:"new_quota"`
+		} `json:"data"`
+	}
+	err := c.PostJSON("/api/user/quota/adjust", map[string]interface{}{
+		"user_id": userID,
+		"delta":   delta,
+	}, &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("adjust quota failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// TokenModel represents API token data
+type TokenModel struct {
+	ID              int    `json:"id"`
+	UserId          int    `json:"user_id"`
+	Key             string `json:"key,omitempty"`
+	Name            string `json:"name"`
+	Status          int    `json:"status"`
+	RemainQuota     int64  `json:"remain_quota,omitempty"`
+	UnlimitedQuota  bool   `json:"unlimited_quota,omitempty"`
+	ExpiredTime     int64  `json:"expired_time,omitempty"`
+	Group           string `json:"group,omitempty"`
+	P2PGroupID      *int   `json:"p2p_group_id,omitempty"`
+	ModelLimitsJson string `json:"model_limits,omitempty"`
+}
+
+// CreateTokenFull creates a token with full control over fields.
+// Returns the token key (sk-*) which can be used for API authentication.
+func (c *APIClient) CreateTokenFull(token *TokenModel) (string, error) {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	err := c.PostJSON("/api/token/", token, &resp)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success {
+		return "", fmt.Errorf("create token failed: %s", resp.Message)
+	}
+
+	// The API doesn't return the key, we need to fetch the token list
+	// and find the one we just created by name
+	tokens, err := c.GetAllTokens()
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch tokens after creation: %w", err)
+	}
+
+	// Find the token by name
+	for _, t := range tokens {
+		if t.Name == token.Name {
+			return t.Key, nil
+		}
+	}
+
+	return "", fmt.Errorf("token created but not found in list")
+}
+
+// GetAllTokens retrieves all tokens for the current user.
+func (c *APIClient) GetAllTokens() ([]TokenModel, error) {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			Items []TokenModel `json:"items"`
+			Total int          `json:"total"`
+		} `json:"data"`
+	}
+	err := c.GetJSON("/api/token/?p=0&page_size=100", &resp)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get tokens failed: %s", resp.Message)
+	}
+	return resp.Data.Items, nil
+}
+
+// DeleteToken deletes a token by ID.
+func (c *APIClient) DeleteToken(id int) error {
+	var resp APIResponse
+	err := c.DeleteJSON(fmt.Sprintf("/api/token/%d", id), &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("delete token failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// P2PGroupModel represents a P2P group
+type P2PGroupModel struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	OwnerId     int    `json:"owner_id"`
+	Type        int    `json:"type"`        // 1=Private, 2=Shared
+	JoinMethod  int    `json:"join_method"` // 0=Invite, 1=Review, 2=Password
+	JoinKey     string `json:"join_key,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// CreateP2PGroup creates a P2P group.
+func (c *APIClient) CreateP2PGroup(group *P2PGroupModel) (int, error) {
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			ID int `json:"id"`
+		} `json:"data"`
+	}
+	err := c.PostJSON("/api/groups", group, &resp)
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("create P2P group failed: %s", resp.Message)
+	}
+	return resp.Data.ID, nil
+}
+
+// ApplyToP2PGroup applies to join a P2P group.
+func (c *APIClient) ApplyToP2PGroup(groupID int, password string) error {
+	var resp APIResponse
+	err := c.PostJSON("/api/groups/apply", map[string]interface{}{
+		"group_id": groupID,
+		"password": password,
+	}, &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("apply to P2P group failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// UpdateMemberStatus updates a member's status in a P2P group.
+// Status: 0=Pending, 1=Active, 2=Rejected, 3=Banned, 4=Left
+func (c *APIClient) UpdateMemberStatus(groupID, userID, status int) error {
+	var resp APIResponse
+	err := c.PutJSON("/api/groups/members", map[string]interface{}{
+		"group_id": groupID,
+		"user_id":  userID,
+		"status":   status,
+	}, &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("update member status failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetSelfJoinedGroups gets the current user's joined P2P groups.
+func (c *APIClient) GetSelfJoinedGroups() ([]P2PGroupModel, error) {
+	var resp struct {
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    []P2PGroupModel `json:"data"`
+	}
+	err := c.GetJSON("/api/groups/self/joined", &resp)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get joined groups failed: %s", resp.Message)
+	}
+	return resp.Data, nil
+}
+
+// ChatCompletionResponse represents the response from chat completion
+type ChatCompletionResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index   int `json:"index"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+// ChatCompletionError represents an error response from chat completion
+type ChatCompletionError struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+	} `json:"error"`
+}
+
+// DoChatCompletion sends a chat completion request and returns the parsed response.
+func (c *APIClient) DoChatCompletion(model, message string) (*ChatCompletionResponse, error) {
+	req := ChatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: message},
+		},
+	}
+
+	resp, err := c.ChatCompletion(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		var errResp ChatCompletionError
+		if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+			return nil, fmt.Errorf("chat completion failed: %s (type: %s, code: %s)",
+				errResp.Error.Message, errResp.Error.Type, errResp.Error.Code)
+		}
+		return nil, fmt.Errorf("chat completion failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result ChatCompletionResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// TryChatCompletion attempts a chat completion and returns success status and error message.
+// This is useful for testing routing - we want to know if routing succeeded, not if upstream succeeded.
+func (c *APIClient) TryChatCompletion(model, message string) (success bool, statusCode int, errMsg string) {
+	req := ChatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: message},
+		},
+	}
+
+	resp, err := c.ChatCompletion(req)
+	if err != nil {
+		return false, 0, err.Error()
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	statusCode = resp.StatusCode
+
+	if resp.StatusCode >= 400 {
+		var errResp ChatCompletionError
+		if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+			return false, statusCode, errResp.Error.Message
+		}
+		return false, statusCode, string(body)
+	}
+
+	return true, statusCode, ""
 }
