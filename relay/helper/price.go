@@ -36,22 +36,22 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 		relayInfo.BillingGroup = autoGroup.(string)
 	}
 
-	// CRITICAL: Use BillingGroup for billing instead of UsingGroup
-	// BillingGroup is locked to the user's system group or token group, preventing billing bypasses via P2P groups
+	// CRITICAL: Use BillingGroup for billing instead of UsingGroup.
+	// BillingGroup is locked to the user's system group or token group, preventing
+	// billing bypasses via P2P groups.
 	billingGroup := relayInfo.BillingGroup
 	userGroup := relayInfo.UserGroup
 
-	// check user group special ratio (user's system group vs billing group)
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
-	if ok {
-		// user group special ratio (e.g., VIP user in default group gets special rate)
-		groupRatioInfo.GroupSpecialRatio = userGroupRatio
-		groupRatioInfo.GroupRatio = userGroupRatio
-		groupRatioInfo.HasSpecialRatio = true
-	} else {
-		// normal group ratio (use the billing group's standard rate)
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(billingGroup)
+	// Record special ratio (if configured) for observability
+	if userGroup != "" && billingGroup != "" {
+		if userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup); ok {
+			groupRatioInfo.GroupSpecialRatio = userGroupRatio
+			groupRatioInfo.HasSpecialRatio = true
+		}
 	}
+
+	// Apply effective group ratio with optional anti-downgrade protection.
+	groupRatioInfo.GroupRatio = ratio_setting.GetEffectiveGroupRatio(userGroup, billingGroup)
 
 	return groupRatioInfo
 }

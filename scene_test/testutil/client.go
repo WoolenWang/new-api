@@ -588,16 +588,18 @@ func (c *APIClient) DeleteChannel(id int) error {
 
 // UserModel represents user data
 type UserModel struct {
-	ID          int    `json:"id"`
-	Username    string `json:"username"`
-	Password    string `json:"password,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	Email       string `json:"email,omitempty"`
-	Group       string `json:"group,omitempty"`
-	Quota       int64  `json:"quota,omitempty"`
-	Role        int    `json:"role,omitempty"`
-	Status      int    `json:"status,omitempty"`
-	ExternalId  string `json:"external_id,omitempty"`
+	ID                int    `json:"id"`
+	Username          string `json:"username"`
+	Password          string `json:"password,omitempty"`
+	DisplayName       string `json:"display_name,omitempty"`
+	Email             string `json:"email,omitempty"`
+	Group             string `json:"group,omitempty"`
+	Quota             int64  `json:"quota,omitempty"`
+	Role              int    `json:"role,omitempty"`
+	Status            int    `json:"status,omitempty"`
+	ExternalId        string `json:"external_id,omitempty"`
+	ShareQuota        int64  `json:"share_quota,omitempty"`
+	HistoryShareQuota int64  `json:"history_share_quota,omitempty"`
 }
 
 // CreateUserFull creates a user with full control over fields
@@ -634,6 +636,18 @@ func (c *APIClient) GetUser(id int) (*UserModel, error) {
 		return nil, fmt.Errorf("get user failed: %s", resp.Message)
 	}
 	return resp.Data, nil
+}
+
+// UpdateUser updates a user (admin only).
+func (c *APIClient) UpdateUser(user *UserModel) error {
+	var resp APIResponse
+	if err := c.PutJSON("/api/user/", user, &resp); err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("update user failed: %s", resp.Message)
+	}
+	return nil
 }
 
 // DeleteUser deletes a user by ID.

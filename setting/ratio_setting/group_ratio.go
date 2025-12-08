@@ -38,6 +38,11 @@ type GroupRatioSetting struct {
 	GroupRatio              map[string]float64                      `json:"group_ratio"`
 	GroupGroupRatio         map[string]map[string]float64           `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string] `json:"group_special_usable_group"`
+	// CanDowngrade controls whether billing is allowed to use
+	// a group ratio lower than the user's own group ratio.
+	// When false, the effective group ratio will be at least
+	// the user's base group ratio (anti-downgrade protection).
+	CanDowngrade bool `json:"can_downgrade"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -50,6 +55,7 @@ func init() {
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
 		GroupRatio:              groupRatio,
 		GroupGroupRatio:         GroupGroupRatio,
+		CanDowngrade:            true,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
@@ -145,6 +151,37 @@ func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
 
 	GroupGroupRatio = make(map[string]map[string]float64)
 	return json.Unmarshal([]byte(jsonStr), &GroupGroupRatio)
+}
+
+// GetEffectiveGroupRatio returns the effective group ratio for billing,
+// taking into account:
+//   - Base group ratio for the billingGroup
+//   - Optional user-group-specific override (GroupGroupRatio)
+//   - Optional anti-downgrade protection (CanDowngrade)
+//
+// userGroup:    the consumer's primary group (e.g., vip, default)
+// billingGroup: the group selected for billing (e.g., default, svip)
+func GetEffectiveGroupRatio(userGroup, billingGroup string) float64 {
+	// Start with the configured billing group ratio
+	billingRatio := GetGroupRatio(billingGroup)
+	effectiveRatio := billingRatio
+
+	// Apply user-group-specific override if present
+	if userGroup != "" && billingGroup != "" {
+		if userGroupRatio, ok := GetGroupGroupRatio(userGroup, billingGroup); ok {
+			effectiveRatio = userGroupRatio
+		}
+	}
+
+	// Apply anti-downgrade protection if configured
+	if !GetGroupRatioSetting().CanDowngrade && userGroup != "" {
+		userBaseRatio := GetGroupRatio(userGroup)
+		if effectiveRatio < userBaseRatio {
+			effectiveRatio = userBaseRatio
+		}
+	}
+
+	return effectiveRatio
 }
 
 func CheckGroupRatio(jsonStr string) error {

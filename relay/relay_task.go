@@ -70,14 +70,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 		billingGroup = info.UsingGroup
 	}
 
-	groupRatio := ratio_setting.GetGroupRatio(billingGroup)
-	var ratio float64
-	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(info.UserGroup, billingGroup)
-	if hasUserGroupRatio {
-		ratio = modelPrice * userGroupRatio
-	} else {
-		ratio = modelPrice * groupRatio
-	}
+	// Compute effective group ratio with optional anti-downgrade protection.
+	groupRatio := ratio_setting.GetEffectiveGroupRatio(info.UserGroup, billingGroup)
+	ratio := modelPrice * groupRatio
 	// FIXME: 临时修补，支持任务仅按次计费
 	if !common.StringsContains(constant.TaskPricePatches, modelName) {
 		if len(info.PriceData.OtherRatios) > 0 {
@@ -184,9 +179,6 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 				}
 				other["model_price"] = modelPrice
 				other["group_ratio"] = groupRatio
-				if hasUserGroupRatio {
-					other["user_group_ratio"] = userGroupRatio
-				}
 				model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 					ChannelId: info.ChannelId,
 					ModelName: modelName,

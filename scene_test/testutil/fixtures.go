@@ -3,6 +3,7 @@ package testutil
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,8 +89,8 @@ func (f *TestFixtures) CreateTestUser(username, password string, group string) (
 	user := &UserModel{
 		Username:   username,
 		Password:   password,
-		Group:      group,
-		Status:     1, // Active
+		Group:      "default", // initial group; will be updated below if needed
+		Status:     1,         // Active
 		ExternalId: externalId,
 	}
 
@@ -99,6 +100,22 @@ func (f *TestFixtures) CreateTestUser(username, password string, group string) (
 	}
 
 	user.ID = id
+
+	// If a non-empty group is requested and different from default,
+	// update the user to set the desired billing group while keeping
+	// the same password.
+	if group != "" && group != "default" {
+		update := &UserModel{
+			ID:       id,
+			Username: username,
+			Password: password,
+			Group:    group,
+		}
+		if err := f.client.UpdateUser(update); err != nil {
+			return nil, fmt.Errorf("failed to update user %s group to %s: %w", username, group, err)
+		}
+		user.Group = group
+	}
 
 	// CreateUser API doesn't set quota, so we need to adjust it separately using admin API
 	// Add 10B quota (enough for testing)
@@ -214,6 +231,21 @@ func (f *TestFixtures) CreateTestChannel(name string, models string, group strin
 	priority := int64(0)
 	weight := uint(1)
 
+	var allowedGroupsPtr *string
+	if allowedGroups != "" {
+		// New P2P routing expects allowed_groups to be a JSON array
+		// of integers (group IDs). For convenience, tests often pass
+		// a simple comma-separated list or a single numeric string.
+		// If the value does not look like JSON, wrap it into an array.
+		trimmed := strings.TrimSpace(allowedGroups)
+		if !strings.HasPrefix(trimmed, "[") {
+			jsonValue := fmt.Sprintf("[%s]", trimmed)
+			allowedGroupsPtr = &jsonValue
+		} else {
+			allowedGroupsPtr = &allowedGroups
+		}
+	}
+
 	channel := &ChannelModel{
 		Name:        name,
 		Type:        ChannelTypeOpenAI,
@@ -228,8 +260,8 @@ func (f *TestFixtures) CreateTestChannel(name string, models string, group strin
 		OwnerUserId: ownerUserID,
 	}
 
-	if allowedGroups != "" {
-		channel.AllowedGroups = &allowedGroups
+	if allowedGroupsPtr != nil {
+		channel.AllowedGroups = allowedGroupsPtr
 	}
 
 	_, err := f.client.AddChannel(channel)

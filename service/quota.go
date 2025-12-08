@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"strings"
 	"time"
@@ -113,21 +112,17 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		billingGroup = relayInfo.UsingGroup
 	}
 
-	groupRatio := ratio_setting.GetGroupRatio(billingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
 
 	autoGroup, exists := ctx.Get("auto_group")
 	if exists {
-		groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-		log.Printf("final group ratio: %f", groupRatio)
+		// When auto group is used, treat it as the billing group
 		billingGroup = autoGroup.(string)
 	}
 
-	actualGroupRatio := groupRatio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, billingGroup)
-	if ok {
-		actualGroupRatio = userGroupRatio
-	}
+	// Compute the effective group ratio, respecting group-group overrides
+	// and the possible anti-downgrade setting.
+	actualGroupRatio := ratio_setting.GetEffectiveGroupRatio(relayInfo.UserGroup, billingGroup)
 
 	quotaInfo := QuotaInfo{
 		InputDetails: TokenDetails{
