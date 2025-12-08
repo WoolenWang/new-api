@@ -83,6 +83,7 @@ type RelayInfo struct {
 	UsingGroup        string   // 使用的分组 (deprecated, 使用 BillingGroup 代替)
 	UserGroup         string   // 用户所在分组 (deprecated, 使用 BillingGroup 代替)
 	BillingGroup      string   // 计费分组 (仅用于计费和流控,不受P2P分组影响)
+	BillingGroupList  []string // 原始计费分组列表 (Token配置的,用于日志记录)
 	RoutingGroups     []string // 路由分组集合 (用于选路,包含 BillingGroup + 用户所有Active的P2P分组)
 	TokenUnlimited    bool
 	StartTime         time.Time
@@ -394,11 +395,17 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)   // 用户的系统主分组
 	usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup) // Token 覆盖的分组(可能为空)
 
+	// 从 Context 读取原始的计费分组列表 (用于日志记录)
+	var billingGroupList []string
+	if bgList, ok := common.GetContextKeyType[[]string](c, constant.ContextKeyTokenBillingGroupList); ok {
+		billingGroupList = bgList
+	}
+
 	// Step 1: 确定 BillingGroup (仅用于计费和流控)
+	// 在多计费组场景下，distributor.go 已经将最终选定的计费组设置到 UsingGroup
 	billingGroup := userGroup // 默认使用用户的系统主分组
 	if usingGroup != "" {
 		// 如果 Token 配置了 Group 字段,则使用 Token 的分组作为 BillingGroup
-		// TODO: 未来可以在此处添加安全校验,防止通过 Token 降级到低费率分组
 		billingGroup = usingGroup
 	}
 
@@ -477,13 +484,14 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	info := &RelayInfo{
 		Request: request,
 
-		UserId:        userId,
-		UsingGroup:    usingGroup,          // deprecated,保留用于兼容性
-		UserGroup:     userGroup,           // deprecated,保留用于兼容性
-		BillingGroup:  billingGroup,        // 新增:计费分组
-		RoutingGroups: uniqueRoutingGroups, // 新增:路由分组集合
-		UserQuota:     common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:     common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		UserId:           userId,
+		UsingGroup:       usingGroup,          // deprecated,保留用于兼容性
+		UserGroup:        userGroup,           // deprecated,保留用于兼容性
+		BillingGroup:     billingGroup,        // 计费分组 (最终选定的)
+		BillingGroupList: billingGroupList,    // 原始计费分组列表 (Token配置的)
+		RoutingGroups:    uniqueRoutingGroups, // 路由分组集合
+		UserQuota:        common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:        common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 		PromptTokens:    common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),

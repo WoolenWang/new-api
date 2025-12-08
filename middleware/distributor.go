@@ -170,20 +170,38 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 
-			if len(routingGroups) == 0 {
-				routingGroups = ComputeRoutingGroups(c, usingGroup)
+			// 检查是否有多计费组列表
+			billingGroupList, hasBillingGroupList := common.GetContextKeyType[[]string](c, constant.ContextKeyTokenBillingGroupList)
+
+			if hasBillingGroupList && len(billingGroupList) > 0 {
+				// 多计费组迭代选路逻辑
+				// 按顺序遍历 BillingGroupList，对于每个计费组构建 RoutingGroups 进行选路
+				// 找到渠道则停止遍历，否则继续下一个计费组
+				channel, selectGroup, err = selectChannelWithBillingGroupList(c, billingGroupList, modelRequest.Model)
+				if err != nil {
+					message := fmt.Sprintf("获取计费分组列表 %v 下模型 %s 的可用渠道失败（distributor）: %s",
+						billingGroupList, modelRequest.Model, err.Error())
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
+					return
+				}
+			} else {
+				// 单计费组选路逻辑（兼容原有逻辑）
+				if len(routingGroups) == 0 {
+					routingGroups = ComputeRoutingGroups(c, usingGroup)
+				}
+
+				channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
+				if err != nil {
+					showGroup := usingGroup
+					if usingGroup == "auto" {
+						showGroup = fmt.Sprintf("auto(%s)", selectGroup)
+					}
+					message := fmt.Sprintf("获取分组 %s 下模型 %s 的可用渠道失败（distributor）: %s", showGroup, modelRequest.Model, err.Error())
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
+					return
+				}
 			}
 
-			channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
-			if err != nil {
-				showGroup := usingGroup
-				if usingGroup == "auto" {
-					showGroup = fmt.Sprintf("auto(%s)", selectGroup)
-				}
-				message := fmt.Sprintf("获取分组 %s 下模型 %s 的可用渠道失败（distributor）: %s", showGroup, modelRequest.Model, err.Error())
-				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
-				return
-			}
 			if channel == nil {
 				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("分组 %s 下模型 %s 无可用渠道（distributor）", usingGroup, modelRequest.Model), string(types.ErrorCodeModelNotFound))
 				return
@@ -684,27 +702,7 @@ func ComputeRoutingGroups(c *gin.Context, usingGroup string) []string {
 	}
 
 	// Step 3: 应用 Token 的 P2P 分组限制 (取交集)
-	var effectiveP2PGroupIDs []int
-	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
-	if !exists || tokenAllowedP2PGroupIDs == nil {
-		effectiveP2PGroupIDs = userP2PGroupIDs
-	} else {
-		tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
-		if !ok {
-			common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d in distributor", userId))
-			effectiveP2PGroupIDs = userP2PGroupIDs
-		} else {
-			allowedMap := make(map[int]bool)
-			for _, id := range tokenP2PList {
-				allowedMap[id] = true
-			}
-			for _, groupID := range userP2PGroupIDs {
-				if allowedMap[groupID] {
-					effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
-				}
-			}
-		}
-	}
+	effectiveP2PGroupIDs := computeEffectiveP2PGroupIDs(c, userP2PGroupIDs, userId)
 
 	// Step 4: 构建 RoutingGroups
 	routingGroups := []string{billingGroup}
@@ -715,14 +713,131 @@ func ComputeRoutingGroups(c *gin.Context, usingGroup string) []string {
 	}
 
 	// 去重
-	uniqueGroups := make([]string, 0, len(routingGroups))
+	return deduplicateGroups(routingGroups)
+}
+
+// ComputeRoutingGroupsForBillingGroup 为指定的计费分组构建路由分组集合
+// 这是为多计费组迭代选路设计的函数
+// RoutingGroups = {指定的计费组} ∪ {用户的有效 P2P 分组}
+func ComputeRoutingGroupsForBillingGroup(c *gin.Context, billingGroup string) []string {
+	userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+
+	// 获取用户的 Active P2P 分组 ID
+	var userP2PGroupIDs []int
+	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, false)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to get user P2P groups for user %d in distributor: %v", userId, err))
+		userP2PGroupIDs = []int{}
+	}
+
+	// 应用 Token 的 P2P 分组限制 (取交集)
+	effectiveP2PGroupIDs := computeEffectiveP2PGroupIDs(c, userP2PGroupIDs, userId)
+
+	// 构建 RoutingGroups
+	routingGroups := []string{billingGroup}
+
+	// 将 P2P 分组 ID 转换为 "p2p_{id}" 格式
+	for _, groupID := range effectiveP2PGroupIDs {
+		routingGroups = append(routingGroups, fmt.Sprintf("p2p_%d", groupID))
+	}
+
+	return deduplicateGroups(routingGroups)
+}
+
+// computeEffectiveP2PGroupIDs 计算有效的 P2P 分组 ID 列表
+// 如果 Token 配置了 P2P 分组限制，则取用户 P2P 分组与 Token 限制的交集
+func computeEffectiveP2PGroupIDs(c *gin.Context, userP2PGroupIDs []int, userId int) []int {
+	tokenAllowedP2PGroupIDs, exists := c.Get(string(constant.ContextKeyTokenAllowedP2PGroups))
+	if !exists || tokenAllowedP2PGroupIDs == nil {
+		return userP2PGroupIDs
+	}
+
+	tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
+	if !ok {
+		common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d in distributor", userId))
+		return userP2PGroupIDs
+	}
+
+	// 构建 Token 允许的 P2P 分组 map
+	allowedMap := make(map[int]bool)
+	for _, id := range tokenP2PList {
+		allowedMap[id] = true
+	}
+
+	// 取交集
+	var effectiveP2PGroupIDs []int
+	for _, groupID := range userP2PGroupIDs {
+		if allowedMap[groupID] {
+			effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
+		}
+	}
+	return effectiveP2PGroupIDs
+}
+
+// deduplicateGroups 对分组列表去重，保持原有顺序
+func deduplicateGroups(groups []string) []string {
+	uniqueGroups := make([]string, 0, len(groups))
 	groupMap := make(map[string]bool)
-	for _, group := range routingGroups {
+	for _, group := range groups {
 		if !groupMap[group] {
 			groupMap[group] = true
 			uniqueGroups = append(uniqueGroups, group)
 		}
 	}
-
 	return uniqueGroups
+}
+
+// selectChannelWithBillingGroupList 使用多计费组列表进行迭代选路
+// 按顺序遍历 billingGroupList 中的每个计费组，为其构建 RoutingGroups 并查找可用渠道
+// 一旦找到可用渠道，立即停止遍历并返回
+// 返回值:
+//   - channel: 选中的渠道（如果有）
+//   - selectedGroup: 最终选中的计费分组（用于计费）
+//   - err: 错误信息
+func selectChannelWithBillingGroupList(c *gin.Context, billingGroupList []string, modelName string) (*model.Channel, string, error) {
+	if len(billingGroupList) == 0 {
+		return nil, "", errors.New("billing group list cannot be empty")
+	}
+
+	var lastErr error
+
+	// 按顺序遍历计费分组列表
+	for _, billingGroup := range billingGroupList {
+		// 为当前计费分组构建 RoutingGroups
+		routingGroups := ComputeRoutingGroupsForBillingGroup(c, billingGroup)
+
+		logger.LogDebug(c, fmt.Sprintf("BillingGroupList iteration: trying billing_group=%s, routing_groups=%v, model=%s",
+			billingGroup, routingGroups, modelName))
+
+		// 在当前 RoutingGroups 中查找可用渠道
+		channel, selectedSubGroup, err := service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelName, 0)
+
+		if err != nil {
+			// 记录错误但继续尝试下一个计费组
+			logger.LogDebug(c, fmt.Sprintf("BillingGroupList iteration: billing_group=%s failed: %v", billingGroup, err))
+			lastErr = err
+			continue
+		}
+
+		if channel != nil {
+			// 找到可用渠道，停止遍历
+			// 注意: selectedSubGroup 可能是 P2P 分组（如 "p2p_123"），但计费仍然使用 billingGroup
+			logger.LogDebug(c, fmt.Sprintf("BillingGroupList iteration: found channel from billing_group=%s, selected_sub_group=%s, channel_id=%d",
+				billingGroup, selectedSubGroup, channel.Id))
+
+			// 更新 Context 中的 UsingGroup 为最终选定的计费分组
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, billingGroup)
+
+			return channel, billingGroup, nil
+		}
+
+		// 该计费组下没有可用渠道，继续下一个
+		logger.LogDebug(c, fmt.Sprintf("BillingGroupList iteration: no channel found for billing_group=%s", billingGroup))
+	}
+
+	// 遍历完所有计费组都没有找到可用渠道
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("no available channel found in billing groups %v: %w", billingGroupList, lastErr)
+	}
+	return nil, "", fmt.Errorf("no available channel found in billing groups %v", billingGroupList)
 }

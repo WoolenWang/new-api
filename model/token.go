@@ -25,9 +25,9 @@ type Token struct {
 	ModelLimitsEnabled bool           `json:"model_limits_enabled"`
 	ModelLimits        string         `json:"model_limits" gorm:"type:varchar(1024);default:''"`
 	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
-	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
-	Group              string         `json:"group" gorm:"default:''"`
-	AllowedP2PGroups   *string        `json:"allowed_p2p_groups" gorm:"type:text"` // 允许使用的P2P分组ID列表(JSON数组)
+	UsedQuota          int            `json:"used_quota" gorm:"default:0"`               // used quota
+	Group              string         `json:"group" gorm:"default:''"`                   // 计费分组列表(支持JSON数组格式如 ["svip", "default"] 或单字符串 "default")
+	P2PGroupID         *int           `json:"p2p_group_id" gorm:"type:int;default:null"` // 唯一允许访问的P2P分组ID (限制Token的P2P权限范围)
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -186,7 +186,7 @@ func (token *Token) Update() (err error) {
 		}
 	}()
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "p2p_group_id").Updates(token).Error
 	return err
 }
 
@@ -364,21 +364,47 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	return len(tokens), nil
 }
 
-// GetAllowedP2PGroupIDs 返回Token允许使用的P2P分组ID列表
-// 返回空切片表示不限制P2P分组
+// GetP2PGroupID 返回Token允许访问的唯一P2P分组ID
+// 返回 nil 表示不限制P2P分组（用户可访问其加入的所有P2P分组）
+func (token *Token) GetP2PGroupID() *int {
+	return token.P2PGroupID
+}
+
+// GetAllowedP2PGroupIDs 返回Token允许访问的P2P分组ID列表
+// 如果 P2PGroupID 为 nil，返回空切片（表示不限制，用户可访问其加入的所有P2P分组）
+// 如果 P2PGroupID 有值，返回包含该单个ID的切片（表示仅允许访问该P2P分组）
+// 此方法用于与用户的活跃P2P分组列表取交集，计算最终的有效P2P分组
 func (token *Token) GetAllowedP2PGroupIDs() []int {
-	if token.AllowedP2PGroups == nil || *token.AllowedP2PGroups == "" {
+	if token.P2PGroupID == nil {
 		return []int{}
 	}
+	return []int{*token.P2PGroupID}
+}
 
-	// 解析JSON数组 (格式: [101, 102, 103])
-	var groupIDs []int
-	err := common.Unmarshal([]byte(*token.AllowedP2PGroups), &groupIDs)
-	if err != nil {
-		common.SysLog(fmt.Sprintf("failed to unmarshal allowed_p2p_groups for token %d: %v (value: %s)",
-			token.Id, err, *token.AllowedP2PGroups))
-		return []int{}
+// GetBillingGroupList 解析Token的计费分组列表
+// Token.Group 支持两种格式:
+// 1. 单字符串: "default" -> ["default"]
+// 2. JSON数组: "[\"svip\", \"default\"]" -> ["svip", "default"]
+// 返回空切片表示使用用户默认分组
+func (token *Token) GetBillingGroupList() []string {
+	if token.Group == "" {
+		return []string{}
 	}
 
-	return groupIDs
+	// 尝试解析为JSON数组
+	trimmed := strings.TrimSpace(token.Group)
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var groups []string
+		err := common.Unmarshal([]byte(trimmed), &groups)
+		if err != nil {
+			// JSON解析失败，当作单字符串处理
+			common.SysLog(fmt.Sprintf("failed to unmarshal billing group list for token %d: %v (value: %s), treating as single string",
+				token.Id, err, token.Group))
+			return []string{token.Group}
+		}
+		return groups
+	}
+
+	// 单字符串格式
+	return []string{token.Group}
 }

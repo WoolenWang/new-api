@@ -264,13 +264,37 @@ func TokenAuth() func(c *gin.Context) {
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group
-		if tokenGroup != "" {
-			// check common.UserUsableGroups[userGroup]
+
+		// 解析 Token 的计费分组列表 (支持 JSON 数组或单字符串)
+		billingGroupList := token.GetBillingGroupList()
+
+		if len(billingGroupList) > 0 {
+			// Token 配置了计费分组列表，需要校验所有分组的权限
+			userUsableGroups := service.GetUserUsableGroups(userGroup)
+			for _, bg := range billingGroupList {
+				if bg == "auto" {
+					continue // auto 分组不需要校验
+				}
+				if _, ok := userUsableGroups[bg]; !ok {
+					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", bg))
+					return
+				}
+				// 检查分组是否已弃用
+				if !ratio_setting.ContainsGroupRatio(bg) {
+					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", bg))
+					return
+				}
+			}
+			// 将计费分组列表存入 Context，供后续路由逻辑使用
+			common.SetContextKey(c, constant.ContextKeyTokenBillingGroupList, billingGroupList)
+			// UsingGroup 使用列表中的第一个分组（优先级最高的分组）
+			userGroup = billingGroupList[0]
+		} else if tokenGroup != "" {
+			// 兼容旧逻辑：Token.Group 为单字符串（非 JSON 数组格式）
 			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
 				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
 				return
 			}
-			// check group in common.GroupRatio
 			if !ratio_setting.ContainsGroupRatio(tokenGroup) {
 				if tokenGroup != "auto" {
 					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", tokenGroup))

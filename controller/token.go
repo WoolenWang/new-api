@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,6 +13,42 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// validateBillingGroupList 校验 Token.Group 字段的格式
+// 支持的格式:
+// 1. 空字符串 - 合法,使用用户默认分组
+// 2. 单字符串 - 合法,如 "default" 或 "vip"
+// 3. JSON数组 - 合法,如 ["svip", "default"]
+// 返回错误信息,nil表示校验通过
+func validateBillingGroupList(group string) error {
+	if group == "" {
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(group)
+
+	// 检查是否为 JSON 数组格式
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var groups []string
+		if err := json.Unmarshal([]byte(trimmed), &groups); err != nil {
+			return fmt.Errorf("计费分组列表格式错误: 无效的JSON数组 (%v)", err)
+		}
+		// 检查数组元素
+		for i, g := range groups {
+			if strings.TrimSpace(g) == "" {
+				return fmt.Errorf("计费分组列表格式错误: 第%d个分组名称不能为空", i+1)
+			}
+		}
+		return nil
+	}
+
+	// 单字符串格式 - 检查是否为有效的分组名称（不含特殊字符）
+	if strings.ContainsAny(trimmed, "[]{}\"'") {
+		return fmt.Errorf("计费分组格式错误: 无效的分组名称")
+	}
+
+	return nil
+}
 
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
@@ -151,6 +188,14 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
+	// 校验计费分组列表格式
+	if err := validateBillingGroupList(token.Group); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
 	key, err := common.GenerateKey()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -173,7 +218,7 @@ func AddToken(c *gin.Context) {
 		ModelLimits:        token.ModelLimits,
 		AllowIps:           token.AllowIps,
 		Group:              token.Group,
-		AllowedP2PGroups:   token.AllowedP2PGroups, // P2P 分组限制
+		P2PGroupID:         token.P2PGroupID, // 唯一允许访问的P2P分组ID
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -182,11 +227,12 @@ func AddToken(c *gin.Context) {
 	}
 	if common.ControlPlaneLogEnabled {
 		logger.LogInfo(c, fmt.Sprintf(
-			"control-plane token created: user_id=%d token_id=%d name=%q group=%q remain_quota=%d unlimited=%t model_limits_enabled=%t allow_ips=%q",
+			"control-plane token created: user_id=%d token_id=%d name=%q group=%q p2p_group_id=%v remain_quota=%d unlimited=%t model_limits_enabled=%t allow_ips=%v",
 			cleanToken.UserId,
 			cleanToken.Id,
 			cleanToken.Name,
 			cleanToken.Group,
+			cleanToken.P2PGroupID,
 			cleanToken.RemainQuota,
 			cleanToken.UnlimitedQuota,
 			cleanToken.ModelLimitsEnabled,
@@ -237,6 +283,16 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
+	// 校验计费分组列表格式 (仅在非状态更新模式下校验)
+	if statusOnly == "" {
+		if err := validateBillingGroupList(token.Group); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -270,7 +326,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
-		cleanToken.AllowedP2PGroups = token.AllowedP2PGroups // P2P 分组限制
+		cleanToken.P2PGroupID = token.P2PGroupID // 唯一允许访问的P2P分组ID
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -279,13 +335,14 @@ func UpdateToken(c *gin.Context) {
 	}
 	if common.ControlPlaneLogEnabled {
 		logger.LogInfo(c, fmt.Sprintf(
-			"control-plane token updated: user_id=%d token_id=%d status=%d remain_quota=%d unlimited=%t group=%q model_limits_enabled=%t allow_ips=%q",
+			"control-plane token updated: user_id=%d token_id=%d status=%d remain_quota=%d unlimited=%t group=%q p2p_group_id=%v model_limits_enabled=%t allow_ips=%v",
 			userId,
 			cleanToken.Id,
 			cleanToken.Status,
 			cleanToken.RemainQuota,
 			cleanToken.UnlimitedQuota,
 			cleanToken.Group,
+			cleanToken.P2PGroupID,
 			cleanToken.ModelLimitsEnabled,
 			cleanToken.AllowIps,
 		))
