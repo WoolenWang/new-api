@@ -13,35 +13,53 @@
 
 > **核心策略**: 采用**代码驱动的自动化集成测试**。所有测试场景的构建、执行与验证均在 **Go** 测试框架内完成。我们将利用 **HTTP Test Server** 启动被测 NewAPI 实例，通过程序化 API 调用来预设用户、渠道及分组关系，并使用**内存数据库 (In-Memory SQLite)** 确保测试环境的纯净与隔离。
 
-### 1.1 测试拓扑与控制流 (Topology & Control)
-测试流程完全自动化，通过 Go 测试代码控制所有变量，消除手动操作。
+### 1.1 自动化测试流程总览 (Automated Test Flow)
+
+测试流程遵循“编译-启动-测试-清理”的生命周期，确保每次运行都在一个隔离、纯净的环境中进行，从而保证测试结果的稳定性和可信性。
 
 ```mermaid
-sequenceDiagram
-    participant TestRunner as "Go Test Runner"
-    participant TestServer as "HTTP Test Server (gin)"
-    participant NewAPI as "[被测系统] NewAPI"
-    participant InMemoryDB as "In-Memory DB (SQLite)"
-    participant MockServer as "Mock Upstream"
+graph TD
+    subgraph TestSetup ["A. 环境准备 (Setup)"]
+        Compile["1. 编译源码<br>(go build)"] --> StartServer["2. 启动被测服务<br>(new-api.test.exe)"]
+        StartServer --> InitDB["3. 初始化内存数据库<br>(In-Memory SQLite)"]
+        InitDB --> CreateFixtures["4. 预置测试数据<br>(API调用创建用户、渠道、分组)"]
+    end
 
-    Note over TestRunner, NewAPI: 1. 环境准备 (Test Setup)
-    TestRunner->>TestServer: 启动 NewAPI 服务
-    TestServer->>NewAPI: 初始化 (连接内存DB)
-    TestRunner->>NewAPI: API调用: 创建用户、渠道、P2P分组
+    subgraph TestExecution ["B. 测试执行 (Execution)"]
+        ExecuteSuites["5. 循环执行各测试套件"]
+        subgraph SuitesLoop [" "]
+            direction LR
+            RoutingSuite["路由鉴权测试"]
+            BillingSuite["计费正确性测试"]
+            ConcurrencySuite["并发冲突测试"]
+            BoundarySuite["边界条件测试"]
+            CLISuite["CLIProxy集成测试"]
+        end
+        ExecuteSuites --> SuitesLoop
+    end
 
-    Note over TestRunner, NewAPI: 2. 测试执行 (Execution)
-    TestRunner->>NewAPI: API调用: 发起 /v1/chat/completions
-
-    Note over NewAPI, InMemoryDB: 3. 内部处理
-    NewAPI->>InMemoryDB: 读写用户/渠道/分组数据
-    NewAPI->>MockServer: 转发请求 (如有必要)
-    MockServer-->>NewAPI: 返回预设响应
+    subgraph TestVerification ["C. 场景验证 (Verification)"]
+        direction LR
+        APICall["6. 测试用例: 发起API请求<br>(/v1/chat/completions)"] --> NewAPI{"7. NewAPI<br>内部处理"}
+        NewAPI --> |"读写数据"| DB{"8. 内存数据库"}
+        NewAPI --> |"转发请求<br>(Mock CLIProxyAPI)"| MockServer{"9. Mock服务<br>(上游/CLIProxy)"}
+        MockServer --> NewAPI
+        NewAPI --> |"HTTP响应"| Assertion["10. 结果断言"]
+        DB --> Assertion
+        Assertion --> |"通过/失败"| Result("用例结果")
+    end
     
-    Note over TestRunner, NewAPI: 4. 结果断言 (Assertion)
-    NewAPI-->>TestRunner: 返回 HTTP 响应
-    TestRunner->>TestRunner: 断言 a) 响应码 b) 业务错误
-    TestRunner->>InMemoryDB: 断言 a) 消费日志 b) 额度变更
+    subgraph TestTeardown ["D. 环境清理 (Teardown)"]
+        StopServer["11. 关闭被测服务"] --> CleanupFiles["12. 清理编译文件"]
+    end
+
+    TestSetup --> TestExecution
+    TestExecution --> TestVerification
+    TestVerification --> TestExecution
+    TestExecution --> TestTeardown
+    TestTeardown --> FinalResult("最终测试报告")
 ```
+
 
 ### 1.2 关键测试组件 (Key Components)
 
@@ -54,28 +72,30 @@ sequenceDiagram
 
 ## 二、 测试点分析列表 (Test Point Analysis)
 
-### 2.1 核心路由与鉴权测试 (Routing & Authorization)
-**核心风险**: 验证 `BillingGroup` 和 `RoutingGroups` 解耦后，用户能否且仅能访问其有权访问的渠道。
+### 2.1 核心路由与权限测试 (Routing & Authorization)
+**核心风险**: 验证 `BillingGroup` (计费分组) 和 `RoutingGroups` (路由分组) 解耦后，用户能否且仅能访问其有权访问的渠道集合。
 
-| ID | 测试子项 | 变量控制 (用户、渠道、分组关系) | 预期路由结果 | 预期计费分组 | 优先级 |
+| ID | 测试场景 | 变量控制 (用户、渠道、分组关系) | 预期路由结果 | 预期计费分组 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **R-01** | **基线-仅系统分组** | 用户A (group: vip), 渠道Ch1 (group: vip) | 成功路由到 Ch1 | vip | **P0** |
 | **R-02** | **基线-跨系统分组** | 用户A (group: vip), 渠道Ch2 (group: default) | **无可用渠道** | - | **P0** |
-| **R-03** | **P2P-基础共享** | 用户A (group: default), 用户B (group: vip)<br>渠道Ch-B (owner: B, P2P-Group: G1)<br>用户A **加入** G1 | 成功路由到 Ch-B | **default** | **P0** |
+| **R-03** | **P2P-基础共享** | 用户A (group: default), 用户B (group: vip)<br>渠道Ch-B (owner: B, 授权给 P2P-Group G1)<br>用户A **加入** G1 | 成功路由到 Ch-B | **default** | **P0** |
 | **R-04** | **P2P-无权限访问** | 同上, 但用户A **未加入** G1 | **无可用渠道** | - | P1 |
-| **R-05** | **P2P-私有渠道隔离** | 渠道Ch-B 设置为**私有** (is_private=true) | **无可用渠道** (即使A加入G1) | - | P1 |
-| **R-06** | **Token-P2P组限制** | 用户A (group: vip), 加入G1, G2<br>渠道Ch1(G1), Ch2(G2)<br>Token **仅允许** G1 (`allowed_p2p_groups: [G1]`) | **只能**路由到 Ch1 | vip | **P0** |
-| **R-07** | **Auto分组扩展** | 用户A (group: auto), 加入 P2P-Group G1<br>渠道Ch-vip(vip), 渠道Ch-G1(G1)<br>系统 auto 配置为 `[vip, svip]` | 可路由到 **Ch-vip** 或 **Ch-G1** | auto | P1 |
+| **R-05** | **P2P-私有渠道隔离** | 渠道Ch-B (owner: B, 授权给 G1) 设置为**私有** (`is_private:true`)<br>用户A **加入** G1 | **无可用渠道** (即使A加入G1, 私有渠道仅Owner可见) | - | **P0** |
+| **R-06** | **P2P-私有渠道自用** | 渠道Ch-A (owner: A, **私有**)<br>用户A访问 | **成功**路由到 Ch-A | 用户A的分组 | P1 |
+| **R-07** | **Token-P2P组限制** | 用户A (group: vip), 同时加入 G1, G2<br>渠道Ch1(授权G1), 渠道Ch2(授权G2)<br>Token **仅允许** G1 (`allowed_p2p_groups: [G1]`) | **只能**路由到 Ch1 | vip | **P0** |
+| **R-08** | **Auto分组与P2P叠加** | 用户A (group: auto), 加入 P2P-Group G1<br>渠道Ch-vip(vip), 渠道Ch-G1(G1)<br>系统 `auto` 配置为 `[vip, svip]` | 可路由到 **Ch-vip** (通过auto) 或 **Ch-G1** (通过P2P) | auto | P1 |
 
 ### 2.2 计费正确性测试 (Billing Correctness)
-**核心风险**: 确保用户通过P2P分组使用他人渠道时，计费倍率严格遵循用户自身的`BillingGroup`。
+**核心风险**: 确保用户通过P2P分组使用他人渠道时，计费倍率严格遵循 **消费者** 自身的 `BillingGroup`，而非渠道提供者的分组。
 
-| ID | 测试子项 | 场景描述 | 预置费率 | 预期扣费 | 优先级 |
+| ID | 测试场景 | 场景描述 | 预置费率 | 预期扣费 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **B-01** | **高费率用户用低费率渠道** | 用户A(vip, rate=2) 通过P2P组使用用户B(default, rate=1)的渠道 | - | 按 **rate=2** 计费 | **P0** |
-| **B-02** | **低费率用户用高费率渠道** | 用户B(default, rate=1) 通过P2P组使用用户A(vip, rate=2)的渠道 | - | 按 **rate=1** 计费 | **P0** |
-| **B-03** | **Token覆盖计费分组** | 用户A(vip, rate=2) 使用了指定`group=default`的Token | - | 按 **rate=1** (default费率) 计费 | P1 |
-| **B-04** | **Token降级约束** | 用户A(vip, rate=2) Token指定`group=default`(rate=1)<br>系统开启**防降级** | `can_downgrade=false` | 按 **rate=2** (用户自身费率) 计费 | P2 |
+| **B-01** | **消费者费率原则-1 (高用低)** | 用户A(vip, rate=2) 通过P2P组使用用户B(default, rate=1)的渠道 | - | 按消费者A的 **rate=2** 计费 | **P0** |
+| **B-02** | **消费者费率原则-2 (低用高)** | 用户B(default, rate=1) 通过P2P组使用用户A(vip, rate=2)的渠道 | - | 按消费者B的 **rate=1** 计费 | **P0** |
+| **B-03** | **Token强制计费分组** | 用户A(vip, rate=2) 使用了一个强制指定 `group=default` 的Token | - | 按Token指定的 **rate=1** (default费率) 计费 | P1 |
+| **B-04** | **Token计费防降级** | 用户A(vip, rate=2) 使用了强制`group=default`(rate=1)的Token<br>但系统开启**防降级** (`can_downgrade=false`) | `can_downgrade=false` | 按用户A自身的 **rate=2** 计费 (Token降级无效) | P2 |
+| **B-05** | **P2P分享收益** | 用户B(消费者)使用用户A(提供者)的共享渠道。<br>假设消费1000额度。 | `ShareRatio` = 0.5 | **消费者(B)**: 正常扣费1000<br>**提供者(A)**: `share_quota`增加 `500` | **P0** |
 
 ### 2.3 P2P分组管理API测试 (Group Management)
 **核心风险**: 验证分组创建、加入、审批、退出等全生命周期管理的正确性。
@@ -94,11 +114,39 @@ sequenceDiagram
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **C-01** | **加入分组后权限即时生效** | 1. 用户A无法访问渠道Ch-G1<br>2. 将A加入G1<br>3. 用户A再次请求 | Redis/内存缓存 & API响应 | 步骤1失败, 步骤3**成功** (缓存被主动失效) | **P0** |
 | **C-02** | **被踢出后权限即时失效** | 1. 用户A可访问渠道Ch-G1<br>2. 将A从G1踢出<br>3. 用户A再次请求 | Redis/内存缓存 & API响应 | 步骤1成功, 步骤3**失败** (缓存被主动失效) | **P0** |
+
+### 2.5 并发与数据一致性测试 (Concurrency & Consistency)
+**核心风险**: 验证在数据面请求处理过程中，控制面发生变更时的系统鲁棒性。
+
+| ID | 测试场景 | 并发操作步骤 | 预期行为 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| **CON-01** | **请求中被踢出分组** | 1. 用户A通过P2P分组G1发起一个**长耗时**的流式请求。<br>2. 在请求返回**期间**，Owner将用户A从G1中踢出。 | a) 正在进行的请求**正常完成**并按原权限计费。<br>b) 后续新请求立即**无法访问**该渠道。 | **P0** |
+| **CON-02** | **请求中渠道被禁用** | 1. 用户A发起一个长耗时请求。<br>2. 在请求返回**期间**，渠道Owner或管理员**禁用**该渠道。 | a) 正在进行的请求**正常完成**计费。<br>b) 后续新请求立即**无法访问**该渠道。 | P1 |
+| **CON-03** | **请求中渠道被删除** | 1. 用户A发起一个长耗时请求。<br>2. 在请求返回**期间**，渠道Owner或管理员**删除**该渠道。 | a) 正在进行的请求**正常完成**计费。<br>b) 后续新请求立即**无法访问**该渠道。 | P1 |
+
+### 2.6 边界与极端场景测试 (Boundary & Edge Cases)
+**核心风险**: 验证系统在处理大量分组、复杂权限组合等极端配置下的性能和正确性。
+
+| ID | 测试场景 | 极端条件描述 | 预期行为 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| **E-01** | **用户加入大量分组** | 用户A加入100个P2P分组，请求一个在第100个分组里才有的渠道。 | a) 路由选择正确，能找到目标渠道。<br>b) 首次请求的路由耗时在可接受范围 (<500ms)。 | P2 |
+| **E-02** | **渠道授权大量分组** | 一个渠道Ch-X被授权给100个P2P分组。用户A仅属于其中一个分组。 | a) 用户A能正确访问到Ch-X。<br>b) 路由性能无明显下降。 | P2 |
+| **E-03** | **Token拥有全部权限** | 用户A加入所有（100+）P2P分组，其Token不设任何P2P限制。 | a) 路由逻辑能正确处理“全集”权限。<br>b) 请求路由性能无明显下降。 | P2 |
+
+### 2.7 CLIProxyAPI 渠道集成与兼容性测试
+**核心风险**: 验证 NewAPI 与 CLIProxyAPI 作为特殊上游渠道的集成是否无缝，包括 OAuth 流程模拟、多凭证路由和协议转换。
+
+| ID | 测试场景 | 操作步骤 | 预期行为 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| **CLI-01** | **渠道创建与OAuth模拟** | 1. 在NewAPI中创建 `CLIProxyAPI` 类型渠道。<br>2. 模拟WQuant后端调用，发起认证流程。<br>3. Mock CLIProxyAPI管理接口，返回授权URL。<br>4. 模拟回调，完成凭证创建。 | a) 渠道状态最终变为“已启用”。<br>b) CLIProxyAPI侧（Mock）收到正确的凭证完成请求。<br>c) `account_hint` 被正确设置。 | **P0** |
+| **CLI-02** | **`account_hint` 精确路由** | 1. 创建两个指向同一模型的CLIProxyAPI渠道 (Ch-CLI1, Ch-CLI2)，分别设置 `account_hint` 为 `user1.json` 和 `user2.json`。<br>2. 发起请求，强制路由到 Ch-CLI1。 | a) NewAPI向CLIProxyAPI发送的请求头中必须包含 `X-CLIProxy-Account-Hint: user1.json`。 | **P0** |
+| **CLI-03** | **协议转换兼容性** | 1. 使用OpenAI格式的请求体调用一个通过CLIProxyAPI代理的Claude模型。<br>2. CLIProxyAPI Mock配置为只接受Claude原生格式。 | a) 请求在CLIProxyAPI层被正确转换为Claude格式。<br>b) 响应被正确转换回OpenAI格式并返回给客户端。 | P1 |
+| **CLI-04** | **凭证失效与删除同步** | 1. Mock CLIProxyAPI返回“凭证刷新失败”。<br>2. 在NewAPI删除一个CLIProxyAPI渠道。 | a) 对应渠道在NewAPI中被自动禁用。<br>b) NewAPI会向CLIProxyAPI发出删除凭证的管理请求。 | P1 |
 ---
 
 ## 三、 测试数据准备 (Test Data Preparation)
 
-为了执行上述测试，需要在测试开始前通过 API 预置以下数据实体：
+所有测试均基于以下预置实体及其关系。测试代码应在 `Setup` 阶段通过 API 动态创建这些实体，确保环境纯净。
 
 1.  **用户 (Users)**:
     *   `User-A`: 系统分组 `vip` (倍率: 2.0), 作为渠道和P2P分组的所有者。
@@ -112,20 +160,29 @@ sequenceDiagram
     *   `auto`: 包含 `vip` 和 `svip`。
     *   **特殊组间倍率**: `svip` 用户使用 `default` 分组渠道时，费率 `ratio=0.5`。
 
+2.5 **收益分享配置 (Share Ratio Config)**:
+    *   `ShareRatio`: `0.5` (全局分享收益倍率)。
+
 3.  **P2P 分组 (P2P Groups)**:
     *   `G1_public`: Owner: User-A, 类型: 共享, 加入方式: 公开审核。
     *   `G2_private`: Owner: User-A, 类型: 私有。
     *   `G3_password`: Owner: User-C, 类型: 共享, 加入方式: 密码(`123456`)。
 
 4.  **渠道 (Channels)**:
-    *   `Ch_A_private`: Owner: User-A, 模型: `gpt-4`, 系统分组: `vip`, **私有**。
+    *   `Ch_A_private`: Owner: User-A, 模型: `gpt-4`, 系统分组: `vip`, **私有** (`is_private:true`)。
     *   `Ch_A_shared_G1`: Owner: User-A, 模型: `gpt-4`, 系统分组: `vip`, **P2P授权**: G1_public。
-    *   `Ch_C_public`: Owner: User-C, 模型: `gpt-4`, 系统分组: `default`, **公开**。
+    *   `Ch_C_public`: Owner: User-C, 模型: `gpt-4`, 系统分组: `default`, **公开** (无授权限制)。
+    *   `Ch_CLI_1`: 类型: `CLIProxyAPI`, 模型: `gemini-pro`, `account_hint`: `user1.json`。
+    *   `Ch_CLI_2`: 类型: `CLIProxyAPI`, 模型: `gemini-pro`, `account_hint`: `user2.json`。
 
 5.  **令牌 (Tokens)**:
+    *   `Token_A`: 属于 User-A, 用于测试私有渠道自用等场景。
     *   `Token_B_unlimited`: 属于 User-B, 无 P2P 分组限制。
     *   `Token_B_limited_G1`: 属于 User-B, `allowed_p2p_groups` 仅包含 `G1_public`。
     *   `Token_B_billing_override`: 属于 User-B (vip), 但 `group` 字段强制设为 `default`。
+
+6.  **Mock 服务 (Mock Servers)**:
+    *   `Mock_CLIProxyAPI`: 一个独立的 `httptest.Server`，模拟 CLIProxyAPI 的管理接口 (如 `/v0/management/gemini-cli-auth-url`) 和数据平面接口，用于测试 OAuth 流程和 `account_hint` 路由。
 ## 四、 自动化测试实现方案 (Automated Test Implementation Plan)
 
 为确保测试的效率、稳定性和可重复性，我们将采用纯代码驱动的自动化测试方案，集成在项目的 `scene_test` 目录下。
@@ -265,3 +322,35 @@ func TestBilling_HighRateUserUsesLowRateChannel(t *testing.T) {
 }
 ```
 通过这种方式，整个测试流程实现了完全的自动化和代码化，保证了测试的一致性和高效率。
+
+## 五、测试实现与集成说明
+
+为确保测试的效率、稳定性和可重复性，我们将采用纯代码驱动的自动化测试方案，并集成在项目的 `scene_test` 目录下。
+
+### 5.1 测试目录结构
+
+所有场景化集成测试将统一存放在 `scene_test/` 目录中，并按被测核心模块进行组织：
+```
+new-api/
+├── scene_test/
+│   ├── main_test.go                  # 测试主入口, 负责编译和管理被测程序生命周期
+│   ├── new-api-data-plane/
+│   │   ├── billing/
+│   │   │   └── billing_test.go       # 计费正确性测试
+│   │   └── routing-authorization/
+│   │       └── routing_test.go       # 核心路由与鉴权测试
+│   └── new-api-management-plane/
+│       ├── group-management/
+│       │   └── group_management_test.go # P2P分组管理API测试
+│       └── cache-consistency/
+│           └── cache_test.go          # 缓存一致性测试
+└── ... (其他项目源码)
+```
+
+### 5.2 测试生命周期与环境管理
+
+我们将利用 `go test` 的 `TestMain` 函数来统一管理被测应用的生命周期。
+1.  **编译 (Compilation)**: 在 `scene_test/main_test.go` 中，测试开始前调用 Go 编译器 (`go build`) 生成一个临时的可执行文件。
+2.  **启动 (Setup)**: 通过设置环境变量，强制被测程序连接到内存 SQLite 数据库并监听随机端口。
+3.  **运行测试 (Run)**: 执行 `*_test.go` 中定义的所有测试用例。
+4.  **关闭 (Teardown)**: 终止被测程序进程并清理编译产物。
