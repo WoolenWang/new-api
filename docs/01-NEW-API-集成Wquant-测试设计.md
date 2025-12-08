@@ -88,6 +88,17 @@ graph TD
 | **R-09** | **Token-计费组列表** | 用户A(vip), 渠道Ch-svip(svip), 渠道Ch-default(default)<br>Token `group` 设置为 `["svip", "default"]` | 成功路由到 Ch-svip | svip | **P0** |
 | **R-10**| **Token-计费组列表与P2P组联合** | 用户A(vip), 加入G1<br>渠道Ch-svip(svip, 授权G1), 渠道Ch-default(default)<br>Token `group`: `["svip"]`, `p2p_group_id`: `G1.id` | 成功路由到 Ch-svip | svip | **P0** |
 
+**实现状态（核心 P2P 相关用例）**：
+- R-07（Token-P2P组限制）已由集成用例实现：  
+  `scene_test/new-api-data-plane/routing-authorization/routing_test.go: TestRouting_P2P_TokenRestricted_SelectsOnlyMatchingP2PChannel`
+- 「不选 P2P 组不再使用 P2P 渠道」相关场景已由以下用例覆盖：  
+  - 仅存在 P2P 渠道时，无 `p2p_group_id` 请求无法路由：  
+    `scene_test/new-api-data-plane/routing-authorization/routing_test.go: TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels`  
+  - 同一模型存在公共渠道 + P2P 渠道时，无 `p2p_group_id` 请求仅走公共渠道：  
+    `scene_test/new-api-data-plane/routing-authorization/routing_test.go: TestRouting_P2P_NoTokenRestriction_UsesPublicChannel`  
+  - Token 无 `p2p_group_id` 时，渠道 owner 仍可自用自己的 P2P 渠道：  
+    `scene_test/new-api-data-plane/routing-authorization/routing_test.go: TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P`
+
 ### 2.2 计费正确性测试 (Billing Correctness)
 **核心风险**: 确保用户通过P2P分组使用他人渠道时，计费倍率严格遵循 **消费者** 自身的 `BillingGroup`，而非渠道提供者的分组。
 

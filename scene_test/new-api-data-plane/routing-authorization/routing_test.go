@@ -734,9 +734,396 @@ func TestRouting_R07_TokenP2PGroupRestriction(t *testing.T) {
 	t.Log("R-07: Token P2P group restriction - PASSED")
 }
 
-// TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels verifies that when a Token does NOT specify
-// any p2p_group_id, the request will not use P2P-restricted channels and will only route via
-// public / non-P2P channels (or fail if no such channel exists).
+// TestRouting_TokenWithP2PRestriction
+// 场景：用户同时加入 G1、G2，存在两个 P2P 渠道分别绑定 G1、G2；Token p2p_group_id=G1。
+// 预期：只能路由到绑定 G1 的渠道。
+func TestRouting_TokenWithP2PRestriction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// 用户（default 组）
+	_, err := fixtures.CreateTestUser("token_p2p_restr_user", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("token_p2p_restr_user", "password123"); err != nil {
+		t.Fatalf("failed to login user: %v", err)
+	}
+
+	// P2P owner 用户
+	owner, err := fixtures.CreateTestUser("token_p2p_restr_owner", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create owner user: %v", err)
+	}
+	ownerClient := suite.Client.Clone()
+	if _, err := ownerClient.Login("token_p2p_restr_owner", "password123"); err != nil {
+		t.Fatalf("failed to login owner: %v", err)
+	}
+
+	// 创建 G1、G2，并让用户加入二者
+	g1, err := fixtures.CreateTestP2PGroup(
+		"token-p2p-restr-g1",
+		ownerClient,
+		owner.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"g1pass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create G1: %v", err)
+	}
+	if err := fixtures.AddUserToP2PGroup(g1.ID, userClient, ownerClient, "g1pass"); err != nil {
+		t.Fatalf("failed to add user to G1: %v", err)
+	}
+
+	g2, err := fixtures.CreateTestP2PGroup(
+		"token-p2p-restr-g2",
+		ownerClient,
+		owner.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"g2pass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create G2: %v", err)
+	}
+	if err := fixtures.AddUserToP2PGroup(g2.ID, userClient, ownerClient, "g2pass"); err != nil {
+		t.Fatalf("failed to add user to G2: %v", err)
+	}
+
+	// upstream1 绑定 G1 渠道，upstream2 绑定 G2 渠道
+	upstreamG1 := testutil.NewMockUpstreamServer()
+	defer upstreamG1.Close()
+	upstreamG2 := testutil.NewMockUpstreamServer()
+	defer upstreamG2.Close()
+
+	_, err = fixtures.CreateTestChannel(
+		"token-p2p-restr-channel-g1",
+		"gpt-4",
+		"default",
+		upstreamG1.BaseURL,
+		false,
+		owner.ID,
+		fmt.Sprintf("%d", g1.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create channel for G1: %v", err)
+	}
+
+	_, err = fixtures.CreateTestChannel(
+		"token-p2p-restr-channel-g2",
+		"gpt-4",
+		"default",
+		upstreamG2.BaseURL,
+		false,
+		owner.ID,
+		fmt.Sprintf("%d", g2.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create channel for G2: %v", err)
+	}
+
+	// Token 限制 p2p_group_id = G1
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "token-p2p-restr-token-g1",
+		Status:         1,
+		UnlimitedQuota: true,
+		P2PGroupID:     &g1.ID,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "Token P2P restriction test")
+	if !success {
+		t.Fatalf("expected request to succeed via G1 channel, got status=%d, err=%s", statusCode, errMsg)
+	}
+
+	if upstreamG1.GetRequestCount() != 1 {
+		t.Fatalf("expected 1 request to upstreamG1 (G1), got %d", upstreamG1.GetRequestCount())
+	}
+	if upstreamG2.GetRequestCount() != 0 {
+		t.Fatalf("expected 0 requests to upstreamG2 (G2), got %d", upstreamG2.GetRequestCount())
+	}
+
+	t.Log("Token with P2P restriction: only G1 channel was selected")
+}
+
+// TestRouting_TokenWithBillingGroupList_Success
+// 场景：Token 的 group 为 ["vip","default"]，且 vip 组下存在可用渠道。
+// 预期：请求成功路由到 vip 组渠道（第一个计费组），不会回退到 default。
+func TestRouting_TokenWithBillingGroupList_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// 用户在 vip 组
+	_, err := fixtures.CreateTestUser("billing_list_success_user", "password123", "vip")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("billing_list_success_user", "password123"); err != nil {
+		t.Fatalf("failed to login user: %v", err)
+	}
+
+	// vip 组渠道（第一个计费组使用的渠道），使用独立 upstream1
+	upstreamVip := testutil.NewMockUpstreamServer()
+	defer upstreamVip.Close()
+
+	_, err = fixtures.CreateTestChannel(
+		"billing-list-success-vip-channel",
+		"gpt-4",
+		"vip",
+		upstreamVip.BaseURL,
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create vip channel: %v", err)
+	}
+
+	// default 组渠道，使用全局 upstream（作为备选）
+	_, err = fixtures.CreateTestChannel(
+		"billing-list-success-default-channel",
+		"gpt-4",
+		"default",
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create default channel: %v", err)
+	}
+
+	// Token 计费组列表 ["vip","default"]
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "billing-list-success-token",
+		Status:         1,
+		UnlimitedQuota: true,
+		Group:          `["vip","default"]`,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "BillingGroupList success test")
+	if !success {
+		t.Fatalf("expected request to succeed via vip channel, got status=%d, err=%s", statusCode, errMsg)
+	}
+
+	if upstreamVip.GetRequestCount() != 1 {
+		t.Fatalf("expected vip upstream to receive request once, got %d", upstreamVip.GetRequestCount())
+	}
+	// default 渠道是否被调用取决于实现细节（多路由），这里只要求 vip 一定被命中
+	t.Log("Token BillingGroupList success: selected vip channel as first billing group")
+}
+
+// TestRouting_TokenWithBillingGroupList_Failover
+// 场景：Token 的 group 为 ["vip","default"]，vip 组下无可用渠道，default 组有渠道。
+// 预期：系统从 vip 计费组自动失败转移到 default，成功路由到 default 渠道。
+func TestRouting_TokenWithBillingGroupList_Failover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// 用户在 vip 组
+	_, err := fixtures.CreateTestUser("billing_list_failover_user", "password123", "vip")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("billing_list_failover_user", "password123"); err != nil {
+		t.Fatalf("failed to login user: %v", err)
+	}
+
+	// default 组渠道，使用独立 upstreamDefault
+	upstreamDefault := testutil.NewMockUpstreamServer()
+	defer upstreamDefault.Close()
+
+	_, err = fixtures.CreateTestChannel(
+		"billing-list-failover-default-channel",
+		"gpt-4",
+		"default",
+		upstreamDefault.BaseURL,
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create default channel: %v", err)
+	}
+
+	// 不创建 svip 渠道，保证第一个计费组无可用渠道
+
+	// Token 计费组列表 ["vip","default"]，但当前用例中未创建 vip 渠道
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "billing-list-failover-token",
+		Status:         1,
+		UnlimitedQuota: true,
+		Group:          `["vip","default"]`,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "BillingGroupList failover test")
+	if !success {
+		t.Fatalf("expected request to succeed via default channel (failover), got status=%d, err=%s", statusCode, errMsg)
+	}
+
+	if upstreamDefault.GetRequestCount() != 1 {
+		t.Fatalf("expected default upstream to receive request once (after failover), got %d", upstreamDefault.GetRequestCount())
+	}
+
+	t.Log("Token BillingGroupList failover: fell back from svip to default successfully")
+}
+
+// TestRouting_P2P_TokenRestricted_SelectsOnlyMatchingP2PChannel
+// 场景：
+//   - 用户加入 P2P 组 G1；
+//   - 存在两个渠道，均在同一计费组 "default"，模型相同：
+//     C1: allowed_groups = [G1]，指向 upstream1；
+//     C2: 无 allowed_groups，指向 upstream2；
+//   - Token 设置 p2p_group_id = G1。
+//
+// 
+// 预期：
+//   - 仅 C1 可被选中，请求只打到 upstream1，upstream2 不会被调用。
+func TestRouting_P2P_TokenRestricted_SelectsOnlyMatchingP2PChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// 创建 owner 用户（用于持有 P2P 渠道）
+	owner, err := fixtures.CreateTestUser("p2p_and_owner", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create owner user: %v", err)
+	}
+	ownerClient := suite.Client.Clone()
+	if _, err := ownerClient.Login("p2p_and_owner", "password123"); err != nil {
+		t.Fatalf("failed to login owner user: %v", err)
+	}
+
+	// 创建实际调用的用户（加入 G1，持有 Token）
+	_, err = fixtures.CreateTestUser("p2p_and_user", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("p2p_and_user", "password123"); err != nil {
+		t.Fatalf("failed to login user: %v", err)
+	}
+
+	// 创建 P2P 组 G1（owner = owner），并让 user 加入
+	group, err := fixtures.CreateTestP2PGroup(
+		"p2p-and-group-1",
+		ownerClient,
+		owner.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"andpass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2P group: %v", err)
+	}
+	if err := fixtures.AddUserToP2PGroup(group.ID, userClient, ownerClient, "andpass"); err != nil {
+		t.Fatalf("failed to add user to P2P group: %v", err)
+	}
+
+	// 创建两个独立 upstream
+	upstream1 := testutil.NewMockUpstreamServer()
+	defer upstream1.Close()
+	upstream2 := testutil.NewMockUpstreamServer()
+	defer upstream2.Close()
+
+	// C1: 绑定 G1，OwnerUserId = owner.ID，使用 upstream1
+	_, err = fixtures.CreateTestChannel(
+		"p2p-and-channel-g1",
+		"gpt-4",
+		"default",
+		upstream1.BaseURL,
+		false,
+		owner.ID,
+		fmt.Sprintf("%d", group.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create C1 channel: %v", err)
+	}
+
+	// C2: 同一计费组 + 模型，但无 allowed_groups，使用 upstream2
+	_, err = fixtures.CreateTestChannel(
+		"p2p-and-channel-public",
+		"gpt-4",
+		"default",
+		upstream2.BaseURL,
+		false,
+		owner.ID,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create C2 channel: %v", err)
+	}
+
+	// Token 限制 p2p_group_id = G1
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "p2p-and-token-g1",
+		Status:         1,
+		UnlimitedQuota: true,
+		P2PGroupID:     &group.ID,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	apiClient := suite.Client.WithToken(token)
+	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P AND routing test")
+	if !success {
+		t.Fatalf("expected request to succeed via C1 (G1), got status=%d, err=%s", statusCode, errMsg)
+	}
+
+	if upstream1.GetRequestCount() != 1 {
+		t.Fatalf("expected 1 request to upstream1 (G1 channel), got %d", upstream1.GetRequestCount())
+	}
+	if upstream2.GetRequestCount() != 0 {
+		t.Fatalf("expected 0 requests to upstream2 (non-G1 channel), got %d", upstream2.GetRequestCount())
+	}
+
+	t.Log("P2P AND routing: only channel with allowed_groups=[G1] was selected")
+}
+
+// TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels
+// 场景：只有一个 P2P 组渠道（非平台渠道，allowed_groups 绑定 G1），Token 未设置 p2p_group_id。
+// 预期：请求无法使用该 P2P 渠道，且不会打到对应 upstream。
 func TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -747,31 +1134,89 @@ func TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels(t *testing.T) {
 
 	fixtures := suite.Fixtures
 
-	// Setup basic users and P2P groups/channels (User1 owns P2P group/channel, User2 is member)
-	if err := fixtures.SetupRoutingTestFixtures(); err != nil {
-		t.Fatalf("SetupRoutingTestFixtures failed: %v", err)
+	// 创建调用用户（default 组）
+	_, err := fixtures.CreateTestUser("p2p_norestr_fail_user", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create caller user: %v", err)
 	}
 
-	// User2 client and token WITHOUT any P2P restriction
-	user2Client := fixtures.ClientForUser2()
+	userClient := suite.Client.Clone()
+	if _, err := userClient.Login("p2p_norestr_fail_user", "password123"); err != nil {
+		t.Fatalf("failed to login caller user: %v", err)
+	}
 
-	// Send request for model only available via P2P group channel (owned by User1)
-	apiClient := user2Client
-	t.Log("Sending request without p2p_group_id, expecting NOT to use P2P channel...")
+	// 创建单独的 P2P owner 用户
+	owner, err := fixtures.CreateTestUser("p2p_norestr_fail_owner", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create P2P owner user: %v", err)
+	}
+	ownerClient := suite.Client.Clone()
+	if _, err := ownerClient.Login("p2p_norestr_fail_owner", "password123"); err != nil {
+		t.Fatalf("failed to login P2P owner user: %v", err)
+	}
+
+	// 创建 P2P 组 G1（owner = ownerUser），并让 caller 加入（membership 对当前语义无硬依赖）
+	group, err := fixtures.CreateTestP2PGroup(
+		"p2p-norestr-fail-group",
+		ownerClient,
+		owner.ID,
+		testutil.P2PGroupTypeShared,
+		testutil.P2PJoinMethodPassword,
+		"g1pass",
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2P group: %v", err)
+	}
+	if err := fixtures.AddUserToP2PGroup(group.ID, userClient, ownerClient, "g1pass"); err != nil {
+		t.Fatalf("failed to add caller to P2P group: %v", err)
+	}
+
+	// 单独的 upstream，只给 P2P 渠道用
+	p2pUpstream := testutil.NewMockUpstreamServer()
+	defer p2pUpstream.Close()
+
+	// 创建仅属于 G1 的 P2P 渠道（owner_user_id != 0，allowed_groups = [G1]）
+	_, err = fixtures.CreateTestChannel(
+		"p2p-norestr-only-channel",
+		"gpt-4",
+		"default",
+		p2pUpstream.BaseURL,
+		false,
+		owner.ID,
+		fmt.Sprintf("%d", group.ID),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2P-only channel: %v", err)
+	}
+
+	// 创建一个不含 p2p_group_id 的 Token
+	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "p2p-norestr-fail-token",
+		Status:         1,
+		UnlimitedQuota: true,
+		// P2PGroupID 省略 => 未设置
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	apiClient := suite.Client.WithToken(token)
+	t.Log("Sending request without p2p_group_id, expecting it NOT to hit P2P-only channel...")
 	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P no-token-restriction test")
 
+	// 仅有 P2P 渠道可用时，应当路由失败
 	if success {
-		t.Errorf("Expected request to fail (no public/default channel for gpt-4), but it succeeded")
+		t.Errorf("Expected request to fail (no non-P2P route available), but it succeeded")
 	}
-	if statusCode == 200 {
-		t.Errorf("Expected non-200 when no non-P2P route available, got 200")
+	if p2pUpstream.GetRequestCount() != 0 {
+		t.Errorf("Expected 0 requests to P2P upstream, got %d", p2pUpstream.GetRequestCount())
 	}
 	t.Logf("Request correctly did not use P2P channel: status=%d, err=%s", statusCode, errMsg)
 }
 
-// TestRouting_P2P_NoTokenRestriction_UsesPublicChannel verifies that when there is both a public
-// (non-P2P) channel and a P2P channel for the same model, and Token has no p2p_group_id,
-// routing prefers the public channel and will not utilize the P2P-restricted channel.
+// TestRouting_P2P_NoTokenRestriction_UsesPublicChannel
+// 场景：同一模型有一个公共渠道（无 P2P）和一个 P2P 渠道（allowed_groups=[G1]），Token 未设置 p2p_group_id。
+// 预期：请求走公共渠道，对应公共 upstream 收到请求，P2P upstream 不应被调用。
 func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -782,18 +1227,18 @@ func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
 
 	fixtures := suite.Fixtures
 
-	// Create basic user in "default" group with unlimited token
-	user, err := fixtures.CreateTestUser("p2p_norestr_public_user", "password123", "default")
+	// 创建公共用户（default 组），用于发起请求
+	_, err := fixtures.CreateTestUser("p2p_norestr_public_user", "password123", "default")
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
 
-	userClient := suite.Client.Clone()
-	if _, err := userClient.Login("p2p_norestr_public_user", "password123"); err != nil {
+	publicClient := suite.Client.Clone()
+	if _, err := publicClient.Login("p2p_norestr_public_user", "password123"); err != nil {
 		t.Fatalf("failed to login user: %v", err)
 	}
 
-	token, err := userClient.CreateTokenFull(&testutil.TokenModel{
+	token, err := publicClient.CreateTokenFull(&testutil.TokenModel{
 		Name:           "p2p-norestr-public-token",
 		Status:         1,
 		UnlimitedQuota: true,
@@ -802,7 +1247,7 @@ func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
 		t.Fatalf("failed to create token: %v", err)
 	}
 
-	// Create a public channel (no P2P restriction) and a P2P-restricted channel for same model
+	// 公共渠道使用 suite.Upstream
 	publicChannel, err := fixtures.CreateTestChannel(
 		"p2p-norestr-public-channel",
 		"gpt-4",
@@ -817,12 +1262,24 @@ func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
 	}
 	t.Logf("Created public channel ID=%d", publicChannel.ID)
 
-	// Create a P2P group and a P2P-restricted channel
-	ownerClient := userClient
+	// 创建单独的 P2P upstream
+	p2pUpstream := testutil.NewMockUpstreamServer()
+	defer p2pUpstream.Close()
+
+	// 创建 P2P group G1，由另一个 owner 用户持有
+	ownerUser, err := fixtures.CreateTestUser("p2p_norestr_public_owner", "password123", "default")
+	if err != nil {
+		t.Fatalf("failed to create P2P owner user: %v", err)
+	}
+	ownerClient := suite.Client.Clone()
+	if _, err := ownerClient.Login("p2p_norestr_public_owner", "password123"); err != nil {
+		t.Fatalf("failed to login P2P owner: %v", err)
+	}
+
 	group, err := fixtures.CreateTestP2PGroup(
 		"p2p-norestr-public-group",
 		ownerClient,
-		user.ID,
+		ownerUser.ID,
 		testutil.P2PGroupTypeShared,
 		testutil.P2PJoinMethodPassword,
 		"p2ppass",
@@ -831,34 +1288,39 @@ func TestRouting_P2P_NoTokenRestriction_UsesPublicChannel(t *testing.T) {
 		t.Fatalf("failed to create P2P group: %v", err)
 	}
 
-	p2pChannel, err := fixtures.CreateTestChannel(
+	// P2P 渠道绑定 G1，owner_user_id 为 ownerUser.ID，使用独立 upstream
+	_, err = fixtures.CreateTestChannel(
 		"p2p-norestr-p2p-channel",
 		"gpt-4",
 		"default",
-		fixtures.GetUpstreamURL(),
+		p2pUpstream.BaseURL,
 		false,
-		0,
+		ownerUser.ID,
 		fmt.Sprintf("%d", group.ID),
 	)
 	if err != nil {
 		t.Fatalf("failed to create P2P channel: %v", err)
 	}
-	t.Logf("Created P2P channel ID=%d", p2pChannel.ID)
+	t.Log("Created public + P2P channels for same model; token has NO p2p_group_id")
 
-	// Using a token WITHOUT p2p_group_id, request should succeed via public channel
+	// 使用不含 p2p_group_id 的 Token，请求应通过公共渠道成功，且不触达 P2P upstream
 	apiClient := suite.Client.WithToken(token)
 	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P no-token-restriction public channel test")
 	if !success {
 		t.Fatalf("expected request to succeed via public channel, got status=%d, err=%s", statusCode, errMsg)
 	}
 	if suite.Upstream.GetRequestCount() == 0 {
-		t.Fatalf("expected upstream to receive request via public channel")
+		t.Fatalf("expected main upstream to receive request via public channel")
 	}
-	t.Log("Request succeeded via public channel without using P2P channel")
+	if p2pUpstream.GetRequestCount() != 0 {
+		t.Fatalf("expected 0 requests to P2P upstream, got %d", p2pUpstream.GetRequestCount())
+	}
+	t.Log("Request succeeded via public channel; P2P channel was not used")
 }
 
-// TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P verifies that even when Token has no
-// p2p_group_id, channel owner仍然可以访问自己的 P2P 渠道（owner 权限优先级最高）。
+// TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P
+// 场景：Token 未设置 p2p_group_id，但用户是 P2P 渠道 owner。
+// 预期：owner 仍然可以访问自己的 P2P 渠道（owner 权限优先级最高）。
 func TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -903,12 +1365,16 @@ func TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P(t *testing.T) {
 		t.Fatalf("failed to create owner P2P group: %v", err)
 	}
 
+	// 独立 P2P upstream，用于确认确实走了 P2P 渠道
+	p2pUpstream := testutil.NewMockUpstreamServer()
+	defer p2pUpstream.Close()
+
 	// P2P channel owned by owner (OwnerUserId = owner.ID)
-	p2pChannel, err := fixtures.CreateTestChannel(
+	_, err = fixtures.CreateTestChannel(
 		"p2p-norestr-owner-channel",
 		"gpt-4",
 		"default",
-		fixtures.GetUpstreamURL(),
+		p2pUpstream.BaseURL,
 		false,
 		owner.ID,
 		fmt.Sprintf("%d", group.ID),
@@ -916,15 +1382,15 @@ func TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create owner P2P channel: %v", err)
 	}
-	t.Logf("Created owner P2P channel ID=%d", p2pChannel.ID)
+	t.Log("Created owner P2P channel")
 
 	apiClient := suite.Client.WithToken(token)
 	success, statusCode, errMsg := apiClient.TryChatCompletion("gpt-4", "P2P owner self-use test")
 	if !success {
 		t.Fatalf("expected owner to access own P2P channel, got status=%d, err=%s", statusCode, errMsg)
 	}
-	if suite.Upstream.GetRequestCount() == 0 {
-		t.Fatalf("expected upstream to receive request via owner's P2P channel")
+	if p2pUpstream.GetRequestCount() == 0 {
+		t.Fatalf("expected P2P upstream to receive request via owner's channel")
 	}
 	t.Log("Owner successfully accessed own P2P channel without specifying p2p_group_id")
 }

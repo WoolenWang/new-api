@@ -965,6 +965,110 @@ func TestBilling_B06_P2PSharingRevenue(t *testing.T) {
 	approxEqualRatio(t, actualShare, expectedShare, 0.1, "B-06: share quota for provider does not match ShareRatio")
 }
 
+// TestBilling_TokenWithBillingGroupList
+// 场景：Token 的计费组列表为 ["vip","default"]，且 vip 组和 default 组都存在渠道。
+// 预期：计费使用列表中第一个计费组（vip）的倍率，与单独使用 vip 计费组时一致。
+func TestBilling_TokenWithBillingGroupList(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	suite, cleanup := SetupSuite(t)
+	defer cleanup()
+
+	fixtures := suite.Fixtures
+
+	// 用户 A，主分组 vip
+	userA, err := fixtures.CreateTestUser("bill_list_userA", "password123", "vip")
+	if err != nil {
+		t.Fatalf("failed to create user A: %v", err)
+	}
+	userAClient := suite.Client.Clone()
+	if _, err := userAClient.Login("bill_list_userA", "password123"); err != nil {
+		t.Fatalf("failed to login user A: %v", err)
+	}
+
+	// default & vip 渠道均指向同一 upstream，便于比较消耗
+	defaultChannel, err := fixtures.CreateTestChannel(
+		"bill-list-default-channel",
+		"gpt-4",
+		"default",
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create default channel: %v", err)
+	}
+	t.Logf("Created default channel ID=%d", defaultChannel.ID)
+
+	vipChannel, err := fixtures.CreateTestChannel(
+		"bill-list-vip-channel",
+		"gpt-4",
+		"vip",
+		fixtures.GetUpstreamURL(),
+		false,
+		0,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create vip channel: %v", err)
+	}
+	t.Logf("Created vip channel ID=%d", vipChannel.ID)
+
+	// Baseline：仅使用 vip 计费组的 Token，测一次消费
+	tokenVip, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "bill-list-token-vip",
+		Status:         1,
+		UnlimitedQuota: true,
+		Group:          `["vip"]`,
+	})
+	if err != nil {
+		t.Fatalf("failed to create vip-only token: %v", err)
+	}
+
+	quotaBeforeVip := getUserQuota(t, suite.Client, userA.ID)
+	apiClientVip := suite.Client.WithToken(tokenVip)
+	success, statusCode, errMsg := apiClientVip.TryChatCompletion("gpt-4", "BillingGroupList baseline vip")
+	if !success {
+		t.Fatalf("baseline vip billing request failed: status=%d, err=%s", statusCode, errMsg)
+	}
+	quotaAfterVip := getUserQuota(t, suite.Client, userA.ID)
+	usedVip := quotaBeforeVip - quotaAfterVip
+	if usedVip <= 0 {
+		t.Fatalf("expected used quota for vip baseline > 0, got %d", usedVip)
+	}
+	t.Logf("Baseline used quota with vip billing: %d", usedVip)
+
+	// Token 使用计费组列表 ["vip","default"]，应当仍以 vip 组为计费组
+	tokenList, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "bill-list-token-vip-default",
+		Status:         1,
+		UnlimitedQuota: true,
+		Group:          `["vip","default"]`,
+	})
+	if err != nil {
+		t.Fatalf("failed to create billing-list token: %v", err)
+	}
+
+	quotaBeforeList := getUserQuota(t, suite.Client, userA.ID)
+	apiClientList := suite.Client.WithToken(tokenList)
+	success, statusCode, errMsg = apiClientList.TryChatCompletion("gpt-4", "BillingGroupList multi-group request")
+	if !success {
+		t.Fatalf("billing-list request failed: status=%d, err=%s", statusCode, errMsg)
+	}
+	quotaAfterList := getUserQuota(t, suite.Client, userA.ID)
+	usedList := quotaBeforeList - quotaAfterList
+	if usedList <= 0 {
+		t.Fatalf("expected used quota for billing-list token > 0, got %d", usedList)
+	}
+	t.Logf("Used quota with billing group list [\"vip\",\"default\"]: %d", usedList)
+
+	// 两次调用使用相同模型与数据，只改变 Token；预期使用相同的 vip 计费倍率
+	approxEqualRatio(t, float64(usedList), float64(usedVip), 0.05, "BillingGroupList did not use first group (vip) for billing")
+}
+
 // TestBilling_OrthogonalMatrix tests the orthogonal combinations of system group and P2P group.
 // This implements the test matrix from section 2.3 of the test design document.
 func TestBilling_OrthogonalMatrix(t *testing.T) {

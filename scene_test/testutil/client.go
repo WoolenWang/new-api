@@ -833,21 +833,137 @@ func (c *APIClient) UpdateMemberStatus(groupID, userID, status int) error {
 	return nil
 }
 
-// GetSelfJoinedGroups gets the current user's joined P2P groups.
+// p2pGroupPage models the paginated response for group list APIs.
+type p2pGroupPage struct {
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+	Total    int             `json:"total"`
+	Items    []P2PGroupModel `json:"items"`
+}
+
+// groupMemberPage models the paginated response for group member list APIs.
+type groupMemberPage struct {
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+	Total    int              `json:"total"`
+	Items    []P2PGroupMember `json:"items"`
+}
+
+// P2PGroupMember represents a P2P group member record returned by the API.
+type P2PGroupMember struct {
+	ID        int   `json:"id"`
+	UserID    int   `json:"user_id"`
+	GroupID   int   `json:"group_id"`
+	Role      int   `json:"role"`
+	Status    int   `json:"status"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
+	// Optional user fields (may be empty depending on query)
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+}
+
+// GetSelfJoinedGroups gets the current user's joined P2P groups (Active status only).
+// It calls GET /api/groups/self/joined and flattens the paginated result.
 func (c *APIClient) GetSelfJoinedGroups() ([]P2PGroupModel, error) {
 	var resp struct {
-		Success bool            `json:"success"`
-		Message string          `json:"message"`
-		Data    []P2PGroupModel `json:"data"`
+		Success bool         `json:"success"`
+		Message string       `json:"message"`
+		Data    p2pGroupPage `json:"data"`
 	}
-	err := c.GetJSON("/api/groups/self/joined", &resp)
+	err := c.GetJSON("/api/groups/self/joined?p=1&page_size=100", &resp)
 	if err != nil {
 		return nil, err
 	}
 	if !resp.Success {
 		return nil, fmt.Errorf("get joined groups failed: %s", resp.Message)
 	}
-	return resp.Data, nil
+	return resp.Data.Items, nil
+}
+
+// GetSelfOwnedGroups returns groups owned by the current user.
+// It calls GET /api/groups/self/owned and returns the items list.
+func (c *APIClient) GetSelfOwnedGroups() ([]P2PGroupModel, error) {
+	var resp struct {
+		Success bool         `json:"success"`
+		Message string       `json:"message"`
+		Data    p2pGroupPage `json:"data"`
+	}
+	err := c.GetJSON("/api/groups/self/owned?p=1&page_size=100", &resp)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get owned groups failed: %s", resp.Message)
+	}
+	return resp.Data.Items, nil
+}
+
+// GetGroupMembers lists members of a group, optionally filtered by status.
+// Status: 0=Pending, 1=Active, 2=Rejected, 3=Banned, 4=Left. Use -1 for all.
+func (c *APIClient) GetGroupMembers(groupID int, status int) ([]P2PGroupMember, error) {
+	query := fmt.Sprintf("/api/groups/members?group_id=%d&p=1&page_size=100", groupID)
+	if status >= 0 {
+		query = fmt.Sprintf("%s&status=%d", query, status)
+	}
+
+	var resp struct {
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    groupMemberPage `json:"data"`
+	}
+	if err := c.GetJSON(query, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get group members failed: %s", resp.Message)
+	}
+	return resp.Data.Items, nil
+}
+
+// GetGroupMemberInfo retrieves a single member relation by group and user.
+func (c *APIClient) GetGroupMemberInfo(groupID, userID int) (*P2PGroupMember, error) {
+	var resp struct {
+		Success bool           `json:"success"`
+		Message string         `json:"message"`
+		Data    P2PGroupMember `json:"data"`
+	}
+	path := fmt.Sprintf("/api/groups/member?group_id=%d&user_id=%d", groupID, userID)
+	if err := c.GetJSON(path, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get member info failed: %s", resp.Message)
+	}
+	return &resp.Data, nil
+}
+
+// LeaveGroup makes the current user leave the specified group.
+func (c *APIClient) LeaveGroup(groupID int) error {
+	var resp APIResponse
+	if err := c.PostJSON("/api/groups/leave", map[string]interface{}{
+		"group_id": groupID,
+	}, &resp); err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("leave group failed: %s", resp.Message)
+	}
+	return nil
+}
+
+// DeleteGroup deletes a P2P group by ID.
+func (c *APIClient) DeleteGroup(groupID int) error {
+	var resp APIResponse
+	path := fmt.Sprintf("/api/groups?id=%d", groupID)
+	if err := c.DeleteJSON(path, &resp); err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("delete group failed: %s", resp.Message)
+	}
+	return nil
 }
 
 // ChatCompletionResponse represents the response from chat completion
