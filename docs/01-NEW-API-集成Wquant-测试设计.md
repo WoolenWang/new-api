@@ -83,8 +83,10 @@ graph TD
 | **R-04** | **P2P-无权限访问** | 同上, 但用户A **未加入** G1 | **无可用渠道** | - | P1 |
 | **R-05** | **P2P-私有渠道隔离** | 渠道Ch-B (owner: B, 授权给 G1) 设置为**私有** (`is_private:true`)<br>用户A **加入** G1 | **无可用渠道** (即使A加入G1, 私有渠道仅Owner可见) | - | **P0** |
 | **R-06** | **P2P-私有渠道自用** | 渠道Ch-A (owner: A, **私有**)<br>用户A访问 | **成功**路由到 Ch-A | 用户A的分组 | P1 |
-| **R-07** | **Token-P2P组限制** | 用户A (group: vip), 同时加入 G1, G2<br>渠道Ch1(授权G1), 渠道Ch2(授权G2)<br>Token **仅允许** G1 (`allowed_p2p_groups: [G1]`) | **只能**路由到 Ch1 | vip | **P0** |
+| **R-07** | **Token-P2P组限制** | 用户A (group: vip), 同时加入 G1, G2<br>渠道Ch1(授权G1), 渠道Ch2(授权G2)<br>Token **仅允许** P2P 分组 G1 (`p2p_group_id: G1.id`) | **只能**路由到 Ch1 | vip | **P0** |
 | **R-08** | **Auto分组与P2P叠加** | 用户A (group: auto), 加入 P2P-Group G1<br>渠道Ch-vip(vip), 渠道Ch-G1(G1)<br>系统 `auto` 配置为 `[vip, svip]` | 可路由到 **Ch-vip** (通过auto) 或 **Ch-G1** (通过P2P) | auto | P1 |
+| **R-09** | **Token-计费组列表** | 用户A(vip), 渠道Ch-svip(svip), 渠道Ch-default(default)<br>Token `group` 设置为 `["svip", "default"]` | 成功路由到 Ch-svip | svip | **P0** |
+| **R-10**| **Token-计费组列表与P2P组联合** | 用户A(vip), 加入G1<br>渠道Ch-svip(svip, 授权G1), 渠道Ch-default(default)<br>Token `group`: `["svip"]`, `p2p_group_id`: `G1.id` | 成功路由到 Ch-svip | svip | **P0** |
 
 ### 2.2 计费正确性测试 (Billing Correctness)
 **核心风险**: 确保用户通过P2P分组使用他人渠道时，计费倍率严格遵循 **消费者** 自身的 `BillingGroup`，而非渠道提供者的分组。
@@ -93,9 +95,10 @@ graph TD
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **B-01** | **消费者费率原则-1 (高用低)** | 用户A(vip, rate=2) 通过P2P组使用用户B(default, rate=1)的渠道 | - | 按消费者A的 **rate=2** 计费 | **P0** |
 | **B-02** | **消费者费率原则-2 (低用高)** | 用户B(default, rate=1) 通过P2P组使用用户A(vip, rate=2)的渠道 | - | 按消费者B的 **rate=1** 计费 | **P0** |
-| **B-03** | **Token强制计费分组** | 用户A(vip, rate=2) 使用了一个强制指定 `group=default` 的Token | - | 按Token指定的 **rate=1** (default费率) 计费 | P1 |
-| **B-04** | **Token计费防降级** | 用户A(vip, rate=2) 使用了强制`group=default`(rate=1)的Token<br>但系统开启**防降级** (`can_downgrade=false`) | `can_downgrade=false` | 按用户A自身的 **rate=2** 计费 (Token降级无效) | P2 |
-| **B-05** | **P2P分享收益** | 用户B(消费者)使用用户A(提供者)的共享渠道。<br>假设消费1000额度。 | `ShareRatio` = 0.5 | **消费者(B)**: 正常扣费1000<br>**提供者(A)**: `share_quota`增加 `500` | **P0** |
+| **B-03** | **Token强制计费分组** | 用户A(vip, rate=2) 使用了一个`group`为 `["default"]`的Token | - | 按Token指定的 **rate=1** (default费率) 计费 | P1 |
+| **B-04** | **Token-计费组失败转移**| 用户A(vip), 渠道Ch-default(default)<br>Token `group` 设置为 `["svip", "default"]`<br>无svip分组渠道 | `svip`费率无效，最终按`default`费率 **rate=1** 计费 | - | **P0** |
+| **B-05** | **Token计费防降级** | 用户A(vip, rate=2) 使用了`group`为 `["default"]` (rate=1)的Token<br>但系统开启**防降级** (`can_downgrade=false`) | `can_downgrade=false` | 按用户A自身的 **rate=2** 计费 (Token降级无效) | P2 |
+| **B-06** | **P2P分享收益** | 用户B(消费者)使用用户A(提供者)的共享渠道。<br>假设消费1000额度。 | `ShareRatio` = 0.5 | **消费者(B)**: 正常扣费1000<br>**提供者(A)**: `share_quota`增加 `500` | **P0** |
 
 ### 2.3 计费与P2P分组正交测试 (Orthogonal Test for Billing & P2P)
 **核心风险**: 深入验证当渠道同时归属于系统分组和P2P分组时，路由与计费的决策是否依然遵循“**计费看自己，路由看交集**”的核心原则。
@@ -108,8 +111,8 @@ graph TD
 | `default` | `vip` | G1 | **已加入 G1** | **失败** | - | **与关系**: P2P分组(G1)匹配, 但系统分组不匹配(`default` vs `vip`)。 |
 | `vip` | `default` | *无* | **已加入 G1** | **失败** | - | 渠道未授权P2P分组，且系统分组不匹配。 |
 | `vip` | `default` | G1 | **已加入 G1** | **失败** | - | **与关系**: P2P分组(G1)匹配, 但系统分组不匹配(`vip` vs `default`)。 |
-| `vip` (Token覆盖为`default`) | `default` | G1 | **已加入 G1** | **成功** | `default` | **与关系**: 消费者的计费分组被Token覆盖为`default`，与渠道系统分组匹配, **且** P2P分组(G1)也匹配。 |
-| `default` (Token限制P2P为`G2`) | `default` | G1 | **已加入 G1, G2** | **失败** | - | **与关系**: 系统分组匹配, 但Token将P2P权限限制为`G2`，与渠道的`G1`授权不匹配。 |
+| `vip` (Token覆盖为`["default"]`) | `default` | G1 | **已加入 G1** | **成功** | `default` | **与关系**: 消费者的计费分组被Token覆盖为`default`，与渠道系统分组匹配, **且** P2P分组(G1)也匹配。 |
+| `default` (Token限制P2P为`G2`) | `default` | G1 | **已加入 G1, G2** | **失败** | - | **与关系**: 系统分组匹配, 但Token的`p2p_group_id`将P2P权限限制为`G2`，与渠道的`G1`授权不匹配。 |
 
 ### 2.4 P2P分组管理API测试 (Group Management)
 **核心风险**: 验证分组创建、加入、审批、退出等全生命周期管理的正确性。
@@ -193,8 +196,8 @@ graph TD
 5.  **令牌 (Tokens)**:
     *   `Token_A`: 属于 User-A, 用于测试私有渠道自用等场景。
     *   `Token_B_unlimited`: 属于 User-B, 无 P2P 分组限制。
-    *   `Token_B_limited_G1`: 属于 User-B, `allowed_p2p_groups` 仅包含 `G1_public`。
-    *   `Token_B_billing_override`: 属于 User-B (vip), 但 `group` 字段强制设为 `default`。
+    *   `Token_B_limited_G1`: 属于 User-B, `p2p_group_id` 仅包含 `G1_public` 的ID。
+    *   `Token_B_billing_list`: 属于 User-B (vip), 但 `group` 字段强制设为 `["svip", "default"]`。
 
 6.  **Mock 服务 (Mock Servers)**:
     *   `Mock_CLIProxyAPI`: 一个独立的 `httptest.Server`，模拟 CLIProxyAPI 的管理接口 (如 `/v0/management/gemini-cli-auth-url`) 和数据平面接口，用于测试 OAuth 流程和 `account_hint` 路由。

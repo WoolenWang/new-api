@@ -126,15 +126,25 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start[User Request] --> Context[解析上下文: UserGroup, Model]
-    Context --> ModelMap{是否存在模型映射?}
-    ModelMap -- Yes --> UpdateModel[更新 TargetModel]
-    ModelMap -- No --> CacheQuery[查询 Ability 缓存]
-    UpdateModel --> CacheQuery
-    CacheQuery --> Filter[筛选: Group + Model]
-    Filter --> Candidates{存在可用渠道?}
-    Candidates -- No --> Error[返回 404 No Channel]
-    Candidates -- Yes --> LoadBalance["负载均衡选择 (见5.4)"]
+    Start[User Request] --> Context[解析上下文: BillingGroupList, P2PGroupID, Model]
+    
+    subgraph BillingGroupLoop[遍历计费分组列表]
+        direction TB
+        LoopStart(开始) --> GetNextBillingGroup{获取下一个计費组}
+        GetNextBillingGroup --> BuildRoutingGroups[构建 RoutingGroups: 当前计费组 + P2P组]
+        BuildRoutingGroups --> CacheQuery[查询 Ability 缓存]
+        CacheQuery --> Filter[筛选: RoutingGroups + Model]
+        Filter --> Candidates{存在可用渠道?}
+        
+        Candidates -- Yes --> SelectChannel[选路成功]
+        Candidates -- No --> GetNextBillingGroup
+    end
+
+    Context --> LoopStart
+
+    SelectChannel --> LoadBalance["负载均衡选择 (见5.4)"]
+    GetNextBillingGroup -- 遍历结束 --> NoChannelError[返回 404 No Channel]
+    
     LoadBalance --> GetChannel[获得唯一 Channel]
     GetChannel --> Factory[Adaptor Factory]
     Factory --> Adaptor["实例化 Adaptor (OpenAI/Claude/Gemini...)"]
@@ -269,47 +279,60 @@ func SelectChannel(candidates []*Channel) *Channel {
 
 1.  **Token 鉴权**:
     *   中间件提取请求头 `Authorization: Bearer <sk-key>`。
-    *   查询数据库 `tokens` 表，验证 Key 有效性。
-    *   获取 `Token` 关联的 `UserId`。
+    *   查询数据库 `tokens` 表或缓存，验证 Key 有效性，获取 `Token` 关联的 `UserId`。
 
 2.  **用户加载**:
-    *   根据 `UserId` 加载用户缓存 (`UserCache`)，包含用户的 `Group` (主分组) 和 `Quota` (余额)。
+    *   根据 `UserId` 加载用户缓存 (`UserCache`)，包含用户的 `Group` (主分组)、`Quota` (余额)以及 `UserUsableGroups` (可用分组列表)。
 
-3.  **分组 (Group) 判定**:
-    *   **Token分组优先**: 检查 `Token.Group`。如果 Token 设置了特定分组（非空），则请求使用该分组 (`UsingGroup = Token.Group`)。
-        *   **特殊值 `auto`**: 如果 `Token.Group` 为 `auto`，系统会从一组预定义的自动分组（`AutoGroups`，默认为 `default`）中选择一个作为 `UsingGroup`。这允许令牌动态地使用最佳可用分组，而不是被硬编码到单个分组。
-    *   **用户分组兜底**: 如果 Token 未设置分组，则使用用户的主分组 (`UsingGroup = User.Group`)。
-    *   **权限检查**: 系统校验 `UsingGroup` 是否在用户的可用分组列表（`UserUsableGroups`）中。如果用户无权使用该分组，请求将被拒绝。此列表由**系统默认可用分组**（在管理员“用户分组设置”中配置）和针对用户所在组的**特殊规则**（`GroupSpecialUsableGroup`）共同决定，实现了灵活的权限控制。
+3.  **确定计费分组列表 (BillingGroupList)**:
+    *   **Token分组列表优先**: 检查 `Token.Group`。如果 Token 设置了此字段（一个JSON数组，例如 `["svip", "default"]`），则 `BillingGroupList` 为该列表。
+    *   **Token单分组兼容**: 如果 `Token.Group` 是一个非`auto`的字符串，则 `BillingGroupList` 为 `[Token.Group]`。
+    *   **Token `auto` 分组**: 如果 `Token.Group` 为 `auto`，系统会从一组预定义的自动分组（`AutoGroups`）中选择。
+    *   **用户分组兜底**: 如果 Token 未设置分组，则 `BillingGroupList` 为 `[User.Group]`。
+
+4.  **确定P2P分组限制 (P2PGroupID)**:
+    *   检查 `Token.p2p_group_id`。如果设置了有效的P2P分组ID，则本次请求的P2P路由范围将被**唯一限定**在该分组内。如果未设置，则可使用用户加入的所有P2P分组。
+
+5.  **构建路由分组集合 (RoutingGroups)**:
+    *   `RoutingGroups` 是动态计算的，用于实际的渠道筛选。
+    *   `RoutingGroups = {当前迭代的BillingGroup} ∪ {用户所有有效的P2P分组}`。P2P分组权限会受到 `Token.p2p_group_id` 的限制。
+
+6.  **权限检查**:
+    *   在选路并确定最终使用的计费组 (`UsingGroup`) 后，系统会校验 `UsingGroup` 是否在用户的 `UserUsableGroups` 列表中。如果用户无权使用该分组，请求将被拒绝。
 
 #### 5.5.2 数据结构关系图
 
 ```mermaid
 classDiagram
+    direction LR
     class Request {
         +String BearerToken
         +String RequestModel
     }
     class Token {
         +Int UserId
-        +String Group (Optional, can be "auto")
+        +String[] Group (Optional, BillingGroupList)
+        +Int P2PGroupID (Optional, P2P restriction)
         +Int RemainQuota
     }
     class User {
         +Int Id
-        +String Group (Default)
-        +Int Quota
+        +String Group (Default BillingGroup)
         +String[] UserUsableGroups
+        +Int[] ActiveP2PGroups
+        +Int Quota
     }
-    class Billing {
+    class RelayInfo {
+        +String[] BillingGroupList
+        +Int EffectiveP2PGroupID
+        +String[] RoutingGroups
         +String UsingGroup
-        +Float GroupRatio
-        +Float ModelRatio
     }
 
-    Request --> Token : 1. Authenticate
-    Token --> User : 2. Identify
-    Token ..> Billing : 3.1 Determine Group (Priority)
-    User ..> Billing : 3.2 Determine Group (Fallback)
+    Request --> Token : "1. 鉴权"
+    Token --> User : "2. 识别用户"
+    User --> RelayInfo : "3. 构建上下文"
+    Token --> RelayInfo : "3. 构建上下文"
 ```
 
 ### 5.6 上游渠道探测与降级机制 (Upstream Health & Downgrade)
@@ -562,82 +585,92 @@ $$ Quota = \text{ModelFixedPrice} \times \text{QuotaPerUnit} \times \text{FinalG
 #### 7.4.1 系统配置
 
 1.  **用户 (Users)**
-    *   **User A**: 所属主分组为 `default`。
+    *   **User A**: 所属主分组为 `default`。已加入P2P分组 `G1`。
     *   **User B**: 所属主分组为 `vip`。
 
 2.  **渠道 (Channels)**
     *   **Channel 1 (C1)**:
         *   支持模型: `gpt-4o`, `claude-3-opus`
-        *   所属分组: `default`, `fast`
+        *   所属分组: `fast`
     *   **Channel 2 (C2)**:
         *   支持模型: `gpt-4o-mini`, `claude-3-sonnet`
         *   所属分组: `vip`
     *   **Channel 3 (C3)**:
         *   支持模型: `gpt-4o`, `gpt-4o-mini`
         *   所属分组: `default`
+    *   **Channel 4 (C4)**:
+        *   支持模型: `gpt-4o`
+        *   所属分组: `default`, P2P授权: `G1`
 
-3.  **令牌 (Tokens)**
-    *   **Token A1**: 属于 `User A`，未设置特定分组（将使用 `User A` 的主分组 `default`）。
-    *   **Token A2**: 属于 `User A`，分组设置为 `auto`。
-    *   **Token B1**: 属于 `User B`，分组设置为 `default`。
+3.  **P2P分组 (P2P Groups)**
+    *   **G1**: ID为101的P2P分组。
 
-4.  **分组倍率 (Ratios)**
-    *   **基础倍率 (`GroupRatio`)**:
-        *   `default`: 1.0
-        *   `vip`: 0.8
-        *   `fast`: 1.2
-    *   **特殊倍率 (`GroupGroupRatio`)**:
-        *   `vip` 用户访问 `default` 渠道组时，倍率为 0.9。
-        *   `vip` 用户访问 `fast` 渠道组时，倍率为 1.1。
+4.  **令牌 (Tokens)**
+    *   **Token A1**: 属于 `User A`，未设置分组，将使用用户主分组 `default`。
+    *   **Token A2**: 属于 `User A`，计费分组列表设置为 `["svip", "default"]`。
+    *   **Token A3**: 属于 `User A`，计费分组列表 `["default"]`，P2P分组限制为 `G1` (ID: 101)。
+    *   **Token B1**: 属于 `User B`，计费分组列表设置为 `["default"]`。
 
-5.  **可用分组 (`UserUsableGroups`)**
-    *   默认对所有用户开放 `default`, `vip`, `fast` 分组。
+5.  **分组倍率 (Ratios)**
+    *   **基础倍率 (`GroupRatio`)**: `default`: 1.0, `vip`: 0.8, `fast`: 1.2, `svip`: 0.5
+    *   **特殊倍率 (`GroupGroupRatio`)**: `vip` 用户访问 `default` 渠道组时，倍率为 0.9。
 
-6.  **自动分组 (`AutoGroups`)**
-    *   系统配置的自动分组列表为 `default`, `fast`。
+6.  **可用分组 (`UserUsableGroups`)**
+    *   `User A`: `["default", "fast", "svip"]`
+    *   `User B`: `["vip", "default"]`
 
 #### 7.4.2 场景分析
 
 **场景 1: User A 使用 Token A1 请求 `gpt-4o`**
 
-1.  **分组确定**: `Token A1` 未指定分组，使用 `User A` 的主分组 `default`。`UsingGroup = "default"`。
+1.  **分组确定**: `Token A1` 未指定计费组，使用 `User A` 的主分组 `default`。`BillingGroupList = ["default"]`。P2P无限制。
 2.  **渠道筛选**:
-    *   系统查找属于 `default` 分组且支持 `gpt-4o` 的渠道。
-    *   `C1` 和 `C3` 满足条件，进入候选列表。
-    *   `C2` 不满足分组要求，被排除。
-3.  **负载均衡**: 系统将在 `C1` 和 `C3` 之间根据优先级和权重选择一个渠道处理请求。
-4.  **计费计算**:
-    *   用户组为 `default`，渠道组为 `default`，无特殊倍率。
-    *   `FinalGroupRatio` = `GroupRatio["default"]` = **1.0**。
+    *   **迭代 `default` 分组**:
+        *   `RoutingGroups` = `{default}` U `{G1}` = `{"default", "p2p_101"}`
+        *   系统查找分组为 `default` 或 `p2p_101` 且支持 `gpt-4o` 的渠道。
+        *   `C3` (system group `default`) 和 `C4` (system group `default` & p2p `G1`) 满足条件。
+3.  **负载均衡**: 在 `C3` 和 `C4` 之间选择。
+4.  **计费计算**: `UsingGroup` 为 `default`。`FinalGroupRatio` = `GroupRatio["default"]` = **1.0**。
 
-**场景 2: User A 使用 Token A2 请求 `claude-3-opus`**
+**场景 2: User A 使用 Token A2 请求 `gpt-4o` (多计费组失败转移)**
 
-1.  **分组确定**: `Token A2` 分组为 `auto`。系统将从 `AutoGroups` (`default`, `fast`) 中选择。
+1.  **分组确定**: `Token A2` 指定 `BillingGroupList = ["svip", "default"]`。P2P无限制。
 2.  **渠道筛选**:
-    *   系统在 `default` 和 `fast` 分组中寻找支持 `claude-3-opus` 的渠道。
-    *   `C1` 满足条件（同时属于 `default` 和 `fast`，且支持模型）。
-    *   `C2` 和 `C3` 被排除。
-3.  **负载均衡**: 只有 `C1` 可用，请求将被发送到 `C1`。
-    *   `UsingGroup` 将被确定为 `C1` 匹配上的分组（可能是 `default` 或 `fast`，取决于负载均衡策略）。
-4.  **计费计算**:
-    *   假设最终选定 `C1` 并且 `UsingGroup` 为 `fast`。
-    *   用户组 `default` 访问 `fast` 渠道组，无特殊倍率。
-    *   `FinalGroupRatio` = `GroupRatio["fast"]` = **1.2**。
+    *   **第一次迭代 `svip` 分组**:
+        *   `RoutingGroups` = `{svip}` U `{G1}` = `{"svip", "p2p_101"}`
+        *   查找分组为 `svip` 或 `p2p_101` 且支持 `gpt-4o` 的渠道。**没有渠道满足。**
+    *   **第二次迭代 `default` 分组**:
+        *   `RoutingGroups` = `{default}` U `{G1}` = `{"default", "p2p_101"}`
+        *   `C3` 和 `C4` 满足条件。
+3.  **负载均衡**: 在 `C3` 和 `C4` 之间选择。
+4.  **计费计算**: `UsingGroup` 为 `default`。`FinalGroupRatio` = `GroupRatio["default"]` = **1.0**。
 
-**场景 3: User B 使用 Token B1 请求 `gpt-4o`**
+**场景 3: User A 使用 Token A3 请求 `gpt-4o` (计费组 + P2P组联合)**
 
-1.  **分组确定**: `Token B1` 分组设置为 `default`。`UsingGroup = "default"`。
+1.  **分组确定**: `BillingGroupList = ["default"]`。P2P分组限制为 `G1`。
+2.  **渠道筛选**:
+    *   **迭代 `default` 分组**:
+        *   `RoutingGroups` = `{default}` U `{G1}` = `{"default", "p2p_101"}`
+        *   `Token.p2p_group_id` 限制了P2P范围，所以实际只会考虑属于 `G1` 的P2P渠道。
+        *   `C3`：不匹配P2P限制，排除。
+        *   `C4`：系统分组 `default` **且** P2P授权 `G1`，**匹配**。
+3.  **负载均衡**: 只有 `C4` 可用。
+4.  **计费计算**: `UsingGroup` 为 `default`。`FinalGroupRatio` = `GroupRatio["default"]` = **1.0**。
+
+**场景 4: User B 使用 Token B1 请求 `gpt-4o` (跨用户组计费)**
+
+1.  **分组确定**: `BillingGroupList = ["default"]`。
 2.  **权限检查**:
-    *   `User B` 的主分组是 `vip`，但请求强制使用 `default` 分组。
-    *   系统检查 `User B` 是否有权使用 `default` 分组（在 `UserUsableGroups` 中）。
-    *   检查通过。
+    *   `Token B1` 强制使用 `default` 计费组。
+    *   系统检查 `default` 是否在 `User B` 的 `UserUsableGroups` (`["vip", "default"]`) 中。**检查通过**。
 3.  **渠道筛选**:
-    *   系统查找 `default` 分组下支持 `gpt-4o` 的渠道，`C1` 和 `C3` 满足。
-4.  **负载均衡**: 在 `C1` 和 `C3` 之间选择。
+    *   `RoutingGroups` = `{default}`。`C3` 和 `C4` 满足。
+4.  **负载均衡**: 在 `C3` 和 `C4` 之间选择。
 5.  **计费计算**:
-    *   用户组为 `vip`，使用的渠道组为 `default`。
-    *   系统检查到 `GroupGroupRatio["vip"]["default"]` 存在特殊倍率。
-    *   `FinalGroupRatio` = `GroupGroupRatio["vip"]["default"]` = **0.9**，覆盖了 `default` 组的 1.0 基础倍率。
+    *   `UsingGroup` 为 `default`。
+    *   用户的主分组 (`User B.Group`) 为 `vip`。
+    *   系统检查到 `GroupGroupRatio["vip"]["default"]` 存在特殊倍率 0.9。
+    *   `FinalGroupRatio` = `GroupGroupRatio["vip"]["default"]` = **0.9**。
 
 ---
 
@@ -802,7 +835,8 @@ erDiagram
         int id PK
         int user_id FK
         string key "sk-xxxx"
-        string group "特定分组(可选)"
+        string[] Group "(Optional, BillingGroupList)"
+        int P2PGroupID "(Optional, P2P restriction)"
         string models "模型限制(可选)"
     }
 
