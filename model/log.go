@@ -51,6 +51,7 @@ const (
 	LogTypeRefund   = 6
 	LogTypeShare    = 7 // P2P channel sharing revenue
 	LogTypeExchange = 8 // Quota exchange operations
+	LogTypeCheckin  = 9 // Daily check-in rewards
 )
 
 func formatUserLogs(logs []*Log) {

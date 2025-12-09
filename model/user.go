@@ -54,6 +54,9 @@ type User struct {
 	MaxConcurrentSessions int            `json:"max_concurrent_sessions" gorm:"type:int;default:0;column:max_concurrent_sessions"` // 0 means fallback to group/system default
 	Remark                string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
 	StripeCustomer        string         `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	// Checkin fields
+	LastCheckinTime int64 `json:"last_checkin_time" gorm:"type:bigint;default:0;column:last_checkin_time"` // Last checkin timestamp
+	CheckinStreak   int   `json:"checkin_streak" gorm:"type:int;default:0;column:checkin_streak"`          // Consecutive checkin days
 }
 
 func (user *User) ToBaseUser() *UserBase {
