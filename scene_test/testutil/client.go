@@ -499,20 +499,24 @@ func (c *APIClient) InitializeSystem() (username, password string, err error) {
 
 // ChannelModel wraps channel data for API requests
 type ChannelModel struct {
-	ID            int     `json:"id,omitempty"`
-	Type          int     `json:"type"`
-	Key           string  `json:"key"`
-	Name          string  `json:"name"`
-	BaseURL       *string `json:"base_url,omitempty"`
-	Models        string  `json:"models"`
-	Group         string  `json:"group,omitempty"`
-	Priority      *int64  `json:"priority,omitempty"`
-	Weight        *uint   `json:"weight,omitempty"`
-	Status        int     `json:"status,omitempty"`
-	OwnerUserId   int     `json:"owner_user_id,omitempty"`
-	IsPrivate     bool    `json:"is_private,omitempty"`
-	AllowedUsers  *string `json:"allowed_users,omitempty"`
-	AllowedGroups *string `json:"allowed_groups,omitempty"`
+	ID                int     `json:"id,omitempty"`
+	Type              int     `json:"type"`
+	Key               string  `json:"key"`
+	Name              string  `json:"name"`
+	BaseURL           *string `json:"base_url,omitempty"`
+	Models            string  `json:"models"`
+	Group             string  `json:"group,omitempty"`
+	Priority          *int64  `json:"priority,omitempty"`
+	Weight            *uint   `json:"weight,omitempty"`
+	Status            int     `json:"status,omitempty"`
+	OwnerUserId       int     `json:"owner_user_id,omitempty"`
+	IsPrivate         bool    `json:"is_private,omitempty"`
+	AllowedUsers      *string `json:"allowed_users,omitempty"`
+	AllowedGroups     *string `json:"allowed_groups,omitempty"`
+	HourlyQuotaLimit  int64   `json:"hourly_quota_limit,omitempty"`
+	DailyQuotaLimit   int64   `json:"daily_quota_limit,omitempty"`
+	WeeklyQuotaLimit  int64   `json:"weekly_quota_limit,omitempty"`
+	MonthlyQuotaLimit int64   `json:"monthly_quota_limit,omitempty"`
 }
 
 // AddChannelRequest matches the backend's AddChannelRequest structure

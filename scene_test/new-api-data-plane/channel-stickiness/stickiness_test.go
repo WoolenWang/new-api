@@ -6,6 +6,7 @@
 // - S-01: 首次请求成功绑定
 // - S-02: 后续请求命中粘性
 // - S-03: 渠道失败自动解绑与重路由
+// - S-03-A: 粘性渠道超额后自动解绑
 // - S-03-B: 粘性渠道被禁用后自动解绑
 // - S-05: 会话ID提取优先级
 // - S-06: 会话超时自动失效
@@ -464,6 +465,84 @@ func TestStickiness_S03_ChannelFailureUnbindsAndReroutes(t *testing.T) {
 	channelID3, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
 	require.True(t, ok, "session binding should still exist after subsequent request")
 	require.Equal(t, healthyChannelID, channelID3, "session should remain bound to the healthy channel")
+}
+
+// TestStickiness_S03A_QuotaExhaustionUnbinds
+// S-03-A: 粘性渠道超额后自动解绑
+func TestStickiness_S03A_QuotaExhaustionUnbinds(t *testing.T) {
+	suite, cleanup := setupStickinessSuite(t, 60)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, suite.RedisClient.FlushDB(ctx).Err())
+
+	userID, token := createUserAndToken(t, suite, "s03a-user", "default")
+	ch1ID, ch2ID := createChannelsForStickiness(t, suite)
+
+	client := testutil.NewAPIClientWithToken(suite.Server.BaseURL, token)
+	sessionID := "s03a-session-quota"
+
+	// First request to create sticky binding.
+	req1 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp1, err := client.HTTPClient.Do(req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	channelID1, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after first request")
+	require.True(t, channelID1 == ch1ID || channelID1 == ch2ID, "binding channel must be one of the test channels")
+
+	// Configure the bound channel to have a small hourly quota limit,
+	// then directly mark its Redis hourly quota counter as exhausted.
+	channels, err := suite.AdminClient.GetAllChannels()
+	require.NoError(t, err, "failed to list channels")
+
+	var target testutil.ChannelModel
+	found := false
+	for _, ch := range channels {
+		if ch.ID == channelID1 {
+			target = ch
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "bound channel should exist in admin list")
+
+	const hourlyLimit int64 = 1000
+	target.HourlyQuotaLimit = hourlyLimit
+
+	var resp testutil.APIResponse
+	err = suite.AdminClient.PutJSON("/api/channel/", &target, &resp)
+	require.NoError(t, err, "failed to update channel hourly_quota_limit via admin API")
+	require.True(t, resp.Success, "update channel API should succeed")
+
+	// Simulate that other requests have already consumed the full hourly quota
+	// by directly setting the Redis channel_quota counter for the current hour.
+	bucket := time.Now().Format("2006010215")
+	quotaKey := fmt.Sprintf("channel_quota:%d:hourly:%s", channelID1, bucket)
+	err = suite.RedisClient.Set(ctx, quotaKey, strconv.FormatInt(hourlyLimit, 10), 0).Err()
+	require.NoError(t, err, "failed to set simulated hourly quota in Redis")
+
+	// Second request with the same session should observe the quota exhaustion
+	// during validateSessionBinding (via CheckChannelRiskControl) and therefore:
+	//   - drop the old binding to the exhausted channel,
+	//   - reselect a healthy channel (the other one),
+	//   - create a new binding pointing to the healthy channel.
+	req2 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp2, err := client.HTTPClient.Do(req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	channelID2, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after rebinding due to quota exhaustion")
+	require.NotEqual(t, channelID1, channelID2, "session should be rebound to a different channel after quota exhaustion")
+	require.True(t, channelID2 == ch1ID || channelID2 == ch2ID, "rebinding should select one of the existing channels")
 }
 
 // TestStickiness_S03B_DisabledChannelUnbinds
