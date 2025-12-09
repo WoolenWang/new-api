@@ -374,10 +374,12 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 //
 // Within each priority tier, channels are further selected based on their priority level and weight.
 // Access control is enforced via CheckChannelAccess, and risk control limits are applied for P2P channels.
-func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, error) {
+// The excluded map allows callers (e.g. retry logic) to skip channels that
+// have already been tried in the current request.
+func GetRandomSatisfiedChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int, excluded map[int]struct{}) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database with priority
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithPriority(group, model, userId, userGroup, clientIP, retry)
+		return GetChannelWithPriority(group, model, userId, userGroup, clientIP, retry, excluded)
 	}
 
 	channelSyncLock.RLock()
@@ -402,6 +404,10 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	var publicChannels []*Channel  // Tier 3: Platform public channels
 
 	for _, channelId := range channels {
+		// Skip channels that have already been used (e.g. in previous retries).
+		if _, skip := excluded[channelId]; skip {
+			continue
+		}
 		if channel, ok := channelsIDM[channelId]; ok {
 			// Apply access control check - skip channels user cannot access
 			// For single-group routing, pass group as a single-element routingGroups array

@@ -859,6 +859,10 @@ func AddChannel(c *gin.Context) {
 			))
 		}
 	}
+	// New channels should be visible to the in-memory routing cache immediately.
+	// Rebuild the channel cache so that subsequent data-plane requests can
+	// discover the newly created channels without waiting for the periodic sync.
+	model.InitChannelCache()
 	service.ResetProxyClientCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

@@ -65,8 +65,11 @@ func main() {
 	}()
 
 	if common.RedisEnabled {
-		// for compatibility with old versions
+		// for compatibility with old versions: enable in‑memory cache when Redis is enabled.
+		// Note: InitResources may have been called with MemoryCacheEnabled=false,
+		// so we must (re)initialize the user memory cache here after toggling the flag.
 		common.MemoryCacheEnabled = true
+		model.InitUserMemoryCache()
 	}
 	if common.MemoryCacheEnabled {
 		common.SysLog("memory cache enabled")

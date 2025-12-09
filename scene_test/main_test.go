@@ -40,6 +40,11 @@ var (
 	// Each test package should use this instance to avoid multiple compilations.
 	TestServer *testutil.TestServer
 
+	// TestExecutablePath is the absolute path to the compiled test server
+	// executable for this test run. It is populated in TestMain and used
+	// by sanity-check tests to verify compilation.
+	TestExecutablePath string
+
 	// ProjectRoot is the root directory of the NewAPI project.
 	ProjectRoot string
 
@@ -76,6 +81,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "Failed to compile test server: %v\n", err)
 		os.Exit(1)
 	}
+	TestExecutablePath = exePath
 	fmt.Printf("Test server compiled: %s\n", exePath)
 
 	// Note: We don't start a global server here because each test suite
@@ -87,7 +93,7 @@ func TestMain(m *testing.M) {
 
 	// Cleanup: Remove the compiled executable
 	fmt.Println("Cleaning up test executable...")
-	if err := testutil.CleanupTestExecutable(ProjectRoot); err != nil {
+	if err := testutil.CleanupTestExecutable(TestExecutablePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to cleanup test executable: %v\n", err)
 	}
 
@@ -134,13 +140,12 @@ func TestFrameworkSetup(t *testing.T) {
 	})
 
 	t.Run("TestServerCompilation", func(t *testing.T) {
-		exePath := filepath.Join(ProjectRoot, "scene_test", "new-api-test.exe")
+		exePath := TestExecutablePath
+		if exePath == "" {
+			t.Fatal("TestExecutablePath is empty")
+		}
 		if _, err := os.Stat(exePath); os.IsNotExist(err) {
-			// Try without .exe for non-Windows
-			exePath = filepath.Join(ProjectRoot, "scene_test", "new-api-test")
-			if _, err := os.Stat(exePath); os.IsNotExist(err) {
-				t.Fatal("Test server executable not found")
-			}
+			t.Fatalf("Test server executable not found at %s", exePath)
 		}
 		t.Logf("Test executable found: %s", exePath)
 	})

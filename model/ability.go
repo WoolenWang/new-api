@@ -154,7 +154,8 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 // Priority 3 (Public): Platform channels (owner_user_id = 0)
 //
 // This function is used when memory cache is disabled. It queries the database directly.
-func GetChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int) (*Channel, error) {
+// The excluded map allows callers to skip channels that have already been used.
+func GetChannelWithPriority(group string, model string, userId int, userGroup string, clientIP string, retry int, excluded map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	channelQuery, err := getChannelQuery(group, model, retry)
@@ -176,9 +177,24 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 		return nil, nil
 	}
 
-	// Fetch all candidate channels to classify by ownership
-	channelIds := make([]int, 0, len(abilities))
+	// Filter out abilities whose channels are in the excluded set.
+	filteredAbilities := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
+		if excluded != nil {
+			if _, skip := excluded[ability.ChannelId]; skip {
+				continue
+			}
+		}
+		filteredAbilities = append(filteredAbilities, ability)
+	}
+
+	if len(filteredAbilities) == 0 {
+		return nil, nil
+	}
+
+	// Fetch all candidate channels to classify by ownership
+	channelIds := make([]int, 0, len(filteredAbilities))
+	for _, ability := range filteredAbilities {
 		channelIds = append(channelIds, ability.ChannelId)
 	}
 
@@ -199,7 +215,7 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 	var sharedChannelIds []int  // Tier 2: Non-private P2P channels (user's own public + others' shared)
 	var publicChannelIds []int  // Tier 3: Platform public channels
 
-	for _, ability := range abilities {
+	for _, ability := range filteredAbilities {
 		channel, ok := channelMap[ability.ChannelId]
 		if !ok {
 			continue
@@ -263,7 +279,7 @@ func GetChannelWithPriority(group string, model string, userId int, userGroup st
 
 		// Filter abilities to this tier
 		tierAbilities := make([]Ability, 0)
-		for _, ability := range abilities {
+		for _, ability := range filteredAbilities {
 			for _, id := range tierIds {
 				if ability.ChannelId == id {
 					tierAbilities = append(tierAbilities, ability)

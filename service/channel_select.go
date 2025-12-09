@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -28,13 +29,24 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 	// Extract client IP from Gin context
 	clientIP := c.ClientIP()
 
+	// Build an exclusion set from channels that have already been used in this request.
+	// This ensures that retry logic does not select the same failing channel again,
+	// but instead chooses from the remaining candidates.
+	excluded := map[int]struct{}{}
+	used := c.GetStringSlice("use_channel")
+	for _, idStr := range used {
+		if id, convErr := strconv.Atoi(idStr); convErr == nil && id > 0 {
+			excluded[id] = struct{}{}
+		}
+	}
+
 	if group == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
 		}
 		for _, autoGroup := range GetUserAutoGroup(userGroup) {
 			logger.LogDebug(c, "Auto selecting group:", autoGroup)
-			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, userGroup, clientIP, retry)
+			channel, _ = model.GetRandomSatisfiedChannelWithPriority(autoGroup, modelName, userId, userGroup, clientIP, retry, excluded)
 			if channel == nil {
 				continue
 			} else {
@@ -45,7 +57,7 @@ func CacheGetRandomSatisfiedChannel(c *gin.Context, group string, modelName stri
 			}
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, clientIP, retry)
+		channel, err = model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, clientIP, retry, excluded)
 		if err != nil {
 			return nil, group, err
 		}
@@ -72,7 +84,7 @@ func CacheGetRandomSatisfiedChannelMultiGroup(c *gin.Context, routingGroups []st
 	// If only one routing group, use the original single-group logic for efficiency
 	if len(routingGroups) == 1 {
 		group := routingGroups[0]
-		channel, err := model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, clientIP, retry)
+		channel, err := model.GetRandomSatisfiedChannelWithPriority(group, modelName, userId, userGroup, clientIP, retry, nil)
 		return channel, group, err
 	}
 

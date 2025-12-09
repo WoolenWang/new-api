@@ -115,29 +115,41 @@ func executableName() string {
 	return "new-api-test"
 }
 
+var (
+	compileOnce   sync.Once
+	compiledPath  string
+	compiledError error
+)
+
 // CompileTestServer compiles the NewAPI server for testing.
 // It returns the path to the compiled executable.
 func CompileTestServer(projectRoot string) (string, error) {
-	exePath := filepath.Join(projectRoot, "scene_test", executableName())
-
-	// Check if executable already exists and is recent (< 5 minutes old)
-	if info, err := os.Stat(exePath); err == nil {
-		if time.Since(info.ModTime()) < 5*time.Minute {
-			return exePath, nil
+	compileOnce.Do(func() {
+		// Create a dedicated temporary directory for the compiled binary to
+		// avoid cross-package races when tests are run with `./scene_test/...`.
+		tmpDir, err := os.MkdirTemp("", "newapi-test-*")
+		if err != nil {
+			compiledError = fmt.Errorf("failed to create temp dir for test server: %w", err)
+			return
 		}
-	}
 
-	// Compile the main package
-	cmd := exec.Command("go", "build", "-o", exePath, ".")
-	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		exePath := filepath.Join(tmpDir, executableName())
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
-	}
+		// Compile the main package into the temporary path.
+		cmd := exec.Command("go", "build", "-o", exePath, ".")
+		cmd.Dir = projectRoot
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 
-	return exePath, nil
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			compiledError = fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
+			return
+		}
+
+		compiledPath = exePath
+	})
+
+	return compiledPath, compiledError
 }
 
 // StartServer starts a new test server instance with the given configuration.
@@ -388,10 +400,17 @@ func (s *TestServer) HealthCheck() error {
 	return nil
 }
 
-// CleanupTestExecutable removes the compiled test executable.
-func CleanupTestExecutable(projectRoot string) error {
-	exePath := filepath.Join(projectRoot, "scene_test", executableName())
-	return os.Remove(exePath)
+// CleanupTestExecutable removes the compiled test executable and its temp directory.
+func CleanupTestExecutable(exePath string) error {
+	if exePath == "" {
+		return nil
+	}
+	dir := filepath.Dir(exePath)
+	// Remove the entire temp directory tree; ignore if it no longer exists.
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // FindProjectRoot is a public wrapper for findProjectRoot, allowing other packages to use it.

@@ -690,17 +690,19 @@ func (c *APIClient) AdjustUserQuota(userID int, delta int) error {
 
 // TokenModel represents API token data
 type TokenModel struct {
-	ID              int    `json:"id"`
-	UserId          int    `json:"user_id"`
-	Key             string `json:"key,omitempty"`
-	Name            string `json:"name"`
-	Status          int    `json:"status"`
-	RemainQuota     int64  `json:"remain_quota,omitempty"`
-	UnlimitedQuota  bool   `json:"unlimited_quota,omitempty"`
-	ExpiredTime     int64  `json:"expired_time,omitempty"`
-	Group           string `json:"group,omitempty"`
-	P2PGroupID      *int   `json:"p2p_group_id,omitempty"`
-	ModelLimitsJson string `json:"model_limits,omitempty"`
+	ID                 int     `json:"id"`
+	UserId             int     `json:"user_id"`
+	Key                string  `json:"key,omitempty"`
+	Name               string  `json:"name"`
+	Status             int     `json:"status"`
+	RemainQuota        int64   `json:"remain_quota,omitempty"`
+	UnlimitedQuota     bool    `json:"unlimited_quota,omitempty"`
+	ExpiredTime        int64   `json:"expired_time,omitempty"`
+	Group              string  `json:"group,omitempty"`
+	P2PGroupID         *int    `json:"p2p_group_id,omitempty"`
+	ModelLimitsJson    string  `json:"model_limits,omitempty"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled,omitempty"`
+	AllowIps           *string `json:"allow_ips,omitempty"`
 }
 
 // CreateTokenFull creates a token with full control over fields.

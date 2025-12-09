@@ -48,6 +48,13 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	cfg := testutil.DefaultConfig()
 	cfg.ProjectRoot = projectRoot
 	cfg.Verbose = testing.Verbose()
+	// Allow edge tests to create many P2P groups by raising the per-user limit
+	// in this isolated test server only. This does not affect default behavior
+	// in other suites, which use their own ServerConfig without this override.
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["MAX_P2P_GROUPS_PER_USER"] = "200"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
@@ -1011,7 +1018,6 @@ func TestRouting_TokenWithBillingGroupList_Failover(t *testing.T) {
 //     C2: 无 allowed_groups，指向 upstream2；
 //   - Token 设置 p2p_group_id = G1。
 //
-// 
 // 预期：
 //   - 仅 C1 可被选中，请求只打到 upstream1，upstream2 不会被调用。
 func TestRouting_P2P_TokenRestricted_SelectsOnlyMatchingP2PChannel(t *testing.T) {

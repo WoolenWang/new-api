@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +24,26 @@ const (
 	sessionChannelStatsKey   = "session:channel:stats"
 	sessionGlobalCountKey    = "session:global:count"
 	sessionIndexKey          = "session:index"
-	sessionBindingTTL        = 30 * time.Minute
+	// defaultSessionBindingTTL defines the default session binding lifetime.
+	// The actual TTL can be overridden at process start via the
+	// SESSION_BINDING_TTL_SECONDS environment variable, which is useful for
+	// integration tests that need short-lived sessions.
+	defaultSessionBindingTTL = 30 * time.Minute
 	indexScanCount           = 100
 )
+
+// sessionBindingTTL holds the effective TTL used for session bindings.
+// It is initialized from defaultSessionBindingTTL and can be overridden
+// by the SESSION_BINDING_TTL_SECONDS environment variable.
+var sessionBindingTTL = defaultSessionBindingTTL
+
+func init() {
+	if v := strings.TrimSpace(os.Getenv("SESSION_BINDING_TTL_SECONDS")); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			sessionBindingTTL = time.Duration(sec) * time.Second
+		}
+	}
+}
 
 type SessionIndexEntry struct {
 	SessionKey string `json:"session_key"`
