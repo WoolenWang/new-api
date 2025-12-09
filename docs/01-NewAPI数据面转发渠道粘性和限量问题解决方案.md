@@ -196,13 +196,21 @@ The retry mechanism is enhanced to handle sticky session failover gracefully. As
   1.  **系统默认值**: 在系统配置中增加 `SystemMaxConcurrentSessions`（例如，默认为 5）。
   2.  **分组覆盖**: 在用户分组（`groups`）的设置中，增加 `max_concurrent_sessions` 字段，其优先级高于系统默认值。
   3.  **用户级覆盖**: 在用户（`users`）表中增加 `max_concurrent_sessions` 字段，优先级最高。
-- **校验逻辑**:
-  - **时机**: 在`Distribute`中间件中，当一个请求被识别为**新会话**（即 Redis 中不存在其绑定关系）时，在创建绑定之前执行此检查。
-  - **步骤**:
-    1. 获取当前用户的并发会话数限制。
-    2. 使用 `SCARD session:user:{user_id}` 命令获取该用户当前的活跃会话数。
-    3. 如果 `当前会话数 >= 并发会话数限制`，则直接拒绝本次请求，返回 HTTP `429 Too Many Requests` 错误，并附带清晰的错误信息（如“并发会话数已达上限”）。
-  - **例外**: 如果一个请求携带的 `session_id` 已经存在于 Redis 中（即，这是一个**复用会话**的请求），系统将**跳过**并发数检查，直接允许请求通过。这确保了同一会话的后续请求不会被错误地计入新的并发。
+- **校验逻辑（active + pending 双集合原子检查）**:
+  - **时机**: 在 `Distribute` 中间件中，当一个请求被识别为**新会话**（即 Redis 中不存在其绑定关系）时，在创建绑定之前执行此检查。
+  - **数据结构**:
+    - `session:user:{user_id}`：记录当前已创建、活跃的会话 `session_id` 集合。
+    - `session:pending:user:{user_id}`：记录“正在创建中的新会话槽位”，用于并发创建时的原子抢占。
+  - **步骤**（通过 Redis Lua 脚本原子完成）:
+    1. 获取当前用户的并发会话数限制 `limit`；若 `limit <= 0`，视为无上限，直接通过。
+    2. 如果当前 `session_id` 已存在于 `session:user:{user_id}` 或 `session:pending:user:{user_id}` 中，视为复用/重试，不再占用新槽位，直接通过。
+    3. 否则计算 `current = SCARD(session:user:{user_id}) + SCARD(session:pending:user:{user_id})`。
+       - 若 `current >= limit`，返回失败，拒绝本次请求；
+       - 若 `current < limit`，将当前 `session_id` 加入 `session:pending:user:{user_id}`，视为成功占用一个新并发槽位。
+  - **请求侧行为**:
+    - 如果 Lua 返回“拒绝”，中间件直接返回 HTTP `429 Too Many Requests`，并提示“当前并发会话数已达上限”；
+    - 如果成功抢占，标记本次请求持有一个 pending 槽位；无论请求最终成功或失败，在请求结束时都会从 `session:pending:user:{user_id}` 中移除该 `session_id`。
+  - **复用会话例外**: 对于已存在的会话（`session_id` 已在 active 集合中），Lua 脚本会直接返回允许，确保同一会话的后续请求不被计入新的并发，并且在 DC-03/多 token 并发等场景下也不会发生“重复计数”的竞态。
 
 #### **4.2.5 监控接口**
 为了让管理员能够实时了解系统会话状态，我们将新增一个只读的管理 API 端点。

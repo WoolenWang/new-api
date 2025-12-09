@@ -43,6 +43,15 @@ func Distribute() func(c *gin.Context) {
 			common.SetContextKey(c, constant.ContextKeySessionID, sessionID)
 		}
 		userId := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+		// Track whether we have reserved a new-session slot for concurrency
+		// limiting so we can release it when the request finishes.
+		reservedNewSessionSlot := false
+		defer func() {
+			if reservedNewSessionSlot {
+				service.ReleaseUserSessionReservation(c.Request.Context(), userId, sessionID)
+			}
+		}()
+
 		var sessionEntry *service.SessionIndexEntry
 		bindingKey := ""
 		if sessionID != "" && modelRequest.Model != "" && userId != 0 {
@@ -160,12 +169,14 @@ func Distribute() func(c *gin.Context) {
 					common.GetContextKeyString(c, constant.ContextKeyUserGroup),
 				)
 				if limit > 0 {
-					count, countErr := service.GetUserSessionCount(c.Request.Context(), userId)
-					if countErr != nil {
-						logger.LogWarn(c, fmt.Sprintf("failed to get user session count: %v", countErr))
-					} else if count >= int64(limit) {
+					allowed, reserveErr := service.ReserveUserSessionSlot(c.Request.Context(), userId, sessionID, limit)
+					if reserveErr != nil {
+						logger.LogWarn(c, fmt.Sprintf("failed to reserve user session slot: %v", reserveErr))
+					} else if !allowed {
 						abortWithOpenAiMessage(c, http.StatusTooManyRequests, "当前并发会话数已达上限")
 						return
+					} else {
+						reservedNewSessionSlot = true
 					}
 				}
 			}

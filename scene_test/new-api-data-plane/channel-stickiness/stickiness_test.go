@@ -545,6 +545,415 @@ func TestStickiness_S03A_QuotaExhaustionUnbinds(t *testing.T) {
 	require.True(t, channelID2 == ch1ID || channelID2 == ch2ID, "rebinding should select one of the existing channels")
 }
 
+// TestDynamicConfig_DC06_StickyWithBillingGroupAndQuotaFailover
+// 粘性会话 + BillingGroupList + 分时额度：
+//  1. 用户主分组为 vip，Token.BillingGroupList=["vip","default"]。
+//  2. 首次请求建立会话粘性，绑定到 vip 计费组下的渠道 Cvip（指向 upstream1）。
+//  3. 通过管理端 API 设置 Cvip 的小时额度上限，并在 Redis 中将其当前小时额度写满。
+//  4. 下一次同一会话请求时：
+//     - 粘性校验阶段因 Cvip 分时额度超限导致绑定失效并删除；
+//     - 选路阶段使用 BillingGroupList，跳过 Cvip，回退到 default 组渠道 Cdef（指向 upstream2）；
+//     - 会话重新绑定到 Cdef。
+func TestDynamicConfig_DC06_StickyWithBillingGroupAndQuotaFailover(t *testing.T) {
+	suite, cleanup := setupStickinessSuite(t, 60)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, suite.RedisClient.FlushDB(ctx).Err())
+
+	// 重置 upstream 统计，便于后续断言。
+	suite.Upstream1.Reset()
+	suite.Upstream2.Reset()
+
+	// 创建用户，主分组为 vip。
+	user, err := suite.Fixtures.CreateTestUser("dc06-user", "testpass123", "vip")
+	require.NoError(t, err, "failed to create dc06 user")
+
+	userClient := suite.AdminClient.Clone()
+	_, err = userClient.Login("dc06-user", "testpass123")
+	require.NoError(t, err, "failed to login dc06 user")
+
+	// 创建带 BillingGroupList=["vip","default"] 的 Token。
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "dc06-token",
+		Status:         1,
+		UnlimitedQuota: true,
+		Group:          `["vip","default"]`,
+	})
+	require.NoError(t, err, "failed to create dc06 token")
+
+	// 在 vip/default 计费组下分别创建渠道：
+	// - Cvip：group=vip，指向 Upstream1；
+	// - Cdef：group=default，指向 Upstream2。
+	vipChannel, err := suite.Fixtures.CreateTestChannel(
+		"dc06-vip-channel",
+		"gpt-4",
+		"vip",
+		suite.Upstream1.BaseURL,
+		false,
+		0,
+		"",
+	)
+	require.NoError(t, err, "failed to create dc06 vip channel")
+
+	defChannel, err := suite.Fixtures.CreateTestChannel(
+		"dc06-default-channel",
+		"gpt-4",
+		"default",
+		suite.Upstream2.BaseURL,
+		false,
+		0,
+		"",
+	)
+	require.NoError(t, err, "failed to create dc06 default channel")
+
+	client := testutil.NewAPIClientWithToken(suite.Server.BaseURL, tokenKey)
+	sessionID := "dc06-session-sticky-billing-quota"
+
+	// 首次请求：应通过 BillingGroupList 命中 vip 组渠道，并建立粘性绑定。
+	req1 := buildChatRequest(t, client.BaseURL, tokenKey, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp1, err := client.HTTPClient.Do(req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	channelID1, ok := getSessionBindingChannelID(t, suite, user.ID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after first request in DC06")
+	require.Equal(t, vipChannel.ID, channelID1, "first request should bind session to vip channel")
+
+	// 验证首次请求确实命中了 vip 渠道的 upstream1。
+	require.Equal(t, 1, suite.Upstream1.GetRequestCount(), "vip upstream should receive first sticky request in DC06")
+	require.Equal(t, 0, suite.Upstream2.GetRequestCount(), "default upstream should not receive first request in DC06")
+
+	// 配置 Cvip 的小时额度上限，并在 Redis 中模拟当前小时额度已用满。
+	channels, err := suite.AdminClient.GetAllChannels()
+	require.NoError(t, err, "failed to list channels for DC06")
+
+	const hourlyLimit int64 = 1000
+
+	var target testutil.ChannelModel
+	found := false
+	for _, ch := range channels {
+		if ch.ID == vipChannel.ID {
+			target = ch
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "vip channel should exist in admin list for DC06")
+
+	target.HourlyQuotaLimit = hourlyLimit
+	var respBody testutil.APIResponse
+	err = suite.AdminClient.PutJSON("/api/channel/", &target, &respBody)
+	require.NoError(t, err, "failed to update vip channel hourly_quota_limit in DC06")
+	require.True(t, respBody.Success, "update vip channel hourly_quota_limit should succeed in DC06")
+
+	bucket := time.Now().Format("2006010215")
+	quotaKey := fmt.Sprintf("channel_quota:%d:hourly:%s", vipChannel.ID, bucket)
+	err = suite.RedisClient.Set(ctx, quotaKey, strconv.FormatInt(hourlyLimit, 10), 0).Err()
+	require.NoError(t, err, "failed to set simulated hourly quota for vip channel in DC06")
+
+	// 第二次请求：粘性检查时 Cvip 因小时额度超限被风控拒绝，绑定失效；
+	// 随后选路使用 BillingGroupList，跳过 Cvip，回退到 default 组渠道 Cdef。
+	req2 := buildChatRequest(t, client.BaseURL, tokenKey, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp2, err := client.HTTPClient.Do(req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	channelID2, ok := getSessionBindingChannelID(t, suite, user.ID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after quota-based failover in DC06")
+	require.NotEqual(t, channelID1, channelID2, "session should be rebound to a different channel after vip hourly quota exhaustion in DC06")
+	require.Equal(t, defChannel.ID, channelID2, "session should be rebound to default group channel in DC06")
+
+	// 再次确认第二次请求确实命中了 default 渠道的 upstream2。
+	require.Equal(t, 1, suite.Upstream2.GetRequestCount(), "default upstream should receive second request in DC06")
+}
+
+// TestDynamicConfig_DC02_ModifyHourlyQuotaDuringRequest
+// DC-02: 请求中修改分时额度
+//
+// 场景：
+//  1. 会话A粘滞在渠道C1，初始小时额度上限较大（例如 10000），保证已用额度远低于上限时请求不会被额度预检拒绝。
+//  2. 发起一个长耗时请求B到 C1（MockUpstreamServer 延迟响应）。
+//  3. 在请求B处理过程中，通过管理端 API 将 C1 的小时额度上限降到较小值（例如 600）。
+//  4. 在请求B完成后，模拟当前小时已消耗额度（例如 800）写入 Redis 的 channel_quota 计数器。
+//  5. 下一次同一会话的请求应在粘性校验阶段检测到额度超限，自动解绑并重路由到健康渠道 C2。
+func TestDynamicConfig_DC02_ModifyHourlyQuotaDuringRequest(t *testing.T) {
+	suite, cleanup := setupStickinessSuite(t, 60)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, suite.RedisClient.FlushDB(ctx).Err())
+
+	userID, token := createUserAndToken(t, suite, "dc02-user", "default")
+	ch1ID, ch2ID := createChannelsForStickiness(t, suite)
+
+	client := testutil.NewAPIClientWithToken(suite.Server.BaseURL, token)
+	sessionID := "dc02-session-quota-change"
+
+	// First request: create sticky binding to one of the channels.
+	req1 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp1, err := client.HTTPClient.Do(req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	channelID1, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after first request")
+	require.True(t, channelID1 == ch1ID || channelID1 == ch2ID, "binding channel must be one of the test channels")
+
+	// Configure the bound channel's upstream to be slow so that we can change
+	// its quota configuration while a request is in-flight.
+	var slowUpstream *testutil.MockUpstreamServer
+	if channelID1 == ch1ID {
+		slowUpstream = suite.Upstream1
+	} else {
+		slowUpstream = suite.Upstream2
+	}
+	slowUpstream.SetDelay(2 * time.Second)
+
+	const initialHourlyLimit int64 = 10000
+	const newHourlyLimit int64 = 600
+	const simulatedUsedQuota int64 = 800
+
+	// Step 1: Set a large hourly quota limit on the bound channel so that
+	// existing requests will not be rejected by pre-checks.
+	channels, err := suite.AdminClient.GetAllChannels()
+	require.NoError(t, err, "failed to list channels for DC-02")
+
+	var target testutil.ChannelModel
+	found := false
+	for _, ch := range channels {
+		if ch.ID == channelID1 {
+			target = ch
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "bound channel should exist in admin list for DC-02")
+
+	target.HourlyQuotaLimit = initialHourlyLimit
+	var resp testutil.APIResponse
+	err = suite.AdminClient.PutJSON("/api/channel/", &target, &resp)
+	require.NoError(t, err, "failed to set initial hourly_quota_limit via admin API in DC-02")
+	require.True(t, resp.Success, "initial hourly_quota_limit update should succeed in DC-02")
+
+	// Step 2 & 3: While a long-running request is in progress, lower the
+	// hourly quota limit for this channel to a much smaller value.
+	quotaChangeErrCh := make(chan error, 1)
+	go func(boundChannelID int) {
+		time.Sleep(200 * time.Millisecond)
+
+		channels, err := suite.AdminClient.GetAllChannels()
+		if err != nil {
+			quotaChangeErrCh <- fmt.Errorf("failed to list channels in DC-02 quota change: %w", err)
+			return
+		}
+
+		var updated testutil.ChannelModel
+		found := false
+		for _, ch := range channels {
+			if ch.ID == boundChannelID {
+				updated = ch
+				found = true
+				break
+			}
+		}
+		if !found {
+			quotaChangeErrCh <- fmt.Errorf("bound channel %d not found in DC-02 quota change", boundChannelID)
+			return
+		}
+
+		updated.HourlyQuotaLimit = newHourlyLimit
+		var updateResp testutil.APIResponse
+		if err := suite.AdminClient.PutJSON("/api/channel/", &updated, &updateResp); err != nil {
+			quotaChangeErrCh <- fmt.Errorf("failed to lower hourly_quota_limit in DC-02: %w", err)
+			return
+		}
+		if !updateResp.Success {
+			quotaChangeErrCh <- fmt.Errorf("lower hourly_quota_limit API failed in DC-02: %s", updateResp.Message)
+			return
+		}
+
+		quotaChangeErrCh <- nil
+	}(channelID1)
+
+	// Long-running request B on the sticky channel.
+	req2 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	start := time.Now()
+	resp2, err := client.HTTPClient.Do(req2)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	require.GreaterOrEqual(t, elapsed, time.Second, "second request in DC-02 should experience upstream delay")
+
+	quotaChangeErr := <-quotaChangeErrCh
+	require.NoError(t, quotaChangeErr, "hourly quota limit change should succeed during in-flight request in DC-02")
+
+	// Step 4: After request B completes, simulate that the current hourly
+	// quota usage has already exceeded the new limit by directly setting the
+	// Redis channel_quota counter for the current hour.
+	bucket := time.Now().Format("2006010215")
+	quotaKey := fmt.Sprintf("channel_quota:%d:hourly:%s", channelID1, bucket)
+	err = suite.RedisClient.Set(ctx, quotaKey, strconv.FormatInt(simulatedUsedQuota, 10), 0).Err()
+	require.NoError(t, err, "failed to set simulated hourly quota in Redis for DC-02")
+
+	// Ensure the sticky binding still points to the original channel before
+	// sending the next request.
+	boundBefore, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist before DC-02 rebinding")
+	require.Equal(t, channelID1, boundBefore, "binding should still point to the original channel before quota-based rebinding")
+
+	// Step 5: Next request with the same session should observe the reduced
+	// hourly limit and simulated usage, causing the sticky binding to be
+	// dropped and the request to be re-routed to a healthy channel.
+	req3 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp3, err := client.HTTPClient.Do(req3)
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	require.Equal(t, http.StatusOK, resp3.StatusCode)
+
+	channelID3, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after DC-02 rebinding")
+	require.NotEqual(t, channelID1, channelID3, "session should be rebound to a different channel after hourly quota limit reduction")
+	require.True(t, channelID3 == ch1ID || channelID3 == ch2ID, "DC-02 rebinding should select one of the existing channels")
+}
+
+// TestDynamicConfig_DC01_DisableStickyChannelDuringRequest
+// DC-01: 请求中禁用粘性渠道
+//
+// 场景：
+//  1. 会话A首次请求绑定到渠道C1。
+//  2. 设置 C1 的上游为长耗时请求（MockUpstreamServer 延迟响应）。
+//  3. 在第二次请求处理过程中，通过管理端 API 将 C1 状态改为手工禁用。
+//  4. 当前长耗时请求应正常完成；下一次同一会话的请求应自动解绑并重路由到健康渠道 C2。
+func TestDynamicConfig_DC01_DisableStickyChannelDuringRequest(t *testing.T) {
+	suite, cleanup := setupStickinessSuite(t, 60)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, suite.RedisClient.FlushDB(ctx).Err())
+
+	userID, token := createUserAndToken(t, suite, "dc01-user", "default")
+	ch1ID, ch2ID := createChannelsForStickiness(t, suite)
+
+	client := testutil.NewAPIClientWithToken(suite.Server.BaseURL, token)
+	sessionID := "dc01-session-disable-during-request"
+
+	// First request: create sticky binding to one of the channels.
+	req1 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp1, err := client.HTTPClient.Do(req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	channelID1, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after first request")
+	require.True(t, channelID1 == ch1ID || channelID1 == ch2ID, "binding channel must be one of the test channels")
+
+	// Configure the bound channel's upstream to be slow so that we can change
+	// its status while a request is in-flight.
+	var slowUpstream *testutil.MockUpstreamServer
+	if channelID1 == ch1ID {
+		slowUpstream = suite.Upstream1
+	} else {
+		slowUpstream = suite.Upstream2
+	}
+	slowUpstream.SetDelay(2 * time.Second)
+
+	// In a background goroutine, disable the bound channel via admin API
+	// while the next request is being processed.
+	errCh := make(chan error, 1)
+	go func(boundChannelID int) {
+		// Wait a short moment to ensure the request has reached the upstream.
+		time.Sleep(200 * time.Millisecond)
+
+		channels, err := suite.AdminClient.GetAllChannels()
+		if err != nil {
+			errCh <- fmt.Errorf("failed to list channels in DC-01: %w", err)
+			return
+		}
+
+		var target testutil.ChannelModel
+		found := false
+		for _, ch := range channels {
+			if ch.ID == boundChannelID {
+				target = ch
+				found = true
+				break
+			}
+		}
+		if !found {
+			errCh <- fmt.Errorf("bound channel %d not found in admin list", boundChannelID)
+			return
+		}
+
+		target.Status = common.ChannelStatusManuallyDisabled
+		var resp testutil.APIResponse
+		if err := suite.AdminClient.PutJSON("/api/channel/", &target, &resp); err != nil {
+			errCh <- fmt.Errorf("failed to disable channel in DC-01: %w", err)
+			return
+		}
+		if !resp.Success {
+			errCh <- fmt.Errorf("disable channel API failed in DC-01: %s", resp.Message)
+			return
+		}
+
+		errCh <- nil
+	}(channelID1)
+
+	// Second request: long-running call on the sticky channel.
+	req2 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	start := time.Now()
+	resp2, err := client.HTTPClient.Do(req2)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	// Current request should still complete successfully even though the
+	// channel is being disabled mid-flight.
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	// Sanity check that we actually hit the artificial delay.
+	require.GreaterOrEqual(t, elapsed, time.Second, "second request should experience upstream delay")
+
+	// Ensure the background disable operation has finished successfully.
+	disableErr := <-errCh
+	require.NoError(t, disableErr, "channel disable operation should succeed during in-flight request")
+
+	// Give the session cleanup hook a brief moment to remove sticky bindings.
+	time.Sleep(100 * time.Millisecond)
+
+	// Third request: the previous sticky channel has been disabled, so the
+	// session should be rebound to a healthy channel.
+	req3 := buildChatRequest(t, client.BaseURL, token, "gpt-4", map[string]string{
+		"X-NewAPI-Session-ID": sessionID,
+	})
+	resp3, err := client.HTTPClient.Do(req3)
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	require.Equal(t, http.StatusOK, resp3.StatusCode)
+
+	channelID3, ok := getSessionBindingChannelID(t, suite, userID, "gpt-4", sessionID)
+	require.True(t, ok, "session binding should exist after rebinding in DC-01")
+	require.NotEqual(t, channelID1, channelID3, "session should be rebound to a different channel after disable during request")
+	require.True(t, channelID3 == ch1ID || channelID3 == ch2ID, "rebinding should select one of the existing channels")
+}
+
 // TestStickiness_S03B_DisabledChannelUnbinds
 // S-03-B: 粘性渠道被禁用后自动解绑
 func TestStickiness_S03B_DisabledChannelUnbinds(t *testing.T) {

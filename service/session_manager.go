@@ -21,6 +21,7 @@ import (
 const (
 	sessionBindingKeyPattern = "session:%d:%s:%s"
 	sessionUserKeyPrefix     = "session:user:"
+	sessionPendingKeyPrefix  = "session:pending:user:"
 	sessionChannelStatsKey   = "session:channel:stats"
 	sessionGlobalCountKey    = "session:global:count"
 	sessionIndexKey          = "session:index"
@@ -271,6 +272,10 @@ func sessionUserKey(userID int) string {
 	return fmt.Sprintf("%s%d", sessionUserKeyPrefix, userID)
 }
 
+func sessionPendingKey(userID int) string {
+	return fmt.Sprintf("%s%d", sessionPendingKeyPrefix, userID)
+}
+
 func getSessionIndexEntry(ctx context.Context, key string) (*SessionIndexEntry, error) {
 	val, err := common.RDB.HGet(ctx, sessionIndexKey, key).Result()
 	if errors.Is(err, redis.Nil) {
@@ -284,6 +289,88 @@ func getSessionIndexEntry(ctx context.Context, key string) (*SessionIndexEntry, 
 		return nil, err
 	}
 	return entry, nil
+}
+
+const luaReserveUserSessionSlot = `
+-- KEYS[1]: session:user:{user_id}
+-- KEYS[2]: session:pending:user:{user_id}
+-- ARGV[1]: limit
+-- ARGV[2]: session_id
+local userKey = KEYS[1]
+local pendingKey = KEYS[2]
+local limit = tonumber(ARGV[1])
+local sessionId = ARGV[2]
+
+if not limit or limit <= 0 then
+  return 1
+end
+
+-- If this session is already active, treat as reuse (do not count as new)
+if redis.call("SISMEMBER", userKey, sessionId) == 1 then
+  return 1
+end
+
+-- If this session is already pending, also treat as reuse
+if redis.call("SISMEMBER", pendingKey, sessionId) == 1 then
+  return 1
+end
+
+local current = redis.call("SCARD", userKey) + redis.call("SCARD", pendingKey)
+if current >= limit then
+  return 0
+end
+
+redis.call("SADD", pendingKey, sessionId)
+return 1
+`
+
+// ReserveUserSessionSlot attempts to reserve a slot for a new user session
+// in an atomic way. It counts both active sessions (session:user:{id}) and
+// in-flight reservations (session:pending:user:{id}) to avoid race
+// conditions when multiple requests try to create sessions concurrently.
+//
+// Returns true if the reservation is granted, or false if the limit has
+// been reached. When Redis is not enabled, it falls back to a best-effort
+// check using GetUserSessionCount.
+func ReserveUserSessionSlot(ctx context.Context, userID int, sessionID string, limit int) (bool, error) {
+	if userID == 0 || sessionID == "" || limit <= 0 {
+		return true, nil
+	}
+
+	if !common.RedisEnabled || common.RDB == nil {
+		// Fallback: rely on non-atomic in-memory counting when Redis is disabled.
+		count, err := GetUserSessionCount(ctx, userID)
+		if err != nil {
+			return false, err
+		}
+		if count >= int64(limit) {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	keys := []string{
+		sessionUserKey(userID),
+		sessionPendingKey(userID),
+	}
+	res, err := common.RDB.Eval(ctx, luaReserveUserSessionSlot, keys, limit, sessionID).Int()
+	if err != nil {
+		return false, err
+	}
+	return res == 1, nil
+}
+
+// ReleaseUserSessionReservation removes an in-flight reservation for a
+// user session created by ReserveUserSessionSlot. It is safe to call even
+// if no reservation exists.
+func ReleaseUserSessionReservation(ctx context.Context, userID int, sessionID string) {
+	if userID == 0 || sessionID == "" {
+		return
+	}
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	_ = common.RDB.SRem(ctx, sessionPendingKey(userID), sessionID).Err()
 }
 
 func startSessionExpirationListener() {
