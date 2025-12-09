@@ -218,14 +218,20 @@ func getUserSessionSetSize(t *testing.T, suite *ConcurrencySuite, userID int) in
 func setUserMaxConcurrentSessions(t *testing.T, suite *ConcurrencySuite, userID int, username, group, password string, limit int) {
 	t.Helper()
 
+	// 先读取当前用户信息，保留现有配额等字段，避免被意外重置。
+	existing, err := suite.AdminClient.GetUser(userID)
+	require.NoError(t, err, "failed to load user before updating max_concurrent_sessions")
+
 	update := &testutil.UserModel{
 		ID:                    userID,
-		Username:              username,
+		Username:              existing.Username,
 		Password:              password,
-		Group:                 group,
+		Group:                 existing.Group,
+		DisplayName:           existing.DisplayName,
+		Quota:                 existing.Quota,
 		MaxConcurrentSessions: limit,
 	}
-	err := suite.AdminClient.UpdateUser(update)
+	err = suite.AdminClient.UpdateUser(update)
 	require.NoError(t, err, "failed to update user max_concurrent_sessions")
 }
 
@@ -719,9 +725,10 @@ func TestConcurrency_DC04_MultiTokenSharedLimit(t *testing.T) {
 
 // TestConcurrency_Priority_UserLimitOverridesGroup
 // 用户级 max_concurrent_sessions 与组级/系统级同时配置时的优先级：
-//  - SystemMaxConcurrentSessions = 5
-//  - GroupMaxConcurrentSessions["default"] = 2
-//  - 用户自身 MaxConcurrentSessions = 1
+//   - SystemMaxConcurrentSessions = 5
+//   - GroupMaxConcurrentSessions["default"] = 2
+//   - 用户自身 MaxConcurrentSessions = 1
+//
 // 预期：有效并发上限应为 1，第二个新会话被拒绝。
 func TestConcurrency_Priority_UserLimitOverridesGroup(t *testing.T) {
 	suite, cleanup := setupConcurrencySuite(t)
