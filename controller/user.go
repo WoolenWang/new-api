@@ -957,11 +957,12 @@ func CreateUser(c *gin.Context) {
 	}
 	// Even for admin users, we cannot fully trust them!
 	cleanUser := model.User{
-		Username:    user.Username,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,       // 保持管理员设置的角色
-		ExternalId:  user.ExternalId, // 支持外部系统用户ID
-		AffCode:     user.InviteCode, // 自己的邀请码
+		Username:              user.Username,
+		DisplayName:           user.DisplayName,
+		Role:                  user.Role,                  // 保持管理员设置的角色
+		ExternalId:            user.ExternalId,            // 支持外部系统用户ID
+		AffCode:               user.InviteCode,            // 自己的邀请码
+		MaxConcurrentSessions: user.MaxConcurrentSessions, // 初始并发会话上限（可选，默认为0即使用组/系统级）
 	}
 
 	// Only set password if it was actually provided (not the placeholder)
