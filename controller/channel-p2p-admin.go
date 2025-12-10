@@ -26,7 +26,6 @@ type P2PChannelUsageInfo struct {
 	DailyRequests      int     `json:"daily_requests"`
 	DailyLimit         int     `json:"daily_limit"`
 	IsPrivate          bool    `json:"is_private"`
-	AllowedUsers       *string `json:"allowed_users"`
 	AllowedGroups      *string `json:"allowed_groups"`
 	CreatedTime        int64   `json:"created_time"`
 }
@@ -82,7 +81,6 @@ func GetP2PChannels(c *gin.Context) {
 			DailyRequests:      dailyRequests,
 			DailyLimit:         ch.DailyLimit,
 			IsPrivate:          ch.IsPrivate,
-			AllowedUsers:       ch.AllowedUsers,
 			AllowedGroups:      ch.AllowedGroups,
 			CreatedTime:        ch.CreatedTime,
 		}

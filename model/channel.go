@@ -35,7 +35,7 @@ type Channel struct {
 	Balance            float64 `json:"balance"` // in USD
 	BalanceUpdatedTime int64   `json:"balance_updated_time" gorm:"bigint"`
 	Models             string  `json:"models"`
-	Group              string  `json:"group" gorm:"type:varchar(64);default:'default'"`
+	Group              string  `json:"group" gorm:"type:varchar(64);default:'user_default'"`
 	UsedQuota          int64   `json:"used_quota" gorm:"bigint;default:0"`
 	ModelMapping       *string `json:"model_mapping" gorm:"type:text"`
 	//MaxInputTokens     *int    `json:"max_input_tokens" gorm:"default:0"`
@@ -61,8 +61,7 @@ type Channel struct {
 	HourlyLimit   int     `json:"hourly_limit" gorm:"type:int;default:0"`        // 每小时请求数限制 (已废弃，使用HourlyQuotaLimit代替)
 	DailyLimit    int     `json:"daily_limit" gorm:"type:int;default:0"`         // 每日请求数限制 (已废弃，使用DailyQuotaLimit代替)
 	IsPrivate     bool    `json:"is_private" gorm:"type:boolean;default:false"`  // 是否为私有渠道
-	AllowedUsers  *string `json:"allowed_users" gorm:"type:text"`                // 允许访问的用户ID列表(JSON数组)
-	AllowedGroups *string `json:"allowed_groups" gorm:"type:text"`               // 允许访问的用户组列表(JSON数组)
+	AllowedGroups *string `json:"allowed_groups" gorm:"type:text"`               // 允许访问的p2p分享组列表(JSON数组)
 	AllowedModels *string `json:"allowed_models" gorm:"type:text"`               // P2P权限白名单：允许共享的模型列表(逗号分隔)，为空则回退使用Models字段
 	IPWhitelist   *string `json:"ip_whitelist" gorm:"type:text"`                 // IP白名单：允许访问的IP地址或CIDR网段列表(JSON数组)，为空则不限制IP
 
@@ -241,15 +240,46 @@ func (channel *Channel) GetModels() []string {
 	return strings.Split(strings.Trim(channel.Models, ","), ",")
 }
 
+// GetGroups 解析Channel的计费分组列表
+// Channel.Group 支持三种格式:
+// 1. 单字符串: "default" -> ["default"]
+// 2. JSON数组: "[\"svip\", \"default\"]" -> ["svip", "default"]
+// 3. 逗号分隔: "default,user_default,discount_20" -> ["default", "user_default", "discount_20"]
+// 返回空切片表示使用默认分组
 func (channel *Channel) GetGroups() []string {
 	if channel.Group == "" {
 		return []string{}
 	}
-	groups := strings.Split(strings.Trim(channel.Group, ","), ",")
-	for i, group := range groups {
-		groups[i] = strings.TrimSpace(group)
+
+	// 尝试解析为JSON数组
+	trimmed := strings.TrimSpace(channel.Group)
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var groups []string
+		err := common.Unmarshal([]byte(trimmed), &groups)
+		if err != nil {
+			// JSON解析失败，当作单字符串处理
+			common.SysLog(fmt.Sprintf("failed to unmarshal group list for channel %d: %v (value: %s), treating as single string",
+				channel.Id, err, channel.Group))
+			return []string{channel.Group}
+		}
+		return groups
 	}
-	return groups
+
+	// 检查是否为逗号分隔格式
+	if strings.Contains(trimmed, ",") {
+		parts := strings.Split(trimmed, ",")
+		groups := make([]string, 0, len(parts))
+		for _, part := range parts {
+			group := strings.TrimSpace(part)
+			if group != "" {
+				groups = append(groups, group)
+			}
+		}
+		return groups
+	}
+
+	// 单字符串格式
+	return []string{channel.Group}
 }
 
 func (channel *Channel) GetOtherInfo() map[string]interface{} {
@@ -1055,6 +1085,10 @@ func CountChannelsGroupByType() (map[int64]int64, error) {
 }
 
 // GetIPWhitelist 返回渠道的IP白名单列表
+// IPWhitelist 支持三种格式:
+// 1. 空值: nil 或 "" -> [] (不限制IP)
+// 2. JSON数组: "[\"192.168.1.1\", \"10.0.0.0/8\"]" -> ["192.168.1.1", "10.0.0.0/8"]
+// 3. 逗号分隔: "192.168.1.1,10.0.0.0/8,172.16.0.1" -> ["192.168.1.1", "10.0.0.0/8", "172.16.0.1"]
 // 返回空切片表示不限制IP
 func (channel *Channel) GetIPWhitelist() []string {
 	if channel.IPWhitelist == nil || *channel.IPWhitelist == "" {
@@ -1062,21 +1096,37 @@ func (channel *Channel) GetIPWhitelist() []string {
 	}
 
 	// 尝试解析为JSON数组
-	var ipList []string
-	err := json.Unmarshal([]byte(*channel.IPWhitelist), &ipList)
-	if err != nil {
-		// 如果JSON解析失败，尝试按逗号分隔（兼容性）
-		ipList = strings.Split(*channel.IPWhitelist, ",")
-		for i := range ipList {
-			ipList[i] = strings.TrimSpace(ipList[i])
+	trimmed := strings.TrimSpace(*channel.IPWhitelist)
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var ipList []string
+		err := json.Unmarshal([]byte(trimmed), &ipList)
+		if err != nil {
+			// JSON解析失败，当作逗号分隔处理
+			common.SysLog(fmt.Sprintf("failed to unmarshal IP whitelist as JSON for channel %d: %v (value: %s), treating as comma-separated",
+				channel.Id, err, *channel.IPWhitelist))
+		} else {
+			return ipList
 		}
 	}
 
+	// 逗号分隔格式（包括JSON解析失败的fallback）
+	parts := strings.Split(trimmed, ",")
+	ipList := make([]string, 0, len(parts))
+	for _, part := range parts {
+		ip := strings.TrimSpace(part)
+		if ip != "" {
+			ipList = append(ipList, ip)
+		}
+	}
 	return ipList
 }
 
 // GetAllowedGroupIDs 返回渠道允许访问的P2P分组ID列表
 // 该方法用于新的P2P分组权限检查(基于整数ID)
+// AllowedGroups 支持三种格式:
+// 1. 空值: nil 或 "" -> [] (不限制分组)
+// 2. JSON数组: "[101, 102, 103]" -> [101, 102, 103]
+// 3. 逗号分隔: "101,102,103" -> [101, 102, 103]
 // 返回空切片表示不限制分组
 func (channel *Channel) GetAllowedGroupIDs() []int {
 	if channel.AllowedGroups == nil || *channel.AllowedGroups == "" {
@@ -1084,14 +1134,34 @@ func (channel *Channel) GetAllowedGroupIDs() []int {
 	}
 
 	// 尝试解析为JSON数组 (新格式: [101, 102, 103])
-	var groupIDs []int
-	err := json.Unmarshal([]byte(*channel.AllowedGroups), &groupIDs)
-	if err != nil {
-		// JSON解析失败,可能是旧格式(逗号分隔的系统分组名称)
-		// 对于P2P分组检查,旧格式不适用,返回空列表
-		common.SysLog(fmt.Sprintf("failed to unmarshal allowed_groups as JSON array for channel %d: %v (value: %s)",
-			channel.Id, err, *channel.AllowedGroups))
-		return []int{}
+	trimmed := strings.TrimSpace(*channel.AllowedGroups)
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var groupIDs []int
+		err := json.Unmarshal([]byte(trimmed), &groupIDs)
+		if err != nil {
+			// JSON解析失败，尝试逗号分隔格式
+			common.SysLog(fmt.Sprintf("failed to unmarshal allowed_groups as JSON array for channel %d: %v (value: %s), trying comma-separated",
+				channel.Id, err, *channel.AllowedGroups))
+		} else {
+			return groupIDs
+		}
+	}
+
+	// 逗号分隔格式：尝试解析每个部分为整数
+	parts := strings.Split(trimmed, ",")
+	groupIDs := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		// 尝试转换为整数
+		if id := common.String2Int(part); id > 0 {
+			groupIDs = append(groupIDs, id)
+		} else {
+			// 如果不是有效的整数ID，记录警告（可能是旧格式的字符串分组名）
+			common.SysLog(fmt.Sprintf("invalid group ID in allowed_groups for channel %d: '%s' (ignored)", channel.Id, part))
+		}
 	}
 
 	return groupIDs

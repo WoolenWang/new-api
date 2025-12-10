@@ -543,7 +543,7 @@ type SelfChannelCreateRequest struct {
 	Priority        int64           `json:"priority"`       // 可选，默认 0
 	Weight          int             `json:"weight"`         // 可选，默认 1
 	ModelMappingRaw json.RawMessage `json:"model_mapping"`  // 可选，JSON 对象或字符串
-	Groups          []string        `json:"groups"`         // 可选，未传时使用 default
+	Group           string          `json:"group"`          // 可选，计费分组，支持逗号分隔或JSON数组字符串格式
 	Tag             string          `json:"tag"`            // 可选
 	AutoDisable     int             `json:"auto_disable"`   // 1=自动禁用，其余视为关闭
 	Config          string          `json:"config"`         // 参数覆盖（JSON 字符串）
@@ -551,6 +551,16 @@ type SelfChannelCreateRequest struct {
 	Other           string          `json:"other"`          // OAuth/CLIProxy 等场景使用
 	AllowedModels   string          `json:"allowed_models"` // P2P权限白名单：允许共享的模型列表(逗号分隔)
 	IsPrivate       bool            `json:"is_private"`     // 是否为私有渠道：true=仅Owner可见
+	// P2P Channel Sharing Fields
+	AccountHint       string `json:"account_hint"`        // CLIProxyAPI 凭证映射标识
+	TotalQuota        int64  `json:"total_quota"`         // 总额度限制(quota单位)，0表示不限制
+	Concurrency       int    `json:"concurrency"`         // 并发数限制，0表示不限制
+	HourlyQuotaLimit  int64  `json:"hourly_quota_limit"`  // 每小时额度限制(quota单位)，0表示不限制
+	DailyQuotaLimit   int64  `json:"daily_quota_limit"`   // 每日额度限制(quota单位)，0表示不限制
+	WeeklyQuotaLimit  int64  `json:"weekly_quota_limit"`  // 每周额度限制(quota单位)，0表示不限制
+	MonthlyQuotaLimit int64  `json:"monthly_quota_limit"` // 每月额度限制(quota单位)，0表示不限制
+	AllowedGroups     string `json:"allowed_groups"`      // 允许访问的P2P分组ID列表(逗号分隔或JSON数组)
+	IPWhitelist       string `json:"ip_whitelist"`        // IP白名单(逗号分隔或JSON数组)
 }
 
 // mapExternalChannelType 将 WQuant 侧字符串类型映射到内部的 ChannelType 常量
@@ -659,12 +669,9 @@ func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
 		}
 	}
 
-	// 处理分组：数组 -> 逗号分隔字符串
-	if len(r.Groups) > 0 {
-		for i, g := range r.Groups {
-			r.Groups[i] = strings.TrimSpace(g)
-		}
-		ch.Group = strings.Join(r.Groups, ",")
+	// 处理分组：直接设置，支持逗号分隔或JSON数组字符串格式
+	if r.Group != "" {
+		ch.Group = strings.TrimSpace(r.Group)
 	} else {
 		ch.Group = "user_default"
 	}
@@ -698,6 +705,45 @@ func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
 	if r.AllowedModels != "" {
 		allowedModels := strings.TrimSpace(r.AllowedModels)
 		ch.AllowedModels = &allowedModels
+	}
+
+	// 处理 allowed_groups: 允许访问的P2P分组ID列表
+	// 支持逗号分隔字符串或JSON数组格式
+	if r.AllowedGroups != "" {
+		allowedGroups := strings.TrimSpace(r.AllowedGroups)
+		ch.AllowedGroups = &allowedGroups
+	}
+
+	// 处理 ip_whitelist: IP白名单
+	if r.IPWhitelist != "" {
+		ipWhitelist := strings.TrimSpace(r.IPWhitelist)
+		ch.IPWhitelist = &ipWhitelist
+	}
+
+	// 处理 account_hint: CLIProxyAPI 凭证映射标识
+	if r.AccountHint != "" {
+		accountHint := strings.TrimSpace(r.AccountHint)
+		ch.AccountHint = &accountHint
+	}
+
+	// 处理额度和限流配置
+	if r.TotalQuota > 0 {
+		ch.TotalQuota = r.TotalQuota
+	}
+	if r.Concurrency > 0 {
+		ch.Concurrency = r.Concurrency
+	}
+	if r.HourlyQuotaLimit > 0 {
+		ch.HourlyQuotaLimit = r.HourlyQuotaLimit
+	}
+	if r.DailyQuotaLimit > 0 {
+		ch.DailyQuotaLimit = r.DailyQuotaLimit
+	}
+	if r.WeeklyQuotaLimit > 0 {
+		ch.WeeklyQuotaLimit = r.WeeklyQuotaLimit
+	}
+	if r.MonthlyQuotaLimit > 0 {
+		ch.MonthlyQuotaLimit = r.MonthlyQuotaLimit
 	}
 
 	// is_private: 是否为私有渠道。默认为 false，与现有行为保持一致；
@@ -1676,12 +1722,29 @@ func UpdateUserChannel(c *gin.Context) {
 	}
 
 	// Parse update request
-	channel := PatchChannel{}
-	err = c.ShouldBindJSON(&channel)
+	// 说明：
+	// - 这里使用 GetRawData + common.Unmarshal，是为了在绑定结构体前准确探测
+	//   请求体中是否显式携带了 is_private 字段，避免 GORM 忽略 bool 零值导致
+	//   无法将 is_private 从 true 更新为 false。
+	rawBody, err := c.GetRawData()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+
+	channel := PatchChannel{}
+	if err := common.Unmarshal(rawBody, &channel); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// 检测请求是否显式包含 is_private 字段，用于后续强制持久化 bool 值（包括 false）
+	var isPrivateWrapper struct {
+		IsPrivate *bool `json:"is_private"`
+	}
+	_ = json.Unmarshal(rawBody, &isPrivateWrapper)
+	hasIsPrivate := isPrivateWrapper.IsPrivate != nil
+	requestedIsPrivate := channel.IsPrivate
 
 	// Ensure ID matches
 	channel.Id = id
@@ -1709,10 +1772,26 @@ func UpdateUserChannel(c *gin.Context) {
 	channel.OwnerUserId = originChannel.OwnerUserId // Cannot change owner
 
 	// Update channel
-	err = channel.Update()
-	if err != nil {
+	if err := channel.Update(); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	// 如果请求显式携带了 is_private，则确保该布尔字段能够从 true 正确更新为 false
+	// 说明：
+	// - GORM 使用 struct 进行 Updates 时会忽略 bool 的零值（false），导致
+	//   无法把 is_private 从 true 更新为 false；
+	// - 这里在通用 Update 之后，使用单列 Update 强制写入 is_private，且仅在客户端
+	//   显式传入 is_private 时才执行，避免误把未传字段当作“清空”操作。
+	if hasIsPrivate {
+		if err := model.DB.Model(&model.Channel{}).
+			Where("id = ?", channel.Id).
+			Update("is_private", requestedIsPrivate).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		// 确保响应体中的 is_private 与请求保持一致
+		channel.IsPrivate = requestedIsPrivate
 	}
 
 	model.InitChannelCache()

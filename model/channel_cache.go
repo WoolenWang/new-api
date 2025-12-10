@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -274,19 +273,6 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 	// Track whitelist configuration & matches
 	hasWhitelist := false
 	whitelistMatched := false
-
-	// Check allowed users whitelist
-	if channel.AllowedUsers != nil && *channel.AllowedUsers != "" {
-		hasWhitelist = true
-		allowedUsers := strings.Split(*channel.AllowedUsers, ",")
-		userIdStr := strconv.Itoa(userId)
-		for _, allowedUser := range allowedUsers {
-			if strings.TrimSpace(allowedUser) == userIdStr {
-				whitelistMatched = true
-				break
-			}
-		}
-	}
 
 	// Check allowed groups whitelist (supports both system groups and P2P group IDs)
 	p2pGroupMatched := false
