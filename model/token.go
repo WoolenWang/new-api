@@ -382,9 +382,10 @@ func (token *Token) GetAllowedP2PGroupIDs() []int {
 }
 
 // GetBillingGroupList 解析Token的计费分组列表
-// Token.Group 支持两种格式:
+// Token.Group 支持三种格式:
 // 1. 单字符串: "default" -> ["default"]
 // 2. JSON数组: "[\"svip\", \"default\"]" -> ["svip", "default"]
+// 3. 逗号分隔: "default,user_default,discount_20" -> ["default", "user_default", "discount_20"]
 // 返回空切片表示使用用户默认分组
 func (token *Token) GetBillingGroupList() []string {
 	if token.Group == "" {
@@ -401,6 +402,19 @@ func (token *Token) GetBillingGroupList() []string {
 			common.SysLog(fmt.Sprintf("failed to unmarshal billing group list for token %d: %v (value: %s), treating as single string",
 				token.Id, err, token.Group))
 			return []string{token.Group}
+		}
+		return groups
+	}
+
+	// 检查是否为逗号分隔格式
+	if strings.Contains(trimmed, ",") {
+		parts := strings.Split(trimmed, ",")
+		groups := make([]string, 0, len(parts))
+		for _, part := range parts {
+			group := strings.TrimSpace(part)
+			if group != "" {
+				groups = append(groups, group)
+			}
 		}
 		return groups
 	}
