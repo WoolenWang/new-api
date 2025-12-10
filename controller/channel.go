@@ -550,6 +550,7 @@ type SelfChannelCreateRequest struct {
 	Headers         string          `json:"headers"`        // header 覆盖（JSON 字符串）
 	Other           string          `json:"other"`          // OAuth/CLIProxy 等场景使用
 	AllowedModels   string          `json:"allowed_models"` // P2P权限白名单：允许共享的模型列表(逗号分隔)
+	IsPrivate       bool            `json:"is_private"`     // 是否为私有渠道：true=仅Owner可见
 }
 
 // mapExternalChannelType 将 WQuant 侧字符串类型映射到内部的 ChannelType 常量
@@ -698,6 +699,10 @@ func (r *SelfChannelCreateRequest) ToModelChannel() (*model.Channel, error) {
 		allowedModels := strings.TrimSpace(r.AllowedModels)
 		ch.AllowedModels = &allowedModels
 	}
+
+	// is_private: 是否为私有渠道。默认为 false，与现有行为保持一致；
+	// 显式透传 true 时，将渠道标记为私有，仅 Owner 可见。
+	ch.IsPrivate = r.IsPrivate
 
 	return ch, nil
 }
