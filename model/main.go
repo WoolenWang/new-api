@@ -267,8 +267,13 @@ func migrateDB() error {
 		&Setup{},
 		&TwoFA{},
 		&TwoFABackupCode{},
-		&Group{},     // P2P 分组表
-		&UserGroup{}, // P2P 分组成员表
+		&Group{},                 // P2P 分组表
+		&UserGroup{},             // P2P 分组成员表
+		&ChannelStatistics{},     // 渠道统计时序表 (Phase 8.1)
+		&GroupStatistics{},       // P2P分组聚合统计表 (Phase 10.1)
+		&MonitorPolicy{},         // 监控策略表 (Phase 9.1)
+		&ModelBaseline{},         // 模型基准表 (Phase 9.1)
+		&ModelMonitoringResult{}, // 模型监控结果表 (Phase 9.1)
 	)
 	if err != nil {
 		return err
@@ -302,8 +307,13 @@ func migrateDBFast() error {
 		{&Setup{}, "Setup"},
 		{&TwoFA{}, "TwoFA"},
 		{&TwoFABackupCode{}, "TwoFABackupCode"},
-		{&Group{}, "Group"},         // P2P 分组表
-		{&UserGroup{}, "UserGroup"}, // P2P 分组成员表
+		{&Group{}, "Group"},                                 // P2P 分组表
+		{&UserGroup{}, "UserGroup"},                         // P2P 分组成员表
+		{&ChannelStatistics{}, "ChannelStatistics"},         // 渠道统计时序表 (Phase 8.1)
+		{&GroupStatistics{}, "GroupStatistics"},             // P2P分组聚合统计表 (Phase 10.1)
+		{&MonitorPolicy{}, "MonitorPolicy"},                 // 监控策略表 (Phase 9.1)
+		{&ModelBaseline{}, "ModelBaseline"},                 // 模型基准表 (Phase 9.1)
+		{&ModelMonitoringResult{}, "ModelMonitoringResult"}, // 模型监控结果表 (Phase 9.1)
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

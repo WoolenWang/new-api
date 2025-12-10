@@ -111,6 +111,23 @@ func main() {
 	// 初始化会话监控服务
 	service.InitSessionMonitor()
 
+	// Phase 8: 初始化渠道统计服务（L1 -> L2 -> L3）
+	// L3服务会自动初始化L2和L1服务
+	service.GetChannelStatsL3Service()
+	common.SysLog("Channel statistics services initialized (L1/L2/L3)")
+
+	// 启动模型监控调度器（Phase 9: Model Intelligence & Drift Monitoring）
+	if os.Getenv("ENABLE_MODEL_MONITORING") != "false" {
+		scheduler := service.GetMonitorScheduler()
+		if err := scheduler.Start(); err != nil {
+			common.SysLog(fmt.Sprintf("Failed to start model monitoring scheduler: %v", err))
+		} else {
+			common.SysLog("Model monitoring scheduler started")
+		}
+		// 确保优雅关闭
+		defer scheduler.Stop()
+	}
+
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {

@@ -71,6 +71,21 @@ type Channel struct {
 	WeeklyQuotaLimit  int64 `json:"weekly_quota_limit" gorm:"type:bigint;default:0"`  // 每周额度限制(quota单位)，0表示不限制
 	MonthlyQuotaLimit int64 `json:"monthly_quota_limit" gorm:"type:bigint;default:0"` // 每月额度限制(quota单位)，0表示不限制
 
+	// 渠道统计字段 (Phase 8.1: 数据库与配置扩展)
+	// 设计文档: docs/01-P2P共享分组与用户创建渠道的状态信息监控统计与展示.md
+	// Section: 2.2.1 channels 表扩展
+	AvgResponseTime    int     `json:"avg_response_time" gorm:"type:int;default:0;comment:平均首字响应时间(ms)"`
+	FailRate           float64 `json:"fail_rate" gorm:"type:double precision;default:0.0;comment:请求失败率(%)"`
+	AvgCacheHitRate    float64 `json:"avg_cache_hit_rate" gorm:"type:double precision;default:0.0;comment:平均缓存命中率(%)"`
+	StreamReqRatio     float64 `json:"stream_req_ratio" gorm:"type:double precision;default:0.0;comment:流式请求占比(%)"`
+	TPM                int     `json:"tpm" gorm:"type:int;default:0;comment:每分钟处理的Tokens数量"`
+	RPM                int     `json:"rpm" gorm:"type:int;default:0;comment:每分钟请求数"`
+	QuotaPM            int64   `json:"quota_pm" gorm:"type:bigint;default:0;comment:每分钟消耗的额度"`
+	TotalSessions      int64   `json:"total_sessions" gorm:"type:bigint;default:0;comment:区间总服务session数"`
+	DowntimePercentage float64 `json:"downtime_percentage" gorm:"type:double precision;default:0.0;comment:区间停止服务时间占比(%)"`
+	UniqueUsers        int     `json:"unique_users" gorm:"type:int;default:0;comment:区间服务用户数(去重)"`
+	MonitoringConfig   *string `json:"monitoring_config" gorm:"type:text;comment:模型智能监控策略(JSON)"`
+
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
 }
@@ -1188,4 +1203,167 @@ func TriggerChannelSessionCleanup(channelId int) {
 		common.SysLog(fmt.Sprintf("Triggering session cleanup for channel %d", channelId))
 		sessionCleanupCallback(channelId)
 	}
+}
+
+// ==================== Channel Statistics Methods (Phase 8.1) ====================
+
+// MonitoringConfigData represents the structure of monitoring_config JSON field
+// 设计文档: docs/01-P2P共享分组与用户创建渠道的状态信息监控统计与展示.md
+// Section: 2.2.1 monitoring_config JSON 结构
+type MonitoringConfigData struct {
+	Enabled             bool     `json:"enabled"`               // 是否启用监控
+	TargetModel         string   `json:"target_model"`          // 监控的目标模型
+	TestIntervalMinutes int      `json:"test_interval_minutes"` // 检测间隔（分钟）
+	TestType            []string `json:"test_type"`             // 检测类型列表: encoding, reasoning, style, instruction_following, structure_consistency
+	EvaluationStandard  string   `json:"evaluation_standard"`   // 评估标准: strict, standard, lenient
+}
+
+// GetMonitoringConfig 获取并解析监控配置
+func (channel *Channel) GetMonitoringConfig() (*MonitoringConfigData, error) {
+	if channel.MonitoringConfig == nil || *channel.MonitoringConfig == "" {
+		return &MonitoringConfigData{Enabled: false}, nil
+	}
+
+	var config MonitoringConfigData
+	err := common.Unmarshal([]byte(*channel.MonitoringConfig), &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal monitoring config for channel %d: %w", channel.Id, err)
+	}
+
+	return &config, nil
+}
+
+// SetMonitoringConfig 设置监控配置
+func (channel *Channel) SetMonitoringConfig(config *MonitoringConfigData) error {
+	if config == nil {
+		channel.MonitoringConfig = nil
+		return nil
+	}
+
+	configBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal monitoring config for channel %d: %w", channel.Id, err)
+	}
+
+	configStr := string(configBytes)
+	channel.MonitoringConfig = &configStr
+	return nil
+}
+
+// UpdateStatistics 批量更新渠道的统计字段
+// 此方法用于从Redis或内存缓存同步统计数据到数据库
+func (channel *Channel) UpdateStatistics(stats *ChannelStatisticsUpdate) error {
+	updates := make(map[string]interface{})
+
+	if stats.AvgResponseTime != nil {
+		updates["avg_response_time"] = *stats.AvgResponseTime
+	}
+	if stats.FailRate != nil {
+		updates["fail_rate"] = *stats.FailRate
+	}
+	if stats.AvgCacheHitRate != nil {
+		updates["avg_cache_hit_rate"] = *stats.AvgCacheHitRate
+	}
+	if stats.StreamReqRatio != nil {
+		updates["stream_req_ratio"] = *stats.StreamReqRatio
+	}
+	if stats.TPM != nil {
+		updates["tpm"] = *stats.TPM
+	}
+	if stats.RPM != nil {
+		updates["rpm"] = *stats.RPM
+	}
+	if stats.QuotaPM != nil {
+		updates["quota_pm"] = *stats.QuotaPM
+	}
+	if stats.TotalSessions != nil {
+		updates["total_sessions"] = *stats.TotalSessions
+	}
+	if stats.DowntimePercentage != nil {
+		updates["downtime_percentage"] = *stats.DowntimePercentage
+	}
+	if stats.UniqueUsers != nil {
+		updates["unique_users"] = *stats.UniqueUsers
+	}
+
+	if len(updates) == 0 {
+		return nil // No updates
+	}
+
+	return DB.Model(channel).Updates(updates).Error
+}
+
+// ChannelStatisticsUpdate 用于批量更新渠道统计字段的结构体
+type ChannelStatisticsUpdate struct {
+	AvgResponseTime    *int     `json:"avg_response_time,omitempty"`
+	FailRate           *float64 `json:"fail_rate,omitempty"`
+	AvgCacheHitRate    *float64 `json:"avg_cache_hit_rate,omitempty"`
+	StreamReqRatio     *float64 `json:"stream_req_ratio,omitempty"`
+	TPM                *int     `json:"tpm,omitempty"`
+	RPM                *int     `json:"rpm,omitempty"`
+	QuotaPM            *int64   `json:"quota_pm,omitempty"`
+	TotalSessions      *int64   `json:"total_sessions,omitempty"`
+	DowntimePercentage *float64 `json:"downtime_percentage,omitempty"`
+	UniqueUsers        *int     `json:"unique_users,omitempty"`
+}
+
+// GetChannelStatisticsSummary 获取渠道统计摘要（用于API响应）
+type ChannelStatisticsSummary struct {
+	ChannelId          int     `json:"channel_id"`
+	ChannelName        string  `json:"channel_name"`
+	AvgResponseTime    int     `json:"avg_response_time"`   // ms
+	FailRate           float64 `json:"fail_rate"`           // %
+	AvgCacheHitRate    float64 `json:"avg_cache_hit_rate"`  // %
+	StreamReqRatio     float64 `json:"stream_req_ratio"`    // %
+	TPM                int     `json:"tpm"`                 // tokens per minute
+	RPM                int     `json:"rpm"`                 // requests per minute
+	QuotaPM            int64   `json:"quota_pm"`            // quota per minute
+	TotalSessions      int64   `json:"total_sessions"`      // total sessions
+	DowntimePercentage float64 `json:"downtime_percentage"` // %
+	UniqueUsers        int     `json:"unique_users"`        // unique user count
+	MonitoringEnabled  bool    `json:"monitoring_enabled"`  // 是否启用监控
+}
+
+// GetStatisticsSummary 获取渠道的统计摘要
+func (channel *Channel) GetStatisticsSummary() *ChannelStatisticsSummary {
+	summary := &ChannelStatisticsSummary{
+		ChannelId:          channel.Id,
+		ChannelName:        channel.Name,
+		AvgResponseTime:    channel.AvgResponseTime,
+		FailRate:           channel.FailRate,
+		AvgCacheHitRate:    channel.AvgCacheHitRate,
+		StreamReqRatio:     channel.StreamReqRatio,
+		TPM:                channel.TPM,
+		RPM:                channel.RPM,
+		QuotaPM:            channel.QuotaPM,
+		TotalSessions:      channel.TotalSessions,
+		DowntimePercentage: channel.DowntimePercentage,
+		UniqueUsers:        channel.UniqueUsers,
+		MonitoringEnabled:  false,
+	}
+
+	// 检查是否启用监控
+	if config, err := channel.GetMonitoringConfig(); err == nil && config != nil {
+		summary.MonitoringEnabled = config.Enabled
+	}
+
+	return summary
+}
+
+// ResetStatistics 重置渠道的统计字段为默认值
+func (channel *Channel) ResetStatistics() error {
+	updates := map[string]interface{}{
+		"avg_response_time":   0,
+		"fail_rate":           0.0,
+		"avg_cache_hit_rate":  0.0,
+		"stream_req_ratio":    0.0,
+		"tpm":                 0,
+		"rpm":                 0,
+		"quota_pm":            0,
+		"total_sessions":      0,
+		"downtime_percentage": 0.0,
+		"unique_users":        0,
+	}
+
+	return DB.Model(channel).Updates(updates).Error
 }

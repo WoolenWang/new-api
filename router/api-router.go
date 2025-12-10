@@ -167,6 +167,11 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/p2p", controller.GetP2PChannels)                        // List all P2P channels with usage
 			channelRoute.GET("/:id/usage", controller.GetChannelUsage)                 // Get detailed usage for specific channel
 			channelRoute.GET("/concurrency", controller.GetChannelConcurrencySnapshot) // Get lightweight concurrency snapshot for all channels
+
+			// Phase 8.5: Channel Statistics Query API
+			channelRoute.GET("/:id/stats", controller.GetChannelStats)                // Get aggregated stats with time range
+			channelRoute.GET("/:id/current_stats", controller.GetChannelCurrentStats) // Get latest stats from channels table
+			channelRoute.POST("/:id/reset_stats", controller.ResetChannelStats)       // Reset channel statistics
 		}
 		// P2P Channel Self-Service Routes (Phase 1)
 		channelSelfRoute := apiRouter.Group("/channel/self")
@@ -301,6 +306,10 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsRoute.GET("/member", controller.GetMemberInfo)       // Get specific member info
 			p2pGroupsRoute.PUT("/members", controller.UpdateMemberStatus) // Approve/reject/ban member
 			p2pGroupsRoute.POST("/leave", controller.LeaveGroup)          // Leave group
+
+			// Group Statistics Routes (Phase 10: P2P Group Statistics)
+			p2pGroupsRoute.GET("/:id/stats", controller.GetP2PGroupStats)              // Get aggregated stats with time range
+			p2pGroupsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest) // Get latest stats snapshot
 		}
 
 		// P2P Group Admin Routes (for querying any user's groups)
@@ -311,6 +320,49 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsAdminRoute.GET("/owned", controller.GetUserOwnedGroups)   // Get specific user's owned groups (requires user_id param)
 			p2pGroupsAdminRoute.GET("/joined", controller.GetUserJoinedGroups) // Get specific user's joined groups (requires user_id param)
 		}
+
+		// Model Monitoring Routes (Admin only) - Phase 9: Model Intelligence & Drift Monitoring
+		monitorRoute := apiRouter.Group("/monitor")
+		monitorRoute.Use(middleware.AdminAuth())
+		{
+			// Monitor Policy Management
+			monitorRoute.GET("/policies", controller.GetMonitorPolicies)
+			monitorRoute.GET("/policies/:id", controller.GetMonitorPolicy)
+			monitorRoute.POST("/policies", controller.CreateMonitorPolicy)
+			monitorRoute.PUT("/policies/:id", controller.UpdateMonitorPolicy)
+			monitorRoute.DELETE("/policies/:id", controller.DeleteMonitorPolicy)
+			monitorRoute.POST("/policies/:id/toggle", controller.ToggleMonitorPolicyStatus)
+			monitorRoute.GET("/policies/search", controller.SearchMonitorPolicies)
+			monitorRoute.POST("/policies/:id/trigger", controller.TriggerPolicyNow)
+
+			// Scheduler Management
+			monitorRoute.GET("/scheduler/status", controller.GetSchedulerStatus)
+
+			// Model Baseline Management
+			monitorRoute.GET("/baselines", controller.GetModelBaselines)
+			monitorRoute.GET("/baselines/:id", controller.GetModelBaseline)
+			monitorRoute.POST("/baselines", controller.CreateOrUpdateModelBaseline)
+			monitorRoute.DELETE("/baselines/:id", controller.DeleteModelBaseline)
+			monitorRoute.GET("/baselines/by-model", controller.GetModelBaselinesByModel)
+			monitorRoute.GET("/baselines/search", controller.SearchModelBaselines)
+			monitorRoute.GET("/baselines/models", controller.GetDistinctModelNames)
+			monitorRoute.GET("/baselines/test-types", controller.GetDistinctTestTypes)
+
+			// Monitoring Results Query
+			monitorRoute.GET("/results", controller.GetMonitoringResults)
+			monitorRoute.GET("/results/latest", controller.GetLatestMonitoringResult)
+			monitorRoute.GET("/results/:id", controller.DeleteMonitoringResult) // Note: Should be DELETE but using GET for compatibility
+			monitorRoute.DELETE("/results/:id", controller.DeleteMonitoringResult)
+			monitorRoute.DELETE("/results/cleanup", controller.CleanupOldMonitoringResults)
+			monitorRoute.GET("/statistics", controller.GetMonitoringStatistics)
+			monitorRoute.GET("/failed_channels", controller.GetFailedChannels)
+		}
+
+		// Channel Monitoring Results (can be accessed by channel routes for convenience)
+		channelRoute.GET("/:id/monitoring_results", controller.GetChannelMonitoringResults)
+
+		// Model Monitoring Report (public endpoint for model comparison)
+		apiRouter.GET("/models/:model_name/monitoring_report", middleware.AdminAuth(), controller.GetModelMonitoringReport)
 
 		// Session Monitoring Routes (Admin only)
 		sessionsRoute := apiRouter.Group("/admin/sessions")

@@ -470,4 +470,60 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+
+	// Phase 8.2: L1 Memory Statistics Collection
+	// 异步上报渠道统计数据到L1内存缓存
+	// 设计文档: docs/01-P2P共享分组与用户创建渠道的状态信息监控统计与展示.md
+	// Section: 8.2 阶段二：L1内存采集与会话信息接入
+	recordChannelStatsToL1(ctx, relayInfo, usage, quota, extraContent != "")
+}
+
+// recordChannelStatsToL1 记录渠道统计到L1内存缓存
+// Phase 8.2: L1 Memory Statistics Collection
+func recordChannelStatsToL1(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, quotaUsed int, hasError bool) {
+	if relayInfo == nil {
+		return
+	}
+
+	// 计算首字延迟（毫秒）
+	var firstByteLatency int64
+	if relayInfo.FirstResponseTime != nil && !relayInfo.FirstResponseTime.IsZero() {
+		firstByteLatency = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+		if firstByteLatency < 0 {
+			firstByteLatency = 0
+		}
+	}
+
+	// 检查是否缓存命中（基于cached_tokens）
+	isCacheHit := false
+	if usage != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+		isCacheHit = true
+	}
+
+	// 获取会话ID（用于去重统计）
+	sessionID := ctx.GetString("session_id")
+	if sessionID == "" {
+		// 如果没有session_id，使用request_id作为备选
+		sessionID = ctx.GetString(logger.RequestIdKey)
+	}
+
+	// 构建统计数据
+	stats := &service.RequestStats{
+		ChannelID:        relayInfo.ChannelId,
+		ModelName:        relayInfo.OriginModelName,
+		Success:          !hasError,
+		TotalTokens:      int64(usage.TotalTokens),
+		PromptTokens:     int64(usage.PromptTokens),
+		CompletionTokens: int64(usage.CompletionTokens),
+		QuotaUsed:        int64(quotaUsed),
+		FirstByteLatency: firstByteLatency,
+		IsStream:         relayInfo.IsStream,
+		IsCacheHit:       isCacheHit,
+		UserID:           relayInfo.UserId,
+		SessionID:        sessionID,
+	}
+
+	// 异步上报到L1统计服务（无阻塞）
+	l1Service := service.GetChannelStatsL1Service()
+	l1Service.RecordRequestAsync(stats)
 }
