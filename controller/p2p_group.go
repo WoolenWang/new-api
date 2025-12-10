@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -273,15 +274,29 @@ func DeleteP2PGroup(c *gin.Context) {
 }
 
 // GetPublicGroups returns paginated list of public shared groups (Type=Shared)
-// GET /api/groups/public?page=1&page_size=20&keyword=searchterm
+// GET /api/groups/public?page=1&page_size=20&keyword=searchterm&group_ids=1,2,3
 func GetPublicGroups(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	keyword := c.Query("keyword")
+	groupIdsStr := c.Query("group_ids")
+
+	// Parse comma-separated group_ids
+	var groupIds []int
+	if groupIdsStr != "" {
+		parts := strings.Split(groupIdsStr, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if id, err := strconv.Atoi(part); err == nil {
+				groupIds = append(groupIds, id)
+			}
+		}
+	}
 
 	groups, total, err := model.GetPublicSharedGroupsWithMemberCount(
 		pageInfo.Page,
 		pageInfo.GetPageSize(),
 		keyword,
+		groupIds,
 	)
 	if err != nil {
 		common.ApiError(c, err)

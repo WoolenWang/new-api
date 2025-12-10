@@ -1516,15 +1516,95 @@ type KeyStatus struct {
 // ManageMultiKeys handles multi-key management operations
 // =============== P2P Channel Self-Service APIs (Phase 1) ===============
 
+// limitedChannelFields defines the fields visible when querying channels by IDs that user doesn't own
+var limitedChannelFields = []string{"id", "type", "name", "models", "group"}
+
 // GetUserChannels lists all channels owned by the current user
+// Supports query parameter channel_ids for querying specific channels (comma-separated)
+// When channel_ids is specified and channels are not owned by user, only limited fields are returned
 func GetUserChannels(c *gin.Context) {
 	userId := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
+	channelIdsStr := c.Query("channel_ids")
 
-	// Query channels owned by this user
 	var channels []*model.Channel
 	var total int64
 
+	// If channel_ids is specified, query those specific channels
+	if channelIdsStr != "" {
+		// Parse comma-separated channel_ids
+		var channelIds []int
+		parts := strings.Split(channelIdsStr, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if id, err := strconv.Atoi(part); err == nil {
+				channelIds = append(channelIds, id)
+			}
+		}
+
+		if len(channelIds) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无效的channel_ids参数",
+			})
+			return
+		}
+
+		// Query channels by IDs
+		query := model.DB.Model(&model.Channel{}).Where("id IN ?", channelIds)
+		query.Count(&total)
+
+		err := query.Order("id desc").
+			Limit(pageInfo.GetPageSize()).
+			Offset(pageInfo.GetStartIdx()).
+			Find(&channels).Error
+
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+
+		// Filter channels and apply limited fields for non-owned channels
+		type LimitedChannel struct {
+			Id     int    `json:"id"`
+			Type   int    `json:"type"`
+			Name   string `json:"name"`
+			Models string `json:"models"`
+			Group  string `json:"group"`
+		}
+
+		var result []interface{}
+		for _, ch := range channels {
+			if ch.OwnerUserId == userId {
+				// User owns this channel, return full info (without key)
+				ch.Key = ""
+				clearChannelInfo(ch)
+				result = append(result, ch)
+			} else {
+				// User doesn't own this channel, return limited fields only
+				result = append(result, LimitedChannel{
+					Id:     ch.Id,
+					Type:   ch.Type,
+					Name:   ch.Name,
+					Models: ch.Models,
+					Group:  ch.Group,
+				})
+			}
+		}
+
+		common.ApiSuccess(c, gin.H{
+			"items":     result,
+			"total":     total,
+			"page":      pageInfo.GetPage(),
+			"page_size": pageInfo.GetPageSize(),
+		})
+		return
+	}
+
+	// Default behavior: Query channels owned by this user
 	query := model.DB.Model(&model.Channel{}).Where("owner_user_id = ?", userId)
 	query.Count(&total)
 

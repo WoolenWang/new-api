@@ -342,14 +342,20 @@ func GetUserGroupsWithMemberCount(userId int, startIdx int, pageSize int) ([]*Gr
 }
 
 // GetPublicSharedGroupsWithMemberCount 获取所有公开的共享分组（带成员数量，用于分组广场）
-func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string) ([]*GroupWithMemberCount, int64, error) {
+// 支持通过groupIds和keyword过滤，如果同时提供两个参数，则返回交集
+func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string, groupIds []int) ([]*GroupWithMemberCount, int64, error) {
 	var groups []*Group
 	var total int64
 
 	// 第一步：分页查询公开分组列表
 	query := DB.Model(&Group{}).Where("type = ?", GroupTypeShared)
 
-	// 关键词搜索
+	// 如果提供了groupIds，先按ID过滤
+	if len(groupIds) > 0 {
+		query = query.Where("id IN ?", groupIds)
+	}
+
+	// 关键词搜索（在ID过滤之后应用，实现交集效果）
 	if keyword != "" {
 		likePattern := "%" + keyword + "%"
 		query = query.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?",
@@ -375,9 +381,9 @@ func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string) ([
 	}
 
 	// 提取分组ID列表
-	groupIds := make([]int, len(groups))
+	resultGroupIds := make([]int, len(groups))
 	for i, g := range groups {
-		groupIds[i] = g.Id
+		resultGroupIds[i] = g.Id
 	}
 
 	// 批量查询成员数量
@@ -388,7 +394,7 @@ func GetPublicSharedGroupsWithMemberCount(page, pageSize int, keyword string) ([
 	var memberCounts []MemberCountResult
 	err = DB.Table("user_groups").
 		Select("group_id, COUNT(*) as count").
-		Where("group_id IN ? AND status = ?", groupIds, MemberStatusActive).
+		Where("group_id IN ? AND status = ?", resultGroupIds, MemberStatusActive).
 		Group("group_id").
 		Scan(&memberCounts).Error
 	if err != nil {
