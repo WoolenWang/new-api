@@ -1170,6 +1170,11 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 
+	// Phase 8.4: CS4-2 记录状态变化（用于停服时间追踪）
+	// 在更新前记录原始状态，更新后比较并调用停服追踪器
+	oldStatus := originChannel.Status
+	newStatus := channel.Status
+
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
 
@@ -1245,6 +1250,30 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+
+	// Phase 8.4: CS4-2 处理状态变化（手动禁用/启用时记录停服时间）
+	if oldStatus != newStatus {
+		tracker := service.GetChannelDowntimeTracker()
+
+		// 状态从启用变为禁用
+		if oldStatus == common.ChannelStatusEnabled && (newStatus == common.ChannelStatusManuallyDisabled || newStatus == common.ChannelStatusAutoDisabled) {
+			if err := tracker.RecordDisable(channel.Id, newStatus, 0); err != nil {
+				common.SysLog(fmt.Sprintf("Failed to record manual disable for channel %d: %v", channel.Id, err))
+			} else {
+				common.SysLog(fmt.Sprintf("Recorded manual disable for channel %d (status: %d -> %d)", channel.Id, oldStatus, newStatus))
+			}
+		}
+
+		// 状态从禁用变为启用
+		if (oldStatus == common.ChannelStatusManuallyDisabled || oldStatus == common.ChannelStatusAutoDisabled) && newStatus == common.ChannelStatusEnabled {
+			if err := tracker.RecordEnable(channel.Id, 0); err != nil {
+				common.SysLog(fmt.Sprintf("Failed to record manual enable for channel %d: %v", channel.Id, err))
+			} else {
+				common.SysLog(fmt.Sprintf("Recorded manual enable for channel %d (status: %d -> %d)", channel.Id, oldStatus, newStatus))
+			}
+		}
+	}
+
 	model.InitChannelCache()
 	service.ResetProxyClientCache()
 	channel.Key = ""
