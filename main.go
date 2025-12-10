@@ -128,6 +128,18 @@ func main() {
 		defer scheduler.Stop()
 	}
 
+	// 启动P2P分组统计调度器（Phase 10: P2P Group Statistics）
+	// 只有在Redis启用时才启动，因为事件总线和分布式锁依赖Redis
+	if common.RedisEnabled && os.Getenv("ENABLE_P2P_GROUP_STATS") != "false" {
+		groupStatsScheduler := service.GetGlobalScheduler()
+		groupStatsScheduler.Start()
+		common.SysLog("P2P group statistics scheduler started")
+		// 确保优雅关闭
+		defer groupStatsScheduler.Stop()
+	} else if !common.RedisEnabled {
+		common.SysLog("P2P group statistics scheduler disabled: Redis not enabled")
+	}
+
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
 		if err != nil {

@@ -24,6 +24,7 @@ type ChannelStatistics struct {
 	StreamReqCount  int    `json:"stream_req_count" gorm:"default:0;comment:流式请求数"`
 	CacheHitCount   int    `json:"cache_hit_count" gorm:"default:0;comment:缓存命中数"`
 	DowntimeSeconds int    `json:"downtime_seconds" gorm:"default:0;comment:禁用时长(秒)"`
+	UniqueUsers     int    `json:"unique_users" gorm:"default:0;comment:区间服务用户数(去重)"` // Phase 10.4: GS4-1 去重用户统计
 	CreatedAt       int64  `json:"created_at" gorm:"bigint"`
 	UpdatedAt       int64  `json:"updated_at" gorm:"bigint"`
 }

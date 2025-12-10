@@ -29,6 +29,13 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 
 	success := model.UpdateChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
 	if success {
+		// Phase 8.4: Record downtime tracking (CS4-2)
+		// 记录渠道禁用事件到停服追踪器
+		tracker := GetChannelDowntimeTracker()
+		if err := tracker.RecordDisable(channelError.ChannelId, common.ChannelStatusAutoDisabled, 0); err != nil {
+			common.SysLog(fmt.Sprintf("Failed to record channel %d disable: %v", channelError.ChannelId, err))
+		}
+
 		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
 		NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
@@ -38,6 +45,13 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 func EnableChannel(channelId int, usingKey string, channelName string) {
 	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
 	if success {
+		// Phase 8.4: Record downtime tracking (CS4-2)
+		// 记录渠道启用事件到停服追踪器
+		tracker := GetChannelDowntimeTracker()
+		if err := tracker.RecordEnable(channelId, 0); err != nil {
+			common.SysLog(fmt.Sprintf("Failed to record channel %d enable: %v", channelId, err))
+		}
+
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)

@@ -141,19 +141,19 @@ func getChannelStatsWithCache(channelID int, modelName string, startTime, endTim
 		}
 	}
 
-	// L2: 尝试从Redis获取缓存数据
+	// L2: 尝试从Redis获取缓存数据（当前窗口）
 	var l2Data *service.ChannelStatsSnapshot
 	if common.RedisEnabled {
 		l2Service := service.GetChannelStatsL2Service()
 		if modelName != "" {
-			l2Data, _ = l2Service.GetStatsFromRedis(channelID, modelName)
+			l2Data, _ = l2Service.GetCurrentWindowStats(channelID, modelName) // Phase 8.x: 使用当前窗口
 		} else {
 			// 聚合所有模型（需要查询该渠道支持的所有模型）
 			channel, err := model.GetChannelById(channelID, false)
 			if err == nil {
 				models := channel.GetModels()
 				for _, m := range models {
-					snap, err := l2Service.GetStatsFromRedis(channelID, m)
+					snap, err := l2Service.GetCurrentWindowStats(channelID, m)
 					if err == nil {
 						if l2Data == nil {
 							l2Data = snap

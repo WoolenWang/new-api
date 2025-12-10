@@ -19,6 +19,7 @@ type MonitorPolicy struct {
 	TestTypes          *string `json:"test_types" gorm:"type:text;comment:检测类型(JSON Array: encoding, reasoning, style, instruction_following, structure_consistency)"`
 	EvaluationStandard string  `json:"evaluation_standard" gorm:"type:varchar(50);not null;comment:评估标准: strict/standard/lenient"`
 	TargetChannels     *string `json:"target_channels" gorm:"type:text;comment:受此策略影响的渠道ID列表(JSON Array); 为空表示所有渠道"`
+	ThresholdOverrides *string `json:"threshold_overrides" gorm:"type:text;comment:阈值覆盖配置(JSON Object: {\"strict\":95.0,\"standard\":85.0,\"lenient\":70.0}); 为空则使用全局默认值"`
 	ScheduleCron       string  `json:"schedule_cron" gorm:"type:varchar(50);not null;comment:Cron表达式"`
 	IsEnabled          bool    `json:"is_enabled" gorm:"type:boolean;default:true;comment:是否启用"`
 	CreatedAt          int64   `json:"created_at" gorm:"bigint"`
@@ -121,6 +122,58 @@ func (mp *MonitorPolicy) SetTargetChannels(channels []int) error {
 	channelsStr := string(data)
 	mp.TargetChannels = &channelsStr
 	return nil
+}
+
+// ThresholdConfig 阈值配置结构
+type ThresholdConfig struct {
+	Strict   *float64 `json:"strict,omitempty"`   // 严格标准阈值（默认95.0）
+	Standard *float64 `json:"standard,omitempty"` // 标准阈值（默认85.0）
+	Lenient  *float64 `json:"lenient,omitempty"`  // 宽松标准阈值（默认70.0）
+}
+
+// GetThresholdOverrides 解析 ThresholdOverrides JSON 对象
+// 返回空对象表示使用全局默认阈值
+func (mp *MonitorPolicy) GetThresholdOverrides() *ThresholdConfig {
+	if mp.ThresholdOverrides == nil || *mp.ThresholdOverrides == "" {
+		return &ThresholdConfig{} // 返回空配置，使用默认值
+	}
+	var config ThresholdConfig
+	if err := json.Unmarshal([]byte(*mp.ThresholdOverrides), &config); err != nil {
+		common.SysLog(fmt.Sprintf("failed to unmarshal threshold_overrides for policy %d: %v", mp.Id, err))
+		return &ThresholdConfig{}
+	}
+	return &config
+}
+
+// SetThresholdOverrides 设置 ThresholdOverrides JSON 对象
+func (mp *MonitorPolicy) SetThresholdOverrides(config *ThresholdConfig) error {
+	if config == nil {
+		mp.ThresholdOverrides = nil
+		return nil
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal threshold_overrides: %w", err)
+	}
+	configStr := string(data)
+	mp.ThresholdOverrides = &configStr
+	return nil
+}
+
+// GetThresholdForStandard 获取指定评估标准的阈值
+// 如果策略有覆盖配置则使用覆盖值，否则返回nil表示使用全局默认值
+func (mp *MonitorPolicy) GetThresholdForStandard(standard string) *float64 {
+	config := mp.GetThresholdOverrides()
+	switch standard {
+	case "strict":
+		return config.Strict
+	case "standard":
+		return config.Standard
+	case "lenient":
+		return config.Lenient
+	default:
+		return nil
+	}
 }
 
 // ==================== CRUD Operations ====================
