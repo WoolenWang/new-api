@@ -75,11 +75,11 @@ graph TD
 
 | ID | 测试场景 | 用户配置 | Token配置 | P2P分组情况 | 渠道配置 | 预期BillingGroup | 预期路由结果 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **BR-01** | **基线-无P2P** | User.Group=vip | Token.Group=空 | 未加入任何P2P组 | Ch1(vip) | vip | 成功，计费按vip | **P0** |
-| **BR-02** | **加入低费率P2P不影响计费** | User.Group=vip<br>(倍率2.0) | Token.Group=空 | 加入P2P组G1<br>(包含default渠道) | Ch-G1(default) | vip | 成功路由，但按vip计费 | **P0** |
-| **BR-03** | **Token强制降级计费** | User.Group=vip | Token.Group=`["default"]` | 加入G1 | Ch-G1(default) | default | 成功，按default计费 | **P0** |
-| **BR-04** | **P2P扩展路由范围** | User.Group=default | Token.Group=空 | 加入G1<br>(包含vip渠道) | Ch-vip(vip, 授权G1) | default | **失败**<br>(系统分组不匹配) | **P0** |
-| **BR-05** | **计费组与P2P组交集** | User.Group=vip | Token.Group=`["vip"]` | 加入G1 | Ch-vip(vip, 授权G1) | vip | 成功<br>(同时满足系统分组和P2P授权) | **P0** |
+| **BR-01** | **基线-无P2P** | User.Group=vip | Token.Group=空 | 未加入任何P2P组 | Ch-Vip-Public(group=vip, 无P2P授权) | vip | 成功路由到Ch-Vip-Public，计费按vip | **P0** |
+| **BR-02** | **加入低费率P2P不影响计费** | User.Group=vip<br>(倍率2.0) | Token.Group=空 | 加入P2P组G1<br>(包含default渠道) | Ch-Default-G1(group=default, allowed_groups=[G1]) | vip | 成功路由到Ch-Default-G1，但计费仍按vip | **P0** |
+| **BR-03** | **Token强制降级计费** | User.Group=vip | Token.Group=`["default"]` | 加入G1 | Ch-Default-G1(group=default, allowed_groups=[G1]) | default | 成功路由到Ch-Default-G1，按default计费 | **P0** |
+| **BR-04** | **P2P扩展路由范围但不允许跨系统升级** | User.Group=default | Token.Group=空 | 加入G1<br>(包含vip渠道) | Ch-Vip-G1(group=vip, allowed_groups=[G1]) | default | **失败**<br>(系统分组不匹配，default用户不能通过P2P访问vip渠道) | **P0** |
+| **BR-05** | **计费组与P2P组交集** | User.Group=vip | Token.Group=`["vip"]` | 加入G1 | Ch-Vip-G1(group=vip, allowed_groups=[G1]) | vip | 成功路由到Ch-Vip-G1<br>(同时满足系统分组和P2P授权) | **P0** |
 
 ### 2.2 Token计费组列表与优先级测试 (Token Billing Group Priority)
 
@@ -87,15 +87,15 @@ graph TD
 
 | ID | 测试场景 | Token.Group配置 | 可用渠道情况 | 预期BillingGroup | 预期选中渠道 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **TG-01** | **单个计费组** | `["vip"]` | 存在vip渠道Ch1 | vip | Ch1 | **P0** |
-| **TG-02** | **多个计费组-优先匹配** | `["svip", "vip", "default"]` | 存在svip渠道Ch-svip | svip | Ch-svip | **P0** |
-| **TG-03** | **多个计费组-降级匹配** | `["svip", "vip", "default"]` | 无svip渠道<br>存在vip渠道Ch-vip | vip | Ch-vip | **P0** |
-| **TG-04** | **多个计费组-最终降级** | `["svip", "vip", "default"]` | 仅存在default渠道Ch-default | default | Ch-default | **P0** |
-| **TG-05** | **所有计费组均无渠道** | `["svip", "vip"]` | 仅存在default渠道 | - | 404错误 | **P0** |
-| **TG-06** | **空列表回退用户分组** | `[]` 或 null | 用户vip分组，存在vip渠道 | vip | Ch-vip | **P0** |
-| **TG-07** | **找到渠道后立即停止** | `["vip", "default"]` | vip有Ch1(可用)<br>default有Ch2(更优) | vip | Ch1<br>(不会继续查找Ch2) | **P0** |
-| **TG-08** | **与P2P组合-优先级** | `["svip", "default"]` | svip无渠道<br>default有Ch-P2P(授权G1)<br>用户加入G1 | default | Ch-P2P | **P0** |
-| **TG-09** | **JSON格式兼容性** | `"vip"` (旧格式) | 存在vip渠道 | vip | 成功 | P1 |
+| **TG-01** | **单个计费组** | `["vip"]` | 存在vip渠道Ch-Vip-Public | vip | Ch-Vip-Public | **P0** |
+| **TG-02** | **多个计费组-优先匹配** | `["svip", "vip", "default"]` | 存在svip渠道Ch-Svip-Public | svip | Ch-Svip-Public | **P0** |
+| **TG-03** | **多个计费组-降级匹配** | `["svip", "vip", "default"]` | 无svip渠道<br>存在vip渠道Ch-Vip-Public | vip | Ch-Vip-Public | **P0** |
+| **TG-04** | **多个计费组-最终降级** | `["svip", "vip", "default"]` | 仅存在default渠道Ch-Default-Public | default | Ch-Default-Public | **P0** |
+| **TG-05** | **所有计费组均无渠道** | `["svip", "vip"]` | 环境仅存在default渠道Ch-Default-Public | - | 404错误(无可用渠道) | **P0** |
+| **TG-06** | **空列表回退用户分组** | `[]` 或 null | 用户vip分组，存在vip渠道Ch-Vip-Public | vip | Ch-Vip-Public | **P0** |
+| **TG-07** | **找到渠道后立即停止** | `["vip", "default"]` | vip有可用渠道Ch-Vip-Public<br>default有更优渠道Ch-Default-Public(优先级更高) | vip | Ch-Vip-Public<br>(不会继续查找Ch-Default-Public) | **P0** |
+| **TG-08** | **与P2P组合-优先级** | `["svip", "default"]` | svip无渠道<br>default有P2P渠道Ch-Default-G1(授权G1)<br>用户已加入G1 | default | Ch-Default-G1 | **P0** |
+| **TG-09** | **JSON格式兼容性** | `"vip"` (旧格式) | 存在vip渠道Ch-Vip-Public | vip | 成功 | P1 |
 
 ### 2.3 Token P2P分组限制测试 (Token P2P Group Restriction)
 
@@ -103,10 +103,10 @@ graph TD
 
 | ID | 测试场景 | Token.p2p_group_id | 用户加入的P2P分组 | 渠道P2P授权 | 预期EffectiveP2PGroups | 预期结果 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **TP-01** | **无限制-访问所有加入的组** | null | G1, G2 | Ch1授权G1 | [G1, G2] | 成功访问Ch1 | **P0** |
-| **TP-02** | **限制单个P2P组** | G1 | G1, G2 | Ch1授权G1<br>Ch2授权G2 | [G1] | 只能访问Ch1<br>无法访问Ch2 | **P0** |
+| **TP-01** | **无限制-访问所有加入的组** | null | G1, G2 | Ch-Default-G1授权G1 | [G1, G2] | 成功访问Ch-Default-G1 | **P0** |
+| **TP-02** | **限制单个P2P组** | G1 | G1, G2 | Ch-Default-G1授权G1<br>Ch-Vip-G2授权G2 | [G1] | 只能访问Ch-Default-G1<br>无法访问Ch-Vip-G2 | **P0** |
 | **TP-03** | **限制到非成员组** | G3 | G1, G2 | Ch3授权G3 | [] | 无法访问任何P2P渠道 | **P0** |
-| **TP-04** | **限制与系统分组结合** | G1 | G1 | Ch(vip, G1)<br>用户vip, Token.Group=vip | [G1] | 成功<br>(同时满足) | **P0** |
+| **TP-04** | **限制与系统分组结合** | G1 | G1 | Ch-Vip-G1(vip, 授权G1)<br>用户vip, Token.Group=vip | [G1] | 成功<br>(同时满足系统分组与P2P授权) | **P0** |
 | **TP-05** | **限制与计费组列表结合** | G1 | G1, G2 | Ch1(svip, G1)<br>Ch2(default, G2)<br>Token.Group=`["svip", "default"]` | [G1] | 仅访问Ch1<br>(svip+G1匹配) | **P0** |
 
 ### 2.4 多计费组迭代选路测试 (Multi-Billing-Group Routing)
@@ -115,12 +115,12 @@ graph TD
 
 | ID | 测试场景 | Token.Group列表 | 渠道配置 | 用户P2P分组 | 预期遍历顺序 | 预期选中渠道 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MR-01** | **第一个计费组立即匹配** | `["svip", "vip"]` | Ch-svip(svip) | 无 | 仅查找svip | Ch-svip | **P0** |
-| **MR-02** | **第二个计费组匹配** | `["svip", "vip"]` | Ch-vip(vip) | 无 | 1.查svip(失败)<br>2.查vip(成功) | Ch-vip | **P0** |
-| **MR-03** | **跳过不可用渠道** | `["svip", "vip"]` | Ch-svip(svip, 禁用)<br>Ch-vip(vip, 启用) | 无 | 1.查svip(跳过禁用)<br>2.查vip(成功) | Ch-vip | **P0** |
-| **MR-04** | **P2P组与逻辑-第一组失败** | `["svip", "default"]` | Ch1(svip, 无P2P授权)<br>Ch2(default, 授权G1) | 加入G1 | 1.查svip(系统分组匹配但无P2P授权)<br>2.查default(成功) | Ch2 | **P0** |
-| **MR-05** | **停止遍历验证** | `["vip", "default"]` | Ch-vip(vip, 低权重)<br>Ch-default(default, 高权重) | 无 | 仅查vip | Ch-vip<br>(不会因为default有更优渠道而继续) | **P0** |
-| **MR-06** | **Auto分组展开后遍历** | `["auto"]`<br>(展开为vip+svip) | Ch-svip(svip) | 无 | 1.查vip(失败)<br>2.查svip(成功) | Ch-svip | P1 |
+| **MR-01** | **第一个计费组立即匹配** | `["svip", "vip"]` | Ch-Svip-Public(svip) | 无 | 仅查找svip | Ch-Svip-Public | **P0** |
+| **MR-02** | **第二个计费组匹配** | `["svip", "vip"]` | Ch-Vip-Public(vip) | 无 | 1.查svip(失败)<br>2.查vip(成功) | Ch-Vip-Public | **P0** |
+| **MR-03** | **跳过不可用渠道** | `["svip", "vip"]` | Ch-Svip-Public(svip, 禁用)<br>Ch-Vip-Public(vip, 启用) | 无 | 1.查svip(跳过禁用)<br>2.查vip(成功) | Ch-Vip-Public | **P0** |
+| **MR-04** | **P2P组与逻辑-第一组失败** | `["svip", "default"]` | Ch-Svip-Public(svip, 无P2P授权)<br>Ch-Default-G1(default, 授权G1) | 加入G1 | 1.查svip(系统分组匹配但无P2P授权)<br>2.查default(成功) | Ch-Default-G1 | **P0** |
+| **MR-05** | **停止遍历验证** | `["vip", "default"]` | Ch-Vip-Public(vip, 低权重)<br>Ch-Default-Public(default, 高权重) | 无 | 仅查vip | Ch-Vip-Public<br>(不会因为default有更优渠道而继续) | **P0** |
+| **MR-06** | **Auto分组展开后遍历** | `["auto"]`<br>(展开为vip+svip) | Ch-Svip-Public(svip) | 无 | 1.查vip(失败)<br>2.查svip(成功) | Ch-Svip-Public | P1 |
 
 ### 2.5 三级缓存一致性测试 (Three-Level Cache Consistency)
 
@@ -137,6 +137,13 @@ graph TD
 | **CC-07** | **分组删除失效缓存** | 全链路 | 1.用户加入G1<br>2.G1被删除<br>3.发起请求 | 级联删除`user_groups`记录，缓存失效 | P1 |
 | **CC-08** | **TTL被动过期** | L1 (内存) | 1.加载缓存<br>2.等待3分钟(TTL到期)<br>3.发起请求 | L1过期，从L2重新加载 | P1 |
 | **CC-09** | **并发请求缓存安全** | 全链路 | 100个协程同时请求同一用户的分组信息 | 无数据竞争，DB查询次数<=1 | **P0** |
+| **CC-10** | **Redis故障降级** | L2 -> L3 | 1.Redis服务停止<br>2.用户发起请求 | 自动降级到DB查询，请求正常完成，性能略降但不中断服务 | **P0** |
+| **CC-11** | **多实例缓存一致性** | L1 + L2 | 1.集群部署2个实例<br>2.用户在实例A加入G1<br>3.立即在实例B发起请求 | 实例B的L1未命中，从L2 Redis读取最新数据，能访问G1渠道 | **P0** |
+| **CC-12** | **缓存回填失败处理** | L2 -> L3 | 1.清空Redis<br>2.模拟Redis写入失败<br>3.发起请求 | DB查询成功，请求正常完成，但Redis未回填（下次请求重新查DB） | **P0** |
+| **CC-13** | **批量成员变更缓存** | 全链路 | 1.批量操作：10个用户同时加入G1<br>2.验证每个用户的缓存状态 | 每个用户的Redis缓存都被正确失效，下次请求都能访问G1渠道 | P1 |
+| **CC-14** | **L2 Redis TTL过期** | L2 | 1.加载缓存到Redis<br>2.等待30分钟(TTL到期)<br>3.发起请求 | Redis缓存过期，回退到DB查询，自动回填新缓存 | P1 |
+| **CC-15** | **分组Owner变更缓存** | 全链路 | 1.用户A作为G1的Owner<br>2.Owner转移给用户B<br>3.用户A和B分别发起请求 | 双方缓存都失效，重新加载后权限正确（A失去特权，B获得Owner权限） | P1 |
+| **CC-16** | **缓存与DB数据冲突** | 全链路 | 1.用户A加入G1，缓存已建立<br>2.直接在DB中删除`user_groups`记录(模拟异常)<br>3.在L1/L2未过期前发起请求 | 虽能从缓存读取G1，但实际路由时因DB无记录而失败，**验证最终一致性保护** | P2 |
 
 ### 2.6 P2P分组管理流程测试 (P2P Group Management)
 
@@ -168,6 +175,46 @@ graph TD
 | **MS-07** | **成员主动退出** | Active (1) | `POST /api/groups/leave` | 记录删除或status=4 | 缓存DEL | **P0** |
 | **MS-08** | **重复申请** | Active (1) | 再次`POST /api/groups/apply` | 拒绝(已是成员) | - | P1 |
 | **MS-09** | **查询分组成员列表** | - | `GET /api/groups/members?group_id=G1` | 返回所有成员及状态 | - | P1 |
+
+#### 2.6.3 权限与安全边界测试
+
+**核心风险**: 验证非Owner用户的权限边界，防止越权操作和状态机绕过。
+
+| ID | 测试场景 | 操作者角色 | 操作 | 预期结果 | 安全影响 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **PM-01** | **非Owner删除分组** | 普通成员UserB | `DELETE /api/groups?id=G1`<br>(G1的Owner是UserA) | **拒绝操作**，返回403权限错误<br>分组未被删除 | 防止分组被恶意删除 | **P0** |
+| **PM-02** | **非Owner踢出成员** | 普通成员UserB | `PUT /api/groups/members`<br>尝试将UserC的status改为3 | **拒绝操作**，返回403权限错误<br>UserC状态不变 | 防止成员互相踢出 | **P0** |
+| **PM-03** | **非Owner修改配置** | 普通成员UserB | `PUT /api/groups`<br>尝试修改G1的name/join_method | **拒绝操作**，返回403权限错误<br>分组配置不变 | 防止配置被篡改 | **P0** |
+| **PM-04** | **Banned用户再次申请** | UserB<br>(status=3 Banned) | `POST /api/groups/apply`<br>申请加入G1 | **拒绝申请**，返回错误<br>"您已被该分组禁止" | 防止被踢用户绕过限制 | **P0** |
+| **PM-05** | **Rejected用户重新申请** | UserB<br>(status=2 Rejected) | `POST /api/groups/apply`<br>申请加入G1 | **允许重新申请**<br>创建新的Pending记录或覆盖旧记录 | 用户体验：允许二次申请 | P1 |
+| **PM-06** | **非成员访问私有分组信息** | 未加入G1的UserC | `GET /api/groups/members?group_id=G1`<br>(G1是私有分组 type=1) | **拒绝访问**或**仅返回公开字段**<br>(如成员数量，不含成员列表) | 防止信息泄露 | P1 |
+| **PM-07** | **Owner删除自己的成员记录** | Owner UserA | `POST /api/groups/leave`<br>尝试退出自己的分组G1 | **拒绝操作**<br>提示"Owner需先转移所有权才能退出" | 防止分组变为无主 | P1 |
+
+#### 2.6.4 配置变更与流程测试
+
+**核心风险**: 验证分组配置动态变更后的行为一致性，以及邀请制等复杂流程。
+
+| ID | 测试场景 | 初始配置 | 操作步骤 | 预期结果 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **CF-01** | **邀请制完整流程** | G1: type=2, join_method=0(邀请) | 1.Owner UserA生成邀请码(或邀请链接)<br>2.UserB使用邀请码申请<br>3.系统验证邀请码有效性 | **有效码**：UserB直接加入(status=1)<br>**无效/过期码**：拒绝申请 | **P0** |
+| **CF-02** | **加入方式变更影响** | G1: join_method=2(密码) | 1.UserB用正确密码申请，进入Pending<br>2.Owner修改为join_method=1(审核)<br>3.Owner审批UserB的Pending申请 | **审批操作仍有效**<br>UserB成功加入(status=1) | P1 |
+| **CF-03** | **密码修改后的验证** | G1: join_key="old123" | 1.Owner修改密码为"new456"<br>2.UserB用"old123"申请<br>3.UserC用"new456"申请 | **UserB申请失败**<br>**UserC申请成功**(直接Active或Pending) | P1 |
+| **CF-04** | **分组类型转换** | G1: type=1(私有) | Owner修改为type=2(共享) | **修改成功**<br>分组出现在`/api/groups/public`<br>新用户可以申请加入 | P2 |
+| **CF-05** | **并发加入相同分组** | G1: join_method=2<br>join_key="pass123" | **100个用户**同时用正确密码<br>调用`POST /api/groups/apply` | **所有用户都成功加入**(status=1)<br>无重复`user_groups`记录<br>数据库约束`UNIQUE(user_id, group_id)`生效 | P1 |
+| **CF-06** | **分组成员上限限制** | G1: 已有99个成员<br>(假设上限100) | 1.UserA申请加入(第100个)<br>2.UserB再申请加入(第101个) | **UserA成功加入**<br>**UserB被拒绝**，提示"分组已满" | P2 |
+
+#### 2.6.5 成员角色与高级功能测试
+
+**核心风险**: 验证成员角色管理（如设计支持管理员角色）和批量操作的正确性。
+
+| ID | 测试场景 | 前置条件 | 操作 | 预期结果 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **RM-01** | **成员角色提升** | UserB是G1的普通成员(role=0) | Owner将UserB的role改为1(管理员) | **UserB获得管理员权限**<br>可执行踢出普通成员、审批申请等操作 | P1 |
+| **RM-02** | **管理员踢出普通成员** | UserB是管理员(role=1)<br>UserC是普通成员(role=0) | 管理员UserB将UserC的status改为3(Banned) | **操作成功**<br>UserC被踢出，缓存失效 | P1 |
+| **RM-03** | **管理员无法踢出Owner** | UserB是管理员<br>UserA是Owner | 管理员UserB尝试踢出Owner UserA | **拒绝操作**<br>返回403或业务错误"无法操作Owner" | P1 |
+| **RM-04** | **Owner角色转移** | UserA是Owner<br>UserB是成员 | UserA执行Owner转移操作<br>`PUT /api/groups/owner`<br>new_owner_id=UserB | **转移成功**<br>UserA降为普通成员，UserB成为新Owner<br>双方缓存失效，权限立即生效 | P2 |
+| **RM-05** | **批量审批操作** | G1有10个Pending申请 | Owner调用批量审批接口<br>(或循环调用10次单个审批) | **所有申请都变为Active(status=1)**<br>所有用户的缓存批量失效<br>数据库一致性保持 | P1 |
+| **RM-06** | **批量踢出成员** | G1有10个Active成员 | Owner批量将10个成员status改为3 | **所有成员被踢出**<br>缓存批量失效<br>10个用户下次请求无法访问G1渠道 | P1 |
 
 ### 2.7 正交组合配置测试 (Orthogonal Configuration Matrix)
 
