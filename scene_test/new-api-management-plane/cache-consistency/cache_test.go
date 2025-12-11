@@ -31,6 +31,12 @@ type TestSuite struct {
 	Fixtures *testutil.TestFixtures
 }
 
+// conUpstreamDelay simulates a "long running" upstream request in CON-xx tests.
+// We intentionally keep this delay relatively small so that the tests can still
+// reliably exercise in-flight permission changes without risking hitting the
+// global go test timeout when the entire cache-consistency suite runs together.
+const conUpstreamDelay = 500 * time.Millisecond
+
 // SetupSuite initializes the test suite with a running server.
 func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	t.Helper()
@@ -108,7 +114,7 @@ func TestCache_CON01_KickDuringRequest(t *testing.T) {
 
 	fixtures := suite.Fixtures
 	// Make upstream slow enough to let us change permissions mid-request.
-	suite.Upstream.SetDelay(2 * time.Second)
+	suite.Upstream.SetDelay(conUpstreamDelay)
 
 	// Owner and member users.
 	owner, err := fixtures.CreateTestUser("con01_owner", "password123", "default")
@@ -231,7 +237,7 @@ func TestCache_CON02_DisableDuringRequest(t *testing.T) {
 	defer cleanup()
 
 	fixtures := suite.Fixtures
-	suite.Upstream.SetDelay(2 * time.Second)
+	suite.Upstream.SetDelay(conUpstreamDelay)
 
 	// Single user and channel.
 	_, err := fixtures.CreateTestUser("con02_user", "password123", "default")
@@ -330,7 +336,7 @@ func TestCache_CON03_DeleteDuringRequest(t *testing.T) {
 	defer cleanup()
 
 	fixtures := suite.Fixtures
-	suite.Upstream.SetDelay(2 * time.Second)
+	suite.Upstream.SetDelay(conUpstreamDelay)
 
 	_, err := fixtures.CreateTestUser("con03_user", "password123", "default")
 	if err != nil {

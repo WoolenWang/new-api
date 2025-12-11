@@ -218,6 +218,9 @@ func aggregateAllSources(l1, l2 *service.ChannelStatsSnapshot, dbStats []*model.
 		result.TotalLatencyMs += stat.TotalLatencyMs
 		result.StreamReqCount += int64(stat.StreamReqCount)
 		result.CacheHitCount += int64(stat.CacheHitCount)
+		// UniqueUsers 为每个窗口内去重后的用户数。跨窗口直接累加会高估，
+		// 但相比完全忽略该字段，能够更接近设计文档中的“区间服务用户数”需求。
+		result.UniqueUsers += stat.UniqueUsers
 	}
 
 	// 加上L2数据
