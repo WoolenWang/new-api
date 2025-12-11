@@ -11,11 +11,11 @@ import (
 // Section: 6.5 model_monitoring_results (模型监控结果表)
 type ModelMonitoringResult struct {
 	Id                 int64   `json:"id" gorm:"primaryKey;autoIncrement"`
-	ChannelId          int     `json:"channel_id" gorm:"not null;index:idx_channel_model_time;comment:渠道ID"`
-	ModelName          string  `json:"model_name" gorm:"type:varchar(255);not null;index:idx_channel_model_time;comment:模型名称"`
+	ChannelId          int     `json:"channel_id" gorm:"not null;index:idx_monitoring_channel_model_time;comment:渠道ID"`
+	ModelName          string  `json:"model_name" gorm:"type:varchar(255);not null;index:idx_monitoring_channel_model_time;comment:模型名称"`
 	BaselineId         int     `json:"baseline_id" gorm:"not null;comment:基准ID"`
 	TestType           string  `json:"test_type" gorm:"type:varchar(50);not null;comment:检测类型"`
-	TestTimestamp      int64   `json:"test_timestamp" gorm:"not null;index:idx_channel_model_time;comment:测试时间戳"`
+	TestTimestamp      int64   `json:"test_timestamp" gorm:"not null;index:idx_monitoring_channel_model_time;comment:测试时间戳"`
 	Status             string  `json:"status" gorm:"type:varchar(20);not null;comment:pass, fail, monitor_failed"`
 	DiffScore          float64 `json:"diff_score" gorm:"type:double precision;comment:差异得分(0-100, 越大差异越大)"`
 	SimilarityScore    float64 `json:"similarity_score" gorm:"type:double precision;comment:相似度得分(0-100)"`

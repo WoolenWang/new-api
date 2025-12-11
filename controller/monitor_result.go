@@ -151,9 +151,13 @@ func GetChannelMonitoringResults(c *gin.Context) {
 // @Param start_time query int false "开始时间戳"
 // @Param end_time query int false "结束时间戳"
 // @Success 200 {object} common.Response{data=[]model.MonitoringStatistics}
-// @Router /api/models/:model_name/monitoring_report [get]
+// @Router /api/models/:id/monitoring_report [get]
 func GetModelMonitoringReport(c *gin.Context) {
+	// Support both :model_name and :id style params for flexibility
 	modelName := c.Param("model_name")
+	if modelName == "" {
+		modelName = c.Param("id")
+	}
 	if modelName == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

@@ -142,7 +142,7 @@ func (s *ChannelStatsL2Service) flushL1ToRedis() error {
 	now := time.Now().Unix()
 	currentWindow := AlignToWindow(now) // Phase 8.x Task 2.2: 对齐到窗口边界
 
-	for key, snap := range snapshot {
+	for _, snap := range snapshot {
 		if snap.RequestCount == 0 {
 			continue // 跳过空快照
 		}

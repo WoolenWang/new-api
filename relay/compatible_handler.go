@@ -487,7 +487,7 @@ func recordChannelStatsToL1(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 
 	// 计算首字延迟（毫秒）
 	var firstByteLatency int64
-	if relayInfo.FirstResponseTime != nil && !relayInfo.FirstResponseTime.IsZero() {
+	if !relayInfo.FirstResponseTime.IsZero() {
 		firstByteLatency = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
 		if firstByteLatency < 0 {
 			firstByteLatency = 0
@@ -504,7 +504,7 @@ func recordChannelStatsToL1(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	sessionID := ctx.GetString("session_id")
 	if sessionID == "" {
 		// 如果没有session_id，使用request_id作为备选
-		sessionID = ctx.GetString(logger.RequestIdKey)
+		sessionID = ctx.GetString(common.RequestIdKey)
 	}
 
 	// 构建统计数据

@@ -8,9 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SysLog(s string) {
+// SysLog writes a formatted system log line.
+// It accepts either a preformatted message or a printf-style format with args.
+func SysLog(format string, a ...any) {
 	t := time.Now()
-	_, _ = fmt.Fprintf(gin.DefaultWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), s)
+	msg := format
+	if len(a) > 0 {
+		msg = fmt.Sprintf(format, a...)
+	}
+	_, _ = fmt.Fprintf(gin.DefaultWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), msg)
 }
 
 func SysError(s string) {

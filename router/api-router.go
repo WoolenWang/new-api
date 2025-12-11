@@ -280,6 +280,7 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.GET("/", controller.GetAllModelsMeta)
 			modelsRoute.GET("/search", controller.SearchModelsMeta)
 			modelsRoute.GET("/:id", controller.GetModelMeta)
+			modelsRoute.GET("/:id/monitoring_report", controller.GetModelMonitoringReport)
 			modelsRoute.POST("/", controller.CreateModelMeta)
 			modelsRoute.PUT("/", controller.UpdateModelMeta)
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
@@ -360,9 +361,6 @@ func SetApiRouter(router *gin.Engine) {
 
 		// Channel Monitoring Results (can be accessed by channel routes for convenience)
 		channelRoute.GET("/:id/monitoring_results", controller.GetChannelMonitoringResults)
-
-		// Model Monitoring Report (public endpoint for model comparison)
-		apiRouter.GET("/models/:model_name/monitoring_report", middleware.AdminAuth(), controller.GetModelMonitoringReport)
 
 		// Session Monitoring Routes (Admin only)
 		sessionsRoute := apiRouter.Group("/admin/sessions")

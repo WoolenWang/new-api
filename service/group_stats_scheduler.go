@@ -28,26 +28,26 @@ type GroupStatsUpdateTask struct {
 // GroupStatsScheduler 分组统计调度器
 // 负责监听渠道统计更新事件，并按节流策略调度分组聚合任务
 type GroupStatsScheduler struct {
-	taskQueue         chan GroupStatsUpdateTask
-	lastUpdateTime    map[int]int64 // groupId -> last update timestamp
-	lastUpdateTimeMu  sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
-	enabled           bool
+	taskQueue            chan GroupStatsUpdateTask
+	lastUpdateTime       map[int]int64 // groupId -> last update timestamp
+	lastUpdateTimeMu     sync.RWMutex
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	enabled              bool
 	concurrencySemaphore chan struct{} // 用于全局并发控制
 }
 
 var (
-	globalScheduler     *GroupStatsScheduler
-	schedulerOnce       sync.Once
-	taskQueueBufferSize = 1000 // 任务队列缓冲区大小
+	globalGroupStatsScheduler *GroupStatsScheduler
+	groupStatsSchedulerOnce   sync.Once
+	taskQueueBufferSize       = 1000 // 任务队列缓冲区大小
 )
 
 // GetGlobalScheduler 获取全局调度器实例（单例模式）
 func GetGlobalScheduler() *GroupStatsScheduler {
-	schedulerOnce.Do(func() {
+	groupStatsSchedulerOnce.Do(func() {
 		ctx, cancel := context.WithCancel(context.Background())
-		globalScheduler = &GroupStatsScheduler{
+		globalGroupStatsScheduler = &GroupStatsScheduler{
 			taskQueue:            make(chan GroupStatsUpdateTask, taskQueueBufferSize),
 			lastUpdateTime:       make(map[int]int64),
 			ctx:                  ctx,
@@ -57,7 +57,7 @@ func GetGlobalScheduler() *GroupStatsScheduler {
 		}
 		common.SysLog("GroupStatsScheduler initialized")
 	})
-	return globalScheduler
+	return globalGroupStatsScheduler
 }
 
 // Start 启动调度器
@@ -77,7 +77,7 @@ func (s *GroupStatsScheduler) Start() {
 	go s.listenEvents(eventChan)
 
 	// 启动任务处理goroutine
-	go s.processT asks()
+	go s.processTasks()
 
 	common.SysLog("GroupStatsScheduler started successfully")
 }

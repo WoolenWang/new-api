@@ -354,7 +354,7 @@ func (e *MonitorEvaluator) callLLMJudgeWithRetry(ctx context.Context, prompt str
 		common.SysLog(fmt.Sprintf("LLM judge call failed (attempt %d): %v", attempt+1, err))
 	}
 
-	return "", fmt.Errorf("LLM judge failed after %d attempts. Errors: %v", maxRetries, errorsCollected)
+	return "", fmt.Errorf("LLM judge failed after %d attempts. Last error: %v; Errors: %v", maxRetries, lastErr, errorsCollected)
 }
 
 // buildJudgePrompt 构造 Judge 评估 Prompt

@@ -232,3 +232,17 @@ func multipartMemoryLimit() int64 {
 	}
 	return int64(limitMB) << 20
 }
+
+// IsAdmin reports whether the current request context belongs to an admin user.
+// It relies on the "role" value populated by the auth middleware.
+func IsAdmin(c *gin.Context) bool {
+	roleVal, exists := c.Get("role")
+	if !exists {
+		return false
+	}
+	role, ok := roleVal.(int)
+	if !ok {
+		return false
+	}
+	return role >= RoleAdminUser
+}

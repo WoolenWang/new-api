@@ -323,8 +323,9 @@ func (s *ChannelStatsL3Service) updateChannelAggregateStats(channelID int, model
 	quotaPM := snapshot.TotalQuota / minutesInWindow
 
 	// 更新统计字段
+	avgLatencyInt := int(avgLatency)
 	updates := &model.ChannelStatisticsUpdate{
-		AvgResponseTime:    common.IntPtr(int(avgLatency)),
+		AvgResponseTime:    &avgLatencyInt,
 		FailRate:           &failRate,
 		AvgCacheHitRate:    &cacheHitRate,
 		StreamReqRatio:     &streamRatio,
@@ -351,7 +352,7 @@ func (s *ChannelStatsL3Service) syncL1ToDatabase() error {
 	// Phase 8.x Task 2.2: 使用对齐的窗口时间戳
 	currentWindow := AlignToWindow(time.Now().Unix())
 
-	for key, snapshot := range l1Stats {
+	for key := range l1Stats {
 		var channelID int
 		var modelName string
 		fmt.Sscanf(key, "%d:%s", &channelID, &modelName)

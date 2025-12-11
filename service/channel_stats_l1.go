@@ -271,6 +271,12 @@ func (s *ChannelStatsL1Service) getUniqueUserCountAndIDs(userIDSet *sync.Map) (i
 	return count, userIDs
 }
 
+// getUniqueUserCount 仅计算去重用户数量（用于只读快照）
+func (s *ChannelStatsL1Service) getUniqueUserCount(userIDSet *sync.Map) int {
+	count, _ := s.getUniqueUserCountAndIDs(userIDSet)
+	return count
+}
+
 // cleanupLoop 后台清理循环（移除冷数据）
 func (s *ChannelStatsL1Service) cleanupLoop() {
 	defer s.wg.Done()
