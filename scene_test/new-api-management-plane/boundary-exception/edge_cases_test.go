@@ -110,7 +110,9 @@ func findProjectRoot() (string, error) {
 }
 
 // createTestUser creates a user with a unique external_id to avoid UNIQUE
-// constraint conflicts.
+// constraint conflicts. It is safe for single-threaded setup code; for highly
+// concurrent scenarios (like ED-06), prefer a non-fatal helper that surfaces
+// errors to the caller instead of calling t.Fatalf inside goroutines.
 func createTestUser(t *testing.T, admin *testutil.APIClient, username, password, group string) *testutil.UserModel {
 	t.Helper()
 
@@ -146,6 +148,38 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 	return user
 }
 
+// createTestUserNonFatal creates a user for concurrent tests without calling
+// t.Fatalf. It returns an error so callers can decide how to aggregate failures.
+func createTestUserNonFatal(admin *testutil.APIClient, username, password, group string) (*testutil.UserModel, error) {
+	user := &testutil.UserModel{
+		Username:   username,
+		Password:   password,
+		Group:      "default",
+		Status:     1,
+		ExternalId: fmt.Sprintf("edge_%s_%d", username, time.Now().UnixNano()),
+	}
+
+	id, err := admin.CreateUserFull(user)
+	if err != nil {
+		return nil, fmt.Errorf("create user %s failed: %w", username, err)
+	}
+	user.ID = id
+
+	if group != "" && group != "default" {
+		user.Group = group
+		if err := admin.UpdateUser(user); err != nil {
+			return nil, fmt.Errorf("update user %s group to %s failed: %w", username, group, err)
+		}
+	}
+
+	if err := admin.AdjustUserQuota(user.ID, 1000000000); err != nil {
+		return nil, fmt.Errorf("adjust quota for user %s failed: %w", username, err)
+	}
+	user.Quota = 1000000000
+
+	return user, nil
+}
+
 // TestED01_EmptyP2PGroupList tests that a user with no P2P group membership
 // cannot access P2P-authorized channels, but can access public channels.
 //
@@ -171,7 +205,7 @@ func TestED01_EmptyP2PGroupList(t *testing.T) {
 	}
 
 	// Create a P2P group and channel authorized to that group.
-	_ = createTestUser(t, admin, "ed01_owner", "password123", "default")
+	owner := createTestUser(t, admin, "ed01_owner", "password123", "default")
 	ownerClient := admin.Clone()
 	if _, err := ownerClient.Login("ed01_owner", "password123"); err != nil {
 		t.Fatalf("failed to login as owner: %v", err)
@@ -200,6 +234,7 @@ func TestED01_EmptyP2PGroupList(t *testing.T) {
 		Models:        "gpt-4",
 		Group:         "default",
 		BaseURL:       &p2pBaseURL,
+		OwnerUserId:   owner.ID, // mark as owner-owned P2P channel; non-member userA cannot use it
 		AllowedGroups: &p2pAllowedGroups,
 	}
 	if _, err := admin.AddChannel(p2pChannel); err != nil {
@@ -841,7 +876,11 @@ func TestED06_ConcurrentJoinAndRequest(t *testing.T) {
 
 			// Create a unique user.
 			username := fmt.Sprintf("ed06_user_%d", idx)
-			_ = createTestUser(t, admin, username, "password123", "default")
+			if _, err := createTestUserNonFatal(admin, username, "password123", "default"); err != nil {
+				atomic.AddInt32(&errors, 1)
+				t.Logf("User %d create failed: %v", idx, err)
+				return
+			}
 
 			// Login as the user.
 			userClient := admin.Clone()
