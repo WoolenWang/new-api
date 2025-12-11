@@ -259,6 +259,7 @@ func (r *MonitorConfigResolver) GetMonitoringPlansForPolicy(policyId int) ([]*Mo
 	}
 
 	if !policy.IsEnabled {
+		common.SysLog(fmt.Sprintf("Monitor policy %d is disabled, no plans generated", policy.Id))
 		return []*MonitoringPlan{}, nil
 	}
 
@@ -267,6 +268,7 @@ func (r *MonitorConfigResolver) GetMonitoringPlansForPolicy(policyId int) ([]*Mo
 	targetChannelIds := policy.GetTargetChannels()
 
 	if len(targetModels) == 0 || len(testTypes) == 0 {
+		common.SysLog(fmt.Sprintf("Monitor policy %d has empty targetModels or testTypes, skip generating plans", policy.Id))
 		return []*MonitoringPlan{}, nil
 	}
 
@@ -288,6 +290,7 @@ func (r *MonitorConfigResolver) GetMonitoringPlansForPolicy(policyId int) ([]*Mo
 				channelsToMonitor = append(channelsToMonitor, ch)
 			}
 		}
+		common.SysLog(fmt.Sprintf("Monitor policy %d using %d enabled channels from global list", policy.Id, len(channelsToMonitor)))
 	}
 
 	var plans []*MonitoringPlan

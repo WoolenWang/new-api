@@ -31,6 +31,7 @@ func NewAPIClient(server *TestServer) *APIClient {
 	return &APIClient{
 		BaseURL: server.BaseURL,
 		Token:   server.AdminToken,
+		UserID:  server.AdminUserID,
 		Server:  server,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -489,14 +490,21 @@ func (c *APIClient) InitializeSystem() (username, password string, err error) {
 		return "", "", fmt.Errorf("failed to get setup status: %w", err)
 	}
 
-	// If already set up, just return default credentials
+	// In the current NewAPI test harness, the bootstrap flow in
+	// testutil/server.go initializes the root user with a fixed
+	// password "testpass123" via /api/setup. To keep tests and
+	// helpers consistent, we centralize this convention here.
+
+	username = "root"
+	password = "testpass123"
+
+	// If already set up, just return the known credentials.
 	if setup.Data.Status {
-		return "root", "rootpass123", nil
+		return username, password, nil
 	}
 
-	// Need to initialize
-	username = "root"
-	password = "rootpass123"
+	// Need to initialize: call /api/setup once, using the same
+	// credentials that bootstrapAdmin expects.
 	if err := c.PostSetup(username, password); err != nil {
 		return "", "", fmt.Errorf("failed to setup system: %w", err)
 	}

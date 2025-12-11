@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -278,12 +279,28 @@ func TokenAuth() func(c *gin.Context) {
 		billingGroupList := token.GetBillingGroupList()
 
 		if len(billingGroupList) > 0 {
-			// Token 配置了计费分组列表，需要校验所有分组的权限
+			// Token 配置了计费分组列表，需要校验所有分组的权限。
+			// 这里同时支持 "auto" 语义：当列表中出现 "auto" 时，
+			// 将其展开为针对当前用户的自动计费分组集合（GetUserAutoGroup），
+			// 从而在后续多计费组选路中按顺序遍历实际分组。
 			userUsableGroups := service.GetUserUsableGroups(userGroup)
+			expandedBillingList := make([]string, 0, len(billingGroupList))
+
 			for _, bg := range billingGroupList {
 				if bg == "auto" {
-					continue // auto 分组不需要校验
+					// "auto" 本身不是实际计费分组，而是根据系统配置与用户可用分组
+					// 展开的「候选计费组列表」。
+					autoGroups := service.GetUserAutoGroup(userGroup)
+					if len(autoGroups) == 0 {
+						// 当前环境未为该用户配置任何 auto 可用分组，视为无可用计费组。
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable,
+							"no available channel in billing groups [auto]", string(types.ErrorCodeModelNotFound))
+						return
+					}
+					expandedBillingList = append(expandedBillingList, autoGroups...)
+					continue
 				}
+
 				if _, ok := userUsableGroups[bg]; !ok {
 					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", bg))
 					return
@@ -293,11 +310,19 @@ func TokenAuth() func(c *gin.Context) {
 					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", bg))
 					return
 				}
+				expandedBillingList = append(expandedBillingList, bg)
 			}
-			// 将计费分组列表存入 Context，供后续路由逻辑使用
-			common.SetContextKey(c, constant.ContextKeyTokenBillingGroupList, billingGroupList)
+
+			if len(expandedBillingList) == 0 {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable,
+					"no available channel in billing groups []", string(types.ErrorCodeModelNotFound))
+				return
+			}
+
+			// 将展开后的计费分组列表存入 Context，供后续路由逻辑使用
+			common.SetContextKey(c, constant.ContextKeyTokenBillingGroupList, expandedBillingList)
 			// UsingGroup 使用列表中的第一个分组（优先级最高的分组）
-			userGroup = billingGroupList[0]
+			userGroup = expandedBillingList[0]
 		} else if tokenGroup != "" {
 			// 兼容旧逻辑：Token.Group 为单字符串（非 JSON 数组格式）
 			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {

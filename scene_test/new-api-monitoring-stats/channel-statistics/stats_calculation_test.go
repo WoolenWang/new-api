@@ -34,16 +34,22 @@ import (
 
 // StatsCalculationSuite holds shared test resources for statistics calculation tests.
 type StatsCalculationSuite struct {
-	Server *testutil.TestServer
-	Client *testutil.APIClient
+	Server   *testutil.TestServer
+	Client   *testutil.APIClient
+	Upstream *testutil.MockUpstreamServer
 }
 
 // SetupSuite initializes the test suite with a running server.
 func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 	t.Helper()
 
+	// Use a local mock upstream so that channel requests do not depend on
+	// real external providers or network connectivity.
+	upstream := testutil.NewMockUpstreamServer()
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
@@ -53,6 +59,7 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -61,20 +68,24 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 	// Initialize system and login as root (admin user).
 	rootUser, rootPass, err := client.InitializeSystem()
 	if err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to initialize system: %v", err)
 	}
 	if _, err := client.Login(rootUser, rootPass); err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
 	suite := &StatsCalculationSuite{
-		Server: server,
-		Client: client,
+		Server:   server,
+		Client:   client,
+		Upstream: upstream,
 	}
 
 	cleanup := func() {
+		upstream.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -104,7 +115,6 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 		Password:   password,
 		Group:      group,
 		Status:     1,
-		Quota:      1000000, // 1M quota for testing
 		ExternalId: fmt.Sprintf("stats_%s_%d", username, time.Now().UnixNano()),
 	}
 
@@ -113,6 +123,15 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 		t.Fatalf("failed to create user %s: %v", username, err)
 	}
 	user.ID = id
+
+	// Ensure the test user has sufficient quota; many monitoring tests
+	// rely on successful forwarding and would otherwise hit
+	// "用户额度不足" errors. Use a large positive delta.
+	if err := admin.AdjustUserQuota(id, 1000000000); err != nil {
+		t.Fatalf("failed to adjust quota for user %s: %v", username, err)
+	}
+	user.Quota = 1000000000
+
 	return user
 }
 
@@ -139,14 +158,16 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	// Create a channel for the user.
+	// Create a channel for the user, pointing to the mock upstream.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS01 Test Channel",
-		Type:   1, // OpenAI type
-		Key:    "sk-test-cs01-channel",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS01 Test Channel",
+		Type:    1, // OpenAI type
+		Key:     "sk-test-cs01-channel",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -267,20 +288,18 @@ func TestCS02_FailureRateCalculation(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	// Create a channel pointing to the mock server.
-	// Note: In real implementation, we would need to configure the channel's
-	// base_url to point to mockLLM.URL().
-	// For this test, we'll use a simplified approach: send requests and
-	// verify failure statistics based on actual responses.
-
+	// Create a channel pointing explicitly to the mock server so that
+	// responses are fully controlled and do not depend on external
+	// network connectivity.
+	baseURL := mockLLM.URL()
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS02 Flakey Channel",
-		Type:   1,
-		Key:    "sk-test-cs02-flakey",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
-		// BaseURL: mockLLM.URL(), // Would set this if supported
+		Name:    "CS02 Flakey Channel",
+		Type:    1,
+		Key:     "sk-test-cs02-flakey",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -367,14 +386,16 @@ func TestCS03_AverageResponseTime(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	// Create channel.
+	// Create channel pointing to mock upstream.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS03 Response Time Channel",
-		Type:   1,
-		Key:    "sk-test-cs03",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS03 Response Time Channel",
+		Type:    1,
+		Key:     "sk-test-cs03",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -479,13 +500,15 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	}
 
 	// Create channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS04 TPM RPM Channel",
-		Type:   1,
-		Key:    "sk-test-cs04-tpm",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS04 TPM RPM Channel",
+		Type:    1,
+		Key:     "sk-test-cs04-tpm",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -604,13 +627,15 @@ func TestCS05_StreamRequestRatio(t *testing.T) {
 	}
 
 	// Create channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS05 Stream Ratio Channel",
-		Type:   1,
-		Key:    "sk-test-cs05-stream",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS05 Stream Ratio Channel",
+		Type:    1,
+		Key:     "sk-test-cs05-stream",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -719,13 +744,15 @@ func TestCS06_CacheHitRate(t *testing.T) {
 	}
 
 	// Create channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS06 Cache Hit Channel",
-		Type:   1,
-		Key:    "sk-test-cs06-cache",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS06 Cache Hit Channel",
+		Type:    1,
+		Key:     "sk-test-cs06-cache",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -833,13 +860,15 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 	}
 
 	// Create a shared channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS07 Shared Channel",
-		Type:   1,
-		Key:    "sk-test-cs07-shared",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS07 Shared Channel",
+		Type:    1,
+		Key:     "sk-test-cs07-shared",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -976,13 +1005,15 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	admin := suite.Client
 
 	// Create channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS08 Downtime Channel",
-		Type:   1,
-		Key:    "sk-test-cs08-downtime",
-		Status: 1, // Initially enabled
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS08 Downtime Channel",
+		Type:    1,
+		Key:     "sk-test-cs08-downtime",
+		Status:  1, // Initially enabled
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -1079,13 +1110,15 @@ func TestCS09_AverageConcurrency(t *testing.T) {
 	}
 
 	// Create channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS09 Concurrency Channel",
-		Type:   1,
-		Key:    "sk-test-cs09-concurrency",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CS09 Concurrency Channel",
+		Type:    1,
+		Key:     "sk-test-cs09-concurrency",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -1211,13 +1244,15 @@ func TestCS10_PerModelStatistics(t *testing.T) {
 	}
 
 	// Create a channel supporting multiple models.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CS10 Multi-Model Channel",
-		Type:   1,
-		Key:    "sk-test-cs10-multi",
-		Status: 1,
-		Models: "gpt-4,gpt-3.5-turbo", // Support both models
-		Group:  "default",
+		Name:    "CS10 Multi-Model Channel",
+		Type:    1,
+		Key:     "sk-test-cs10-multi",
+		Status:  1,
+		Models:  "gpt-4,gpt-3.5-turbo", // Support both models
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {

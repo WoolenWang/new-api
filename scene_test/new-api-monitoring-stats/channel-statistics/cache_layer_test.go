@@ -30,16 +30,21 @@ import (
 
 // CacheLayerSuite holds shared test resources for cache layer tests.
 type CacheLayerSuite struct {
-	Server *testutil.TestServer
-	Client *testutil.APIClient
+	Server   *testutil.TestServer
+	Client   *testutil.APIClient
+	Upstream *testutil.MockUpstreamServer
 }
 
 // SetupCacheLayerSuite initializes the test suite.
 func SetupCacheLayerSuite(t *testing.T) (*CacheLayerSuite, func()) {
 	t.Helper()
 
+	// Use a mock upstream to avoid real network dependency.
+	upstream := testutil.NewMockUpstreamServer()
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
@@ -49,6 +54,7 @@ func SetupCacheLayerSuite(t *testing.T) (*CacheLayerSuite, func()) {
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -56,20 +62,24 @@ func SetupCacheLayerSuite(t *testing.T) (*CacheLayerSuite, func()) {
 
 	rootUser, rootPass, err := client.InitializeSystem()
 	if err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to initialize system: %v", err)
 	}
 	if _, err := client.Login(rootUser, rootPass); err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
 	suite := &CacheLayerSuite{
-		Server: server,
-		Client: client,
+		Server:   server,
+		Client:   client,
+		Upstream: upstream,
 	}
 
 	cleanup := func() {
+		upstream.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -101,13 +111,15 @@ func TestCL01_L1MemoryWrite(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL01 L1 Memory Channel",
-		Type:   1,
-		Key:    "sk-test-cl01",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL01 L1 Memory Channel",
+		Type:    1,
+		Key:     "sk-test-cl01",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -195,13 +207,15 @@ func TestCL02_L1ToL2Flush(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL02 Flush Test Channel",
-		Type:   1,
-		Key:    "sk-test-cl02",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL02 Flush Test Channel",
+		Type:    1,
+		Key:     "sk-test-cl02",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -295,13 +309,15 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	}
 
 	// Create shared channel.
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL03 HLL Test Channel",
-		Type:   1,
-		Key:    "sk-test-cl03-hll",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL03 HLL Test Channel",
+		Type:    1,
+		Key:     "sk-test-cl03-hll",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -433,13 +449,15 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL04 Dirty Mark Channel",
-		Type:   1,
-		Key:    "sk-test-cl04-dirty",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL04 Dirty Mark Channel",
+		Type:    1,
+		Key:     "sk-test-cl04-dirty",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -587,13 +605,15 @@ func TestConcurrentL1Writes(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL Concurrent Test Channel",
-		Type:   1,
-		Key:    "sk-test-cl-concurrent",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL Concurrent Test Channel",
+		Type:    1,
+		Key:     "sk-test-cl-concurrent",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {

@@ -715,6 +715,35 @@ func configureOrthogonalBillingEnvironment(t *testing.T, client *testutil.APICli
 	return nil
 }
 
+// getOptionValueOrthogonal fetches the current value of a given option key
+// from /api/option for the orthogonal test server.
+func getOptionValueOrthogonal(t *testing.T, client *testutil.APIClient, key string) string {
+	t.Helper()
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"data"`
+	}
+
+	if err := client.GetJSON("/api/option", &resp); err != nil {
+		t.Fatalf("failed to get options when reading %s: %v", key, err)
+	}
+	if !resp.Success {
+		t.Fatalf("get options failed when reading %s: %s", key, resp.Message)
+	}
+
+	for _, opt := range resp.Data {
+		if opt.Key == key {
+			return opt.Value
+		}
+	}
+	return ""
+}
+
 // updateOptionOrthogonal is a small helper to call /api/option for
 // orthogonal tests using the root-authenticated client.
 func updateOptionOrthogonal(client *testutil.APIClient, key, value string) error {

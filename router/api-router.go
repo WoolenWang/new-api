@@ -135,6 +135,7 @@ func SetApiRouter(router *gin.Engine) {
 			ratioSyncRoute.GET("/channels", controller.GetSyncableChannels)
 			ratioSyncRoute.POST("/fetch", controller.FetchUpstreamRatios)
 		}
+		// Legacy channel admin routes (singular prefix) kept for backward compatibility.
 		channelRoute := apiRouter.Group("/channel")
 		channelRoute.Use(middleware.AdminAuth())
 		{
@@ -168,10 +169,26 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/:id/usage", controller.GetChannelUsage)                 // Get detailed usage for specific channel
 			channelRoute.GET("/concurrency", controller.GetChannelConcurrencySnapshot) // Get lightweight concurrency snapshot for all channels
 
-			// Phase 8.5: Channel Statistics Query API
+			// Phase 8.5: Channel Statistics Query API (legacy prefix).
 			channelRoute.GET("/:id/stats", controller.GetChannelStats)                // Get aggregated stats with time range
 			channelRoute.GET("/:id/current_stats", controller.GetChannelCurrentStats) // Get latest stats from channels table
 			channelRoute.POST("/:id/reset_stats", controller.ResetChannelStats)       // Reset channel statistics
+
+			// Channel monitoring results (legacy prefix).
+			channelRoute.GET("/:id/monitoring_results", controller.GetChannelMonitoringResults)
+		}
+
+		// Canonical channel admin routes (plural prefix) used by docs and tests.
+		channelsRoute := apiRouter.Group("/channels")
+		channelsRoute.Use(middleware.AdminAuth())
+		{
+			// Statistics APIs
+			channelsRoute.GET("/:id/stats", controller.GetChannelStats)
+			channelsRoute.GET("/:id/current_stats", controller.GetChannelCurrentStats)
+			channelsRoute.POST("/:id/reset_stats", controller.ResetChannelStats)
+
+			// Monitoring results query API
+			channelsRoute.GET("/:id/monitoring_results", controller.GetChannelMonitoringResults)
 		}
 		// P2P Channel Self-Service Routes (Phase 1)
 		channelSelfRoute := apiRouter.Group("/channel/self")
@@ -331,6 +348,8 @@ func SetApiRouter(router *gin.Engine) {
 			monitorRoute.GET("/policies/:id", controller.GetMonitorPolicy)
 			monitorRoute.POST("/policies", controller.CreateMonitorPolicy)
 			monitorRoute.PUT("/policies/:id", controller.UpdateMonitorPolicy)
+			// Body-based update used by integration tests (id in JSON body).
+			monitorRoute.PUT("/policies", controller.UpdateMonitorPolicy)
 			monitorRoute.DELETE("/policies/:id", controller.DeleteMonitorPolicy)
 			monitorRoute.POST("/policies/:id/toggle", controller.ToggleMonitorPolicyStatus)
 			monitorRoute.GET("/policies/search", controller.SearchMonitorPolicies)
@@ -358,9 +377,6 @@ func SetApiRouter(router *gin.Engine) {
 			monitorRoute.GET("/statistics", controller.GetMonitoringStatistics)
 			monitorRoute.GET("/failed_channels", controller.GetFailedChannels)
 		}
-
-		// Channel Monitoring Results (can be accessed by channel routes for convenience)
-		channelRoute.GET("/:id/monitoring_results", controller.GetChannelMonitoringResults)
 
 		// Session Monitoring Routes (Admin only)
 		sessionsRoute := apiRouter.Group("/admin/sessions")

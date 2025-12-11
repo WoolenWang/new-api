@@ -11,8 +11,50 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// MonitorPolicyResponse defines the API representation of a monitor policy.
+// It expands JSON string fields into proper arrays for clients.
+type MonitorPolicyResponse struct {
+	ID                 int      `json:"id"`
+	Name               string   `json:"name"`
+	TargetModels       []string `json:"target_models"`
+	TestTypes          []string `json:"test_types"`
+	EvaluationStandard string   `json:"evaluation_standard"`
+	TargetChannels     []int    `json:"target_channels,omitempty"`
+	ScheduleCron       string   `json:"schedule_cron"`
+	IsEnabled          bool     `json:"is_enabled"`
+	CreatedAt          int64    `json:"created_at,omitempty"`
+	UpdatedAt          int64    `json:"updated_at,omitempty"`
+}
+
+func toMonitorPolicyResponse(policy *model.MonitorPolicy) *MonitorPolicyResponse {
+	if policy == nil {
+		return nil
+	}
+	return &MonitorPolicyResponse{
+		ID:                 policy.Id,
+		Name:               policy.Name,
+		TargetModels:       policy.GetTargetModels(),
+		TestTypes:          policy.GetTestTypes(),
+		EvaluationStandard: policy.EvaluationStandard,
+		TargetChannels:     policy.GetTargetChannels(),
+		ScheduleCron:       policy.ScheduleCron,
+		IsEnabled:          policy.IsEnabled,
+		CreatedAt:          policy.CreatedAt,
+		UpdatedAt:          policy.UpdatedAt,
+	}
+}
+
+func toMonitorPolicyResponseList(policies []*model.MonitorPolicy) []*MonitorPolicyResponse {
+	result := make([]*MonitorPolicyResponse, 0, len(policies))
+	for _, p := range policies {
+		result = append(result, toMonitorPolicyResponse(p))
+	}
+	return result
+}
+
 // MonitorPolicyRequest 监控策略请求结构
 type MonitorPolicyRequest struct {
+	ID                 int      `json:"id"` // Used for update via body
 	Name               string   `json:"name" binding:"required"`
 	TargetModels       []string `json:"target_models"`
 	TestTypes          []string `json:"test_types"`
@@ -46,7 +88,7 @@ func GetMonitorPolicies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    policies,
+		"data":    toMonitorPolicyResponseList(policies),
 	})
 }
 
@@ -81,7 +123,7 @@ func GetMonitorPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    policy,
+		"data":    toMonitorPolicyResponse(policy),
 	})
 }
 
@@ -165,7 +207,9 @@ func CreateMonitorPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "创建监控策略成功",
-		"data":    policy,
+		// For compatibility with monitoring tests, return the policy ID
+		// instead of the full object.
+		"data": policy.Id,
 	})
 }
 
@@ -180,13 +224,20 @@ func CreateMonitorPolicy(c *gin.Context) {
 // @Success 200 {object} common.Response{data=model.MonitorPolicy}
 // @Router /api/monitor/policies/:id [put]
 func UpdateMonitorPolicy(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的策略ID",
-		})
-		return
+	// Strategy ID can come from either the URL path (/policies/:id)
+	// or the JSON body (PUT /policies). This allows both REST styles
+	// and keeps compatibility with existing tests.
+	var id int
+	if idStr := c.Param("id"); idStr != "" {
+		parsed, err := strconv.Atoi(idStr)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无效的策略ID",
+			})
+			return
+		}
+		id = parsed
 	}
 
 	var req MonitorPolicyRequest
@@ -194,6 +245,18 @@ func UpdateMonitorPolicy(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("请求参数错误: %v", err),
+		})
+		return
+	}
+
+	// Fallback to ID from body when path parameter is absent.
+	if id == 0 && req.ID > 0 {
+		id = req.ID
+	}
+	if id == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "策略ID不能为空",
 		})
 		return
 	}

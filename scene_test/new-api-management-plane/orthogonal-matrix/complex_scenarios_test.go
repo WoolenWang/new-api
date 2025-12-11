@@ -19,6 +19,7 @@
 package orthogonal_matrix
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -145,11 +146,50 @@ func TestCS03_AutoGroupExpansionWithP2P(t *testing.T) {
 	suite := setupOrthogonalSuite(t)
 	defer suite.Cleanup()
 
+	// For this test we need auto group expansion to be enabled and
+	// visible to vip users. Capture existing settings and restore them
+	// afterwards to avoid affecting other tests.
+	origAutoGroups := getOptionValueOrthogonal(t, suite.client, "AutoGroups")
+	origUserUsableGroups := getOptionValueOrthogonal(t, suite.client, "UserUsableGroups")
+
+	defer func() {
+		// Restore AutoGroups
+		if err := updateOptionOrthogonal(suite.client, "AutoGroups", origAutoGroups); err != nil {
+			t.Fatalf("failed to restore AutoGroups option: %v", err)
+		}
+		// Restore UserUsableGroups
+		if err := updateOptionOrthogonal(suite.client, "UserUsableGroups", origUserUsableGroups); err != nil {
+			t.Fatalf("failed to restore UserUsableGroups option: %v", err)
+		}
+	}()
+
+	// Configure AutoGroups = ["vip","svip"] so that vip users' "auto"
+	// billing can expand to both vip and svip, matching the design
+	// expectations for CS-03.
+	autoGroups := []string{"vip", "svip"}
+	autoBytes, err := json.Marshal(autoGroups)
+	require.NoError(t, err, "Failed to marshal AutoGroups for CS-03")
+	require.NoError(t, updateOptionOrthogonal(suite.client, "AutoGroups", string(autoBytes)))
+
+	// Extend UserUsableGroups so that default/vip/svip/auto are all
+	// recognized billing groups during this test.
+	uugMap := map[string]string{}
+	if origUserUsableGroups != "" {
+		_ = json.Unmarshal([]byte(origUserUsableGroups), &uugMap)
+	}
+	uugMap["default"] = "default"
+	uugMap["vip"] = "vip"
+	uugMap["svip"] = "svip"
+	uugMap["auto"] = "auto"
+	uugBytes, err := json.Marshal(uugMap)
+	require.NoError(t, err, "Failed to marshal UserUsableGroups for CS-03")
+	require.NoError(t, updateOptionOrthogonal(suite.client, "UserUsableGroups", string(uugBytes)))
+
 	// Note: This test assumes "auto" group is configured to expand to [vip, svip]
 	// The exact expansion logic depends on system configuration
 
 	// Arrange: UserVip joins G1
-	err := suite.fixtures.JoinUserToGroups(suite.fixtures.UserVipClient, suite.fixtures.UserVip.ID, []int{suite.fixtures.G1.ID})
+	err = suite.fixtures.JoinUserToGroups(suite.fixtures.UserVipClient, suite.fixtures.UserVip.ID, []int{suite.fixtures.G1.ID})
 	require.NoError(t, err, "User should join G1")
 	time.Sleep(200 * time.Millisecond)
 
@@ -172,29 +212,25 @@ func TestCS03_AutoGroupExpansionWithP2P(t *testing.T) {
 	tokenClient := suite.client.WithToken(tokenKey)
 	success, statusCode, errMsg := tokenClient.TryChatCompletion("gpt-4", "test routing")
 
-	// If auto group is not configured in this test environment, routing will fail
-	// with 503 / "no available channel in billing groups [auto]". In that case we
-	// skip the test instead of treating it as a failure.
-	if !success {
-		t.Logf("Auto group expansion not configured or failed (status=%d, err=%s)", statusCode, errMsg)
-		t.Skip("Auto group expansion requires system configuration")
-		return
-	}
+	require.True(t, success, "Auto billing with configured AutoGroups should succeed")
+	require.Equal(t, 200, statusCode, "Status code should be 200 for successful auto expansion, got: %d (%s)", statusCode, errMsg)
 
-	// Verify billing group is one of the auto-expanded groups when auto works.
+	// Verify billing group is one of the auto-expanded groups ("vip" or "svip").
 	log := suite.getLatestLog(suite.fixtures.UserVip.ID)
-	assert.Contains(t, []string{"vip", "svip", "auto"}, log.BillingGroup, "Billing should be auto-expanded group")
+	assert.Contains(t, []string{"vip", "svip"}, log.BillingGroup, "Billing should be one of the auto-expanded groups")
 
 	t.Log("CS-03 passed: Auto expansion with P2P combination")
 }
 
-// TestCS04_MultiTokenDifferentConfigs tests that different tokens for the same user have isolated configs.
-// User: vip, Token1 (no P2P restriction), Token2 (P2P restricted to G1)
-// Channel: default+G1+G2 (+ extra default+G2-only created in test)
-// Design doc expectation: Token1 can通过 G1 或 G2 访问, Token2 只能通过 G1.
-// 当前实现中, Token 的 P2P 限制不会影响平台渠道 (owner_user_id=0) 的访问,
-// 因此两个 Token 在本场景下都可以访问 default 系统分组下的任意渠道。
-// 本用例按当前实现仅验证：两个 Token 调用均成功且按 default 计费。
+// TestCS04_MultiTokenDifferentConfigs tests that different tokens for the same
+// user have isolated configs and that Token-level P2P restriction also applies
+// to platform channels:
+//   - User: vip
+//   - Token1: no P2P restriction -> can use any default-group channel (public / G1 / G2)
+//   - Token2: P2P restricted to G1 -> can only route to channels authorized for G1
+//     (default+G1 or default+G1G2), and MUST NOT fall back to default
+//     public or default+G2-only channels.
+//
 // Priority: P0
 func TestCS04_MultiTokenDifferentConfigs(t *testing.T) {
 	suite := setupOrthogonalSuite(t)
@@ -275,15 +311,18 @@ func TestCS04_MultiTokenDifferentConfigs(t *testing.T) {
 	t.Logf("Token2 routed to channel: %d", log2.ChannelID)
 
 	assert.Equal(t, "default", log2.BillingGroup, "Token2 billing group should be default")
-	allDefaultChannels := []int{
-		suite.fixtures.ChDefaultPublic.ID,
+	// Under strict P2P semantics, Token2 (G1-restricted) must only use
+	// channels that are authorized for G1, even though the underlying
+	// channels are platform-owned (owner_user_id=0).
+	allowedForG1 := []int{
 		suite.fixtures.ChDefaultG1.ID,
 		suite.fixtures.ChDefaultG1G2.ID,
-		channelDefaultG2.ID,
 	}
-	assert.Contains(t, allDefaultChannels, log2.ChannelID, "Token2 should route to some default-group channel")
+	assert.Contains(t, allowedForG1, log2.ChannelID, "Token2 must route to a G1-authorized default channel")
+	assert.NotEqual(t, suite.fixtures.ChDefaultPublic.ID, log2.ChannelID, "Token2 must not fall back to default public channel")
+	assert.NotEqual(t, channelDefaultG2.ID, log2.ChannelID, "Token2 must not route to G2-only default channel")
 
-	t.Log("CS-04 passed: Different tokens succeed with their own configs under current P2P semantics")
+	t.Log("CS-04 passed: Token-level P2P restriction also constrains platform channels")
 }
 
 // setupOrthogonalSuite initializes the orthogonal test suite.

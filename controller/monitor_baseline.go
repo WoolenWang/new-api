@@ -29,6 +29,42 @@ type ModelBaselineRequest struct {
 // @Success 200 {object} common.Response{data=[]model.ModelBaseline}
 // @Router /api/monitor/baselines [get]
 func GetModelBaselines(c *gin.Context) {
+	// Optional filter: when model_name, test_type and evaluation_standard
+	// are all provided, return a single baseline that matches this
+	// unique key. This aligns with the monitoring tests which call
+	// /api/monitor/baselines?model_name=...&test_type=...&evaluation_standard=...
+	modelName := c.Query("model_name")
+	testType := c.Query("test_type")
+	evaluationStandard := c.Query("evaluation_standard")
+
+	if modelName != "" || testType != "" || evaluationStandard != "" {
+		// All three parameters must be present to form a valid key.
+		if modelName == "" || testType == "" || evaluationStandard == "" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "缺少必要参数: model_name, test_type, evaluation_standard 需要同时提供",
+			})
+			return
+		}
+
+		baseline, err := model.GetModelBaseline(modelName, testType, evaluationStandard)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("获取模型基准失败: %v", err),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    baseline,
+		})
+		return
+	}
+
+	// No filter: return full baseline list.
 	baselines, err := model.GetAllModelBaselines()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -134,7 +170,8 @@ func CreateOrUpdateModelBaseline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "保存模型基准成功",
-		"data":    baseline,
+		// For API consistency with tests, return the baseline ID as data.
+		"data": baseline.Id,
 	})
 }
 

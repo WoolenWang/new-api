@@ -225,15 +225,17 @@ func IsModelAllowedForChannel(channel *Channel, model string) bool {
 	return false
 }
 
-// CheckChannelAccess checks if a user has access to a specific channel based on access control settings
-// Returns true if user has access, false otherwise
-// Now includes model-level permission checking via AllowedModels whitelist, IP whitelist, and P2P group access
-// Parameters:
-//   - routingGroups: User's routing groups (system groups + P2P groups in "p2p_{id}" format)
 func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingGroups []string, model string, clientIP string) bool {
-	// Platform channels (owner_user_id = 0) are always accessible
-	if channel.OwnerUserId == 0 {
-		return true
+	// Determine whether this request carries an effective P2P 约束
+	// We only inject "p2p_{id}" routing groups when the Token 显式配置了 p2p_group_id
+	// 且用户在该组内有有效成员关系，因此这里可以安全地以是否包含 "p2p_" 来判断
+	// 「本次请求是否受 Token 级 P2P 限制」。
+	hasP2PConstraint := false
+	for _, g := range routingGroups {
+		if strings.HasPrefix(g, "p2p_") {
+			hasP2PConstraint = true
+			break
+		}
 	}
 
 	// Owner always has access to their own channels (bypass all restrictions)
@@ -258,15 +260,6 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 		if !common.IsIPInWhitelist(ipWhitelist, clientIP) {
 			// IP not in whitelist, deny access
 			return false
-		}
-	}
-
-	// Determine whether this request carries an effective P2P 约束
-	hasP2PConstraint := false
-	for _, g := range routingGroups {
-		if strings.HasPrefix(g, "p2p_") {
-			hasP2PConstraint = true
-			break
 		}
 	}
 
@@ -323,11 +316,14 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 	}
 
 	// P2P AND semantics:
-	// 当本次请求携带有效的 P2P 分组约束时（routingGroups 中包含 p2p_*），
-	// 对于非平台渠道（owner_user_id != 0）：
-	//   1. 必须显式声明其 P2P 授权（AllowedGroups 为 JSON 数组 ID 模式）；
+	// 当本次请求携带有效的 P2P 分组约束时（routingGroups 中包含 p2p_*）：
+	//   1. 渠道必须显式声明其 P2P 授权（AllowedGroups 为 JSON 数组 ID 模式）；
 	//   2. 且其授权的 P2P 组 ID 必须与请求的 P2P 组有交集。
-	if hasP2PConstraint && channel.OwnerUserId != 0 {
+	//
+	// 注意：这里不再区分平台渠道（owner_user_id = 0）与非平台渠道——
+	// 只要 Token 受 P2P 限制，所有被选出的渠道都必须属于对应的 P2P 组，
+	// 否则会造成「有 P2P 限制却退回系统计费分组公共渠道」的错误行为。
+	if hasP2PConstraint {
 		// 未配置 AllowedGroups：视为未加入任何 P2P 组，在有 P2P 约束时不允许访问
 		if channel.AllowedGroups == nil || *channel.AllowedGroups == "" {
 			return false

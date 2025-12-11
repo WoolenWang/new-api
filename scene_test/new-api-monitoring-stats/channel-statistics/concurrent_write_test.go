@@ -24,16 +24,20 @@ import (
 
 // ConcurrentWriteSuite holds shared test resources for concurrency tests.
 type ConcurrentWriteSuite struct {
-	Server *testutil.TestServer
-	Client *testutil.APIClient
+	Server   *testutil.TestServer
+	Client   *testutil.APIClient
+	Upstream *testutil.MockUpstreamServer
 }
 
 // SetupConcurrentWriteSuite initializes the test suite.
 func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 	t.Helper()
 
+	upstream := testutil.NewMockUpstreamServer()
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
@@ -43,6 +47,7 @@ func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -50,20 +55,24 @@ func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 
 	rootUser, rootPass, err := client.InitializeSystem()
 	if err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to initialize system: %v", err)
 	}
 	if _, err := client.Login(rootUser, rootPass); err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
 	suite := &ConcurrentWriteSuite{
-		Server: server,
-		Client: client,
+		Server:   server,
+		Client:   client,
+		Upstream: upstream,
 	}
 
 	cleanup := func() {
+		upstream.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -95,13 +104,15 @@ func TestCON01_HighConcurrencyL1Writes(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CON01 Concurrent Channel",
-		Type:   1,
-		Key:    "sk-test-con01",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON01 Concurrent Channel",
+		Type:    1,
+		Key:     "sk-test-con01",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -235,13 +246,15 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CON04 Test Channel",
-		Type:   1,
-		Key:    "sk-test-con04",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON04 Test Channel",
+		Type:    1,
+		Key:     "sk-test-con04",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -378,13 +391,15 @@ func TestConcurrentMultiChannel(t *testing.T) {
 	}
 
 	// Create three channels.
+	baseURL := suite.Upstream.BaseURL
 	channel1 := &testutil.ChannelModel{
-		Name:   "CON Multi Ch1",
-		Type:   1,
-		Key:    "sk-test-con-multi-1",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON Multi Ch1",
+		Type:    1,
+		Key:     "sk-test-con-multi-1",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	ch1ID, err := admin.AddChannel(channel1)
 	if err != nil {
@@ -393,12 +408,13 @@ func TestConcurrentMultiChannel(t *testing.T) {
 	channel1.ID = ch1ID
 
 	channel2 := &testutil.ChannelModel{
-		Name:   "CON Multi Ch2",
-		Type:   1,
-		Key:    "sk-test-con-multi-2",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON Multi Ch2",
+		Type:    1,
+		Key:     "sk-test-con-multi-2",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	ch2ID, err := admin.AddChannel(channel2)
 	if err != nil {
@@ -407,12 +423,13 @@ func TestConcurrentMultiChannel(t *testing.T) {
 	channel2.ID = ch2ID
 
 	channel3 := &testutil.ChannelModel{
-		Name:   "CON Multi Ch3",
-		Type:   1,
-		Key:    "sk-test-con-multi-3",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON Multi Ch3",
+		Type:    1,
+		Key:     "sk-test-con-multi-3",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	ch3ID, err := admin.AddChannel(channel3)
 	if err != nil {

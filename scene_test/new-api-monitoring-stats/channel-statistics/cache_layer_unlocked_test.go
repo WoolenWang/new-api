@@ -110,13 +110,15 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 	channels := make([]*testutil.ChannelModel, numChannels)
 
 	for i := 0; i < numChannels; i++ {
+		baseURL := suite.Upstream.BaseURL
 		chModel := &testutil.ChannelModel{
-			Name:   fmt.Sprintf("CL06 Channel %d", i),
-			Type:   1,
-			Key:    fmt.Sprintf("sk-test-cl06-%d", i),
-			Status: 1,
-			Models: "gpt-4",
-			Group:  "default",
+			Name:    fmt.Sprintf("CL06 Channel %d", i),
+			Type:    1,
+			Key:     fmt.Sprintf("sk-test-cl06-%d", i),
+			Status:  1,
+			Models:  "gpt-4",
+			Group:   "default",
+			BaseURL: &baseURL,
 		}
 		chID, err := admin.AddChannel(chModel)
 		if err != nil {
@@ -216,13 +218,15 @@ func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL07 Dedup Channel",
-		Type:   1,
-		Key:    "sk-test-cl07-dedup",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL07 Dedup Channel",
+		Type:    1,
+		Key:     "sk-test-cl07-dedup",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -331,13 +335,15 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL08 Read Cache Channel",
-		Type:   1,
-		Key:    "sk-test-cl08-read",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL08 Read Cache Channel",
+		Type:    1,
+		Key:     "sk-test-cl08-read",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -464,13 +470,15 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CON02 Flush Safety Channel",
-		Type:   1,
-		Key:    "sk-test-con02-flush",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON02 Flush Safety Channel",
+		Type:    1,
+		Key:     "sk-test-con02-flush",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	chID, err := admin.AddChannel(channelModel)
 	if err != nil {
@@ -555,13 +563,15 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CON03 DB Sync Channel",
-		Type:   1,
-		Key:    "sk-test-con03-dbsync",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CON03 DB Sync Channel",
+		Type:    1,
+		Key:     "sk-test-con03-dbsync",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	chID, err := admin.AddChannel(channelModel)
 	if err != nil {

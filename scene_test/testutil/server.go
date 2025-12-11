@@ -33,6 +33,9 @@ type TestServer struct {
 	// AdminToken is the root user's access token for API calls.
 	AdminToken string
 
+	// AdminUserID is the root user's ID, used for New-Api-User header.
+	AdminUserID int
+
 	cmd      *exec.Cmd
 	cancelFn context.CancelFunc
 	exePath  string
@@ -286,6 +289,16 @@ func StartServer(cfg ServerConfig) (*TestServer, error) {
 		return nil, fmt.Errorf("server failed to become ready: %w", err)
 	}
 
+	// Bootstrap admin user and access token for tests.
+	// This ensures that integration tests can call privileged APIs
+	// without needing manual setup.
+	if err := server.bootstrapAdmin(); err != nil {
+		// Surface bootstrap errors to tests so they fail fast with
+		// a clear message instead of cascading 401 responses.
+		server.Stop()
+		return nil, fmt.Errorf("failed to bootstrap test admin: %w", err)
+	}
+
 	return server, nil
 }
 
@@ -418,11 +431,101 @@ func FindProjectRoot() (string, error) {
 	return findProjectRoot()
 }
 
+// bootstrapAdmin initializes a root admin account and access token
+// for the test server by calling the public setup and user APIs.
+func (s *TestServer) bootstrapAdmin() error {
+	// Use an ad-hoc client without any authentication to perform setup.
+	client := NewAPIClientWithToken(s.BaseURL, "")
+
+	// 1. Check current setup status.
+	var setupResp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			Status   bool `json:"status"`
+			RootInit bool `json:"root_init"`
+		} `json:"data"`
+	}
+
+	if err := client.GetJSON("/api/setup", &setupResp); err != nil {
+		return fmt.Errorf("failed to query setup status: %w", err)
+	}
+	if !setupResp.Success {
+		return fmt.Errorf("setup status API returned error: %s", setupResp.Message)
+	}
+
+	// 2. Initialize system and create root user if needed.
+	const (
+		rootUsername = "root"
+		rootPassword = "testpass123"
+	)
+
+	if !setupResp.Data.Status {
+		// System not initialized yet; perform initial setup.
+		setupReq := map[string]interface{}{
+			"username":           rootUsername,
+			"password":           rootPassword,
+			"confirmPassword":    rootPassword,
+			"SelfUseModeEnabled": false,
+			"DemoSiteEnabled":    false,
+		}
+
+		var setupPostResp struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+		}
+
+		if err := client.PostJSON("/api/setup", setupReq, &setupPostResp); err != nil {
+			return fmt.Errorf("failed to initialize system via /api/setup: %w", err)
+		}
+		if !setupPostResp.Success {
+			return fmt.Errorf("system setup failed: %s", setupPostResp.Message)
+		}
+	}
+
+	// 3. Login as root to obtain a session and user ID.
+	adminID, err := client.Login(rootUsername, rootPassword)
+	if err != nil {
+		return fmt.Errorf("failed to login as root: %w", err)
+	}
+
+	// 4. Generate an access token for the root user.
+	var tokenResp struct {
+		Success bool    `json:"success"`
+		Message string  `json:"message"`
+		Data    *string `json:"data"`
+	}
+
+	if err := client.GetJSON("/api/user/token", &tokenResp); err != nil {
+		return fmt.Errorf("failed to generate admin access token: %w", err)
+	}
+	if !tokenResp.Success {
+		return fmt.Errorf("failed to generate admin access token: %s", tokenResp.Message)
+	}
+	if tokenResp.Data == nil || *tokenResp.Data == "" {
+		return fmt.Errorf("admin access token is empty")
+	}
+
+	// Store token on the server struct and append a log line for
+	// debugging and compatibility with log-based token discovery.
+	s.mu.Lock()
+	s.AdminToken = *tokenResp.Data
+	s.AdminUserID = adminID
+	s.logs = append(s.logs, fmt.Sprintf("[bootstrap] access_token: %s (user_id=%d)", s.AdminToken, s.AdminUserID))
+	s.mu.Unlock()
+
+	return nil
+}
+
 // StartTestServer is a convenience helper used by higher-level
 // scene tests. It starts a NewAPI server with default test
 // configuration and an auto-detected project root.
 func StartTestServer() (*TestServer, error) {
 	cfg := DefaultConfig()
+	// Enable verbose logging in test mode so that server logs
+	// (including monitor scheduler/worker output) are visible
+	// in `go test` output for easier debugging.
+	cfg.Verbose = true
 
 	projectRoot, err := findProjectRoot()
 	if err != nil {

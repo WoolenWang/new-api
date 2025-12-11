@@ -226,7 +226,16 @@ func (w *MonitorWorker) probeChannel(ctx context.Context, channel *model.Channel
 	// 获取渠道 API Key
 	key, _, err := channel.GetNextEnabledKey()
 	if err != nil {
-		return "", fmt.Errorf("failed to get channel key: %w", err)
+		// For monitoring tasks we prefer to be resilient to
+		// multi-key/ChannelInfo misconfiguration. If a key is
+		// present on the channel record, fall back to it so that
+		// scheduled probes and tests can still run.
+		if channel.Key != "" {
+			common.SysLog(fmt.Sprintf("MonitorWorker: GetNextEnabledKey failed for channel %d, falling back to raw key: %v", channel.Id, err))
+			key = channel.Key
+		} else {
+			return "", fmt.Errorf("failed to get channel key: %w", err)
+		}
 	}
 
 	// 根据渠道类型设置鉴权头

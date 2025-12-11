@@ -249,7 +249,10 @@ func (s *MonitorScheduler) periodicReload() {
 
 // TriggerPolicyNow 立即触发指定策略的执行（用于手动测试）
 func (s *MonitorScheduler) TriggerPolicyNow(policyId int) {
-	go s.executePolicy(policyId)
+	// For manual triggers (admin operations and integration tests),
+	// run the execution synchronously so that callers can observe
+	// the results immediately without relying on background goroutines.
+	s.executePolicy(policyId)
 }
 
 // GetSchedulerStatus 获取调度器状态
