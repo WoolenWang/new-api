@@ -212,10 +212,10 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 	t.Logf("Waiting for L2 → L3 sync...")
 	time.Sleep(16 * time.Minute)
 
-	// Assert: Query channel statistics API.
-	// Note: The actual API endpoint depends on implementation.
-	// For now, we'll query the logs table as a proxy.
-	logs, err := admin.GetUserLogs(user.ID, numRequests)
+	// Assert: Query channel statistics via user session logs.
+	// Note: /api/log/self always returns logs for the authenticated user,
+	// so we must use the user client's session here.
+	logs, err := userClient.GetUserLogs(user.ID, numRequests)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -452,8 +452,8 @@ func TestCS03_AverageResponseTime(t *testing.T) {
 	t.Logf("CS-03 Results:")
 	t.Logf("  Average response time: %v", avgLatency)
 
-	// Verify: Check logs to confirm requests were processed.
-	logs, err := admin.GetUserLogs(user.ID, numRequests)
+	// Verify: Check logs to confirm requests were processed for this user.
+	logs, err := userClient.GetUserLogs(user.ID, numRequests)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -565,8 +565,8 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	t.Logf("  Successful: %d", successCount)
 	t.Logf("  Actual duration: %v", actualDuration)
 
-	// Verify: Check logs to get actual token counts.
-	logs, err := admin.GetUserLogs(user.ID, successCount)
+	// Verify: Check logs to get actual token counts for this user.
+	logs, err := userClient.GetUserLogs(user.ID, successCount)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -695,8 +695,8 @@ func TestCS05_StreamRequestRatio(t *testing.T) {
 	t.Logf("  Total: %d", normalCount+streamCount)
 	t.Logf("  Expected stream ratio: 30%%")
 
-	// Verify: Check logs to confirm request types.
-	logs, err := admin.GetUserLogs(user.ID, normalCount+streamCount)
+	// Verify: Check logs to confirm request types for this user.
+	logs, err := userClient.GetUserLogs(user.ID, normalCount+streamCount)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -806,8 +806,8 @@ func TestCS06_CacheHitRate(t *testing.T) {
 
 	t.Logf("CS-06: Sent %d requests (%d identical, %d unique)", numRequests, numIdentical, numRequests-numIdentical)
 
-	// Verify: Check logs.
-	logs, err := admin.GetUserLogs(user.ID, numRequests)
+	// Verify: Check logs for this user.
+	logs, err := userClient.GetUserLogs(user.ID, numRequests)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -945,12 +945,12 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 	time.Sleep(65 * time.Second) // L1 → L2
 
 	// Verify: Check logs to confirm both users accessed the channel.
-	logsA, err := admin.GetUserLogs(userA.ID, 7)
+	logsA, err := userAClient.GetUserLogs(userA.ID, 7)
 	if err != nil {
 		t.Fatalf("failed to get userA logs: %v", err)
 	}
 
-	logsB, err := admin.GetUserLogs(userB.ID, 3)
+	logsB, err := userBClient.GetUserLogs(userB.ID, 3)
 	if err != nil {
 		t.Fatalf("failed to get userB logs: %v", err)
 	}
@@ -1184,8 +1184,8 @@ func TestCS09_AverageConcurrency(t *testing.T) {
 	t.Logf("  Window duration: %v", windowDuration)
 	t.Logf("  Total requests: %d", totalRequests)
 
-	// Verify: Check logs.
-	logs, err := admin.GetUserLogs(user.ID, totalRequests)
+	// Verify: Check logs for this user.
+	logs, err := userClient.GetUserLogs(user.ID, totalRequests)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -1304,8 +1304,8 @@ func TestCS10_PerModelStatistics(t *testing.T) {
 	t.Logf("Waiting for statistics aggregation...")
 	time.Sleep(65 * time.Second)
 
-	// Verify: Check logs to see which models were used.
-	logs, err := admin.GetUserLogs(user.ID, 8)
+	// Verify: Check logs to see which models were used for this user.
+	logs, err := userClient.GetUserLogs(user.ID, 8)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}

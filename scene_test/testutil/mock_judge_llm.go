@@ -41,6 +41,7 @@ type MockJudgeRequest struct {
 // JudgeEvaluationResponse represents the JSON response from judge LLM.
 type JudgeEvaluationResponse struct {
 	SimilarityScore float64 `json:"similarity_score"`
+	DiffScore       float64 `json:"diff_score"`
 	IsPass          bool    `json:"is_pass"`
 	Reason          string  `json:"reason"`
 }
@@ -97,6 +98,7 @@ func (m *MockJudgeLLM) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Return evaluation response
 	response := JudgeEvaluationResponse{
 		SimilarityScore: m.SimilarityScore,
+		DiffScore:       100.0 - m.SimilarityScore,
 		IsPass:          m.IsPass,
 		Reason:          m.Reason,
 	}

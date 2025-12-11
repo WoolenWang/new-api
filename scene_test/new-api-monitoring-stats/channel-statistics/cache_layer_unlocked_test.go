@@ -169,8 +169,8 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 	t.Logf("  Waiting for L2 → L3 staggered sync (up to 16 minutes)...")
 	time.Sleep(16 * time.Minute)
 
-	// Verify: Check logs to confirm all channels were used.
-	logs, _ := admin.GetUserLogs(user.ID, numChannels)
+	// Verify: Check logs to confirm all channels were used for this user.
+	logs, _ := userClient.GetUserLogs(user.ID, numChannels)
 
 	channelUsageCount := make(map[int]int)
 	for _, log := range logs {
@@ -282,8 +282,8 @@ func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
 	// Wait for second aggregation.
 	time.Sleep(17 * time.Minute)
 
-	// Verify: Check logs.
-	logs, _ := admin.GetUserLogs(user.ID, 8)
+	// Verify: Check logs for this user.
+	logs, _ := userClient.GetUserLogs(user.ID, 8)
 
 	channelLogCount := 0
 	for _, log := range logs {
@@ -522,8 +522,8 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 
 	time.Sleep(65 * time.Second)
 
-	// Verify logs.
-	logs, _ := admin.GetUserLogs(user.ID, 100)
+	// Verify logs for this user.
+	logs, _ := userClient.GetUserLogs(user.ID, 100)
 
 	channelLogCount := 0
 	for _, log := range logs {
@@ -620,7 +620,7 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 	//
 	// For simplified test, we verify the system completes aggregation.
 
-	logs, _ := admin.GetUserLogs(user.ID, 50)
+	logs, _ := userClient.GetUserLogs(user.ID, 50)
 
 	channelLogCount := 0
 	for _, log := range logs {

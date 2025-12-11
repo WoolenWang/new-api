@@ -25,6 +25,7 @@ import (
 func GetMonitoringResults(c *gin.Context) {
 	channelIdStr := c.Query("channel_id")
 	modelName := c.Query("model_name")
+	testType := c.Query("test_type")
 	status := c.Query("status")
 	limitStr := c.DefaultQuery("limit", "100")
 
@@ -48,7 +49,7 @@ func GetMonitoringResults(c *gin.Context) {
 
 		if modelName != "" {
 			// 按渠道和模型查询
-			results, err = model.GetMonitoringResultsByChannelAndModel(channelId, modelName, 0, 0, limit)
+			results, err = model.GetMonitoringResultsByChannelAndModel(channelId, modelName, testType, 0, 0, limit)
 		} else {
 			// 仅按渠道查询
 			results, err = model.GetMonitoringResultsByChannel(channelId, limit)
@@ -107,6 +108,7 @@ func GetChannelMonitoringResults(c *gin.Context) {
 	}
 
 	modelName := c.Query("model_name")
+	testType := c.Query("test_type")
 	startTimeStr := c.Query("start_time")
 	endTimeStr := c.Query("end_time")
 	limitStr := c.DefaultQuery("limit", "100")
@@ -124,7 +126,7 @@ func GetChannelMonitoringResults(c *gin.Context) {
 		endTime, _ = strconv.ParseInt(endTimeStr, 10, 64)
 	}
 
-	results, err := model.GetMonitoringResultsByChannelAndModel(channelId, modelName, startTime, endTime, limit)
+	results, err := model.GetMonitoringResultsByChannelAndModel(channelId, modelName, testType, startTime, endTime, limit)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

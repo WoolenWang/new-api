@@ -165,8 +165,8 @@ func TestCL01_L1MemoryWrite(t *testing.T) {
 	// Wait a moment for async L1 write to complete.
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify log was created.
-	logs, err := admin.GetUserLogs(user.ID, 1)
+	// Verify log was created for this user.
+	logs, err := userClient.GetUserLogs(user.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -254,8 +254,8 @@ func TestCL02_L1ToL2Flush(t *testing.T) {
 
 	t.Logf("CL-02: Flush period elapsed")
 
-	// Verify: Check that the request was logged.
-	logs, err := admin.GetUserLogs(user.ID, 1)
+	// Verify: Check that the request was logged for this user.
+	logs, err := userClient.GetUserLogs(user.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -391,8 +391,8 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	time.Sleep(65 * time.Second)
 
 	// Verify: Check logs to confirm both users accessed the channel.
-	logsA, _ := admin.GetUserLogs(userA.ID, 4)
-	logsB, _ := admin.GetUserLogs(userB.ID, 2)
+	logsA, _ := userAClient.GetUserLogs(userA.ID, 4)
+	logsB, _ := userBClient.GetUserLogs(userB.ID, 2)
 
 	userACount := 0
 	userBCount := 0
@@ -497,8 +497,8 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 	// Wait for flush to mark channel as dirty.
 	time.Sleep(65 * time.Second)
 
-	// Verify: Check that request was logged.
-	logs, err := admin.GetUserLogs(user.ID, 1)
+	// Verify: Check that request was logged for this user.
+	logs, err := userClient.GetUserLogs(user.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -676,11 +676,11 @@ func TestConcurrentL1Writes(t *testing.T) {
 	t.Logf("  Elapsed time: %v", elapsedTime)
 	t.Logf("  Requests/sec: %.2f", float64(numGoroutines)/elapsedTime.Seconds())
 
-	// Verify: Check logs to ensure all requests were recorded.
+	// Verify: Check logs to ensure all requests were recorded for this user.
 	// Wait a bit for async logging to complete.
 	time.Sleep(2 * time.Second)
 
-	logs, err := admin.GetUserLogs(user.ID, int(successCount))
+	logs, err := userClient.GetUserLogs(user.ID, int(successCount))
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}

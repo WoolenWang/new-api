@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
@@ -194,8 +195,8 @@ func TestCON01_HighConcurrencyL1Writes(t *testing.T) {
 	// Wait for async operations to complete.
 	time.Sleep(2 * time.Second)
 
-	// Verify: Check logs to ensure requests were recorded.
-	logs, err := admin.GetUserLogs(user.ID, int(successCount))
+	// Verify: Check logs to ensure requests were recorded for this user.
+	logs, err := userClient.GetUserLogs(user.ID, int(successCount))
 	if err != nil {
 		t.Logf("Warning: failed to get user logs: %v", err)
 	} else {
@@ -312,7 +313,7 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 	// Disable the channel while request is ongoing.
 	err = admin.UpdateChannel(&testutil.ChannelModel{
 		ID:     channelModel.ID,
-		Status: 0, // Disable
+		Status: common.ChannelStatusManuallyDisabled, // Disable for subsequent requests
 	})
 	if err != nil {
 		t.Fatalf("failed to disable channel: %v", err)
@@ -328,9 +329,9 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 		t.Logf("CON-04 WARNING: Ongoing request did not complete (expected to succeed)")
 	}
 
-	// Verify: Check logs to ensure the request was recorded.
+	// Verify: Check logs to ensure the request was recorded for this user.
 	time.Sleep(1 * time.Second)
-	logs, err := admin.GetUserLogs(user.ID, 1)
+	logs, err := userClient.GetUserLogs(user.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -489,8 +490,8 @@ func TestConcurrentMultiChannel(t *testing.T) {
 	// Wait for logging to complete.
 	time.Sleep(2 * time.Second)
 
-	// Verify: Check logs to see distribution across channels.
-	logs, err := admin.GetUserLogs(user.ID, int(successCount))
+	// Verify: Check logs to see distribution across channels for this user.
+	logs, err := userClient.GetUserLogs(user.ID, int(successCount))
 	if err != nil {
 		t.Logf("Warning: failed to get user logs: %v", err)
 		return

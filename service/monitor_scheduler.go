@@ -249,10 +249,10 @@ func (s *MonitorScheduler) periodicReload() {
 
 // TriggerPolicyNow 立即触发指定策略的执行（用于手动测试）
 func (s *MonitorScheduler) TriggerPolicyNow(policyId int) {
-	// For manual triggers (admin operations and integration tests),
-	// run the execution synchronously so that callers can observe
-	// the results immediately without relying on background goroutines.
-	s.executePolicy(policyId)
+	// 对于管理员手动触发和集成测试场景，这里采用异步执行：
+	// - HTTP 请求可以快速返回，避免因探测/评估耗时或重试导致接口超时；
+	// - 监控任务在后台通过 goroutine 执行，行为与 Cron 调度保持一致。
+	go s.executePolicy(policyId)
 }
 
 // GetSchedulerStatus 获取调度器状态

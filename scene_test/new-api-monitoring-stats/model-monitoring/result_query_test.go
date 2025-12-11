@@ -1,6 +1,7 @@
 package model_monitoring_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,14 +24,31 @@ type ResultQuerySuite struct {
 // SetupSuite runs once before all tests in the suite.
 func (s *ResultQuerySuite) SetupSuite() {
 	var err error
-	s.server, err = testutil.StartTestServer()
+	s.judgeLLM = testutil.NewMockJudgeLLM()
+
+	// Start test server with MONITOR_JUDGE_URL bound to the mock judge LLM.
+	projectRoot, err := testutil.FindProjectRoot()
+	if err != nil {
+		s.T().Fatalf("Failed to find project root: %v", err)
+	}
+	cfg := testutil.DefaultConfig()
+	cfg.ProjectRoot = projectRoot
+	cfg.Verbose = true
+	cfg.CustomEnv = map[string]string{
+		"MONITOR_JUDGE_URL":             fmt.Sprintf("%s/v1/chat/completions", s.judgeLLM.BaseURL),
+		"MONITOR_JUDGE_MODEL":           "gpt-4-judge",
+		"MONITOR_JUDGE_MAX_RETRIES":     "2",
+		"MONITOR_PROBE_MAX_RETRIES":     "2",
+		"MONITOR_PROBE_TIMEOUT_SECONDS": "1",
+	}
+
+	s.server, err = testutil.StartServer(cfg)
 	if err != nil {
 		s.T().Fatalf("Failed to start test server: %v", err)
 	}
 
 	s.client = testutil.NewAPIClient(s.server)
 	s.upstream = testutil.NewMockUpstreamServer()
-	s.judgeLLM = testutil.NewMockJudgeLLM()
 
 	// Setup basic fixtures
 	s.fixtures = testutil.NewTestFixtures(s.T(), s.client)

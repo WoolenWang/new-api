@@ -71,13 +71,18 @@ func (w *MonitorWorker) ExecuteMonitoring(ctx context.Context, channelId int, mo
 	}
 
 	// 3. 发起探测请求（带重试）
-	rawOutput, probeErr := w.probeChannelWithRetry(ctx, channel, modelName, baseline.Prompt, 3)
+	// 最大重试次数允许通过环境变量覆盖，以便在测试环境中使用更短的探测周期。
+	maxRetries := common.GetEnvOrDefault("MONITOR_PROBE_MAX_RETRIES", 3)
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+	rawOutput, probeErr := w.probeChannelWithRetry(ctx, channel, modelName, baseline.Prompt, maxRetries)
 
 	// 4. 评估结果
 	var result *model.ModelMonitoringResult
 	if probeErr != nil {
 		// 探测失败，记录 monitor_failed 状态
-		reason := fmt.Sprintf("Probe failed: %v", probeErr)
+		reason := fmt.Sprintf("Probe error: %v", probeErr)
 		result = &model.ModelMonitoringResult{
 			ChannelId:          channelId,
 			ModelName:          modelName,
@@ -160,8 +165,13 @@ func (w *MonitorWorker) probeChannelWithRetry(ctx context.Context, channel *mode
 			}
 		}
 
-		// 为每次探测创建带超时的子 context（60秒超时）
-		probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		// 为每次探测创建带超时的子 context。
+		// 超时时间可以通过 MONITOR_PROBE_TIMEOUT_SECONDS 配置，默认 60 秒。
+		timeoutSeconds := common.GetEnvOrDefault("MONITOR_PROBE_TIMEOUT_SECONDS", 60)
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = 60
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 		output, err := w.probeChannel(probeCtx, channel, modelName, prompt)
 		cancel() // 及时释放资源
 

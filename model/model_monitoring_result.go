@@ -89,10 +89,14 @@ func GetMonitoringResultsByModel(modelName string, limit int) ([]*ModelMonitorin
 	return results, err
 }
 
-// GetMonitoringResultsByChannelAndModel 根据渠道ID和模型名称获取监控结果
-func GetMonitoringResultsByChannelAndModel(channelId int, modelName string, startTime, endTime int64, limit int) ([]*ModelMonitoringResult, error) {
+// GetMonitoringResultsByChannelAndModel 根据渠道ID、模型名称和检测类型获取监控结果
+func GetMonitoringResultsByChannelAndModel(channelId int, modelName, testType string, startTime, endTime int64, limit int) ([]*ModelMonitoringResult, error) {
 	var results []*ModelMonitoringResult
 	query := DB.Where("channel_id = ? AND model_name = ?", channelId, modelName)
+
+	if testType != "" {
+		query = query.Where("test_type = ?", testType)
+	}
 
 	if startTime > 0 {
 		query = query.Where("test_timestamp >= ?", startTime)

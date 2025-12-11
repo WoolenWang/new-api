@@ -561,9 +561,25 @@ func (c *APIClient) AddChannel(channel *ChannelModel) (int, error) {
 		return 0, fmt.Errorf("add channel failed: %s", resp.Message)
 	}
 
-	// The API doesn't return the ID directly, we need to query it
-	// For now, return 0 and let caller handle it
-	return 0, nil
+	// The API doesn't return the ID directly, so we query the channel list
+	// and locate the newly created channel by a combination of fields that
+	// are unique in test environments (name + key).
+	channels, err := c.GetAllChannels()
+	if err != nil {
+		return 0, fmt.Errorf("channel created but failed to query list: %w", err)
+	}
+
+	for _, ch := range channels {
+		// Note: the admin channel list API omits the "key" field for security,
+		// so we cannot rely on it for matching here. In the test environment
+		// channel names are unique, so we match by name + type.
+		if ch.Name == channel.Name && ch.Type == channel.Type {
+			channel.ID = ch.ID
+			return ch.ID, nil
+		}
+	}
+
+	return 0, fmt.Errorf("channel %s created but not found in list", channel.Name)
 }
 
 // AddChannelWithResponse creates a channel and returns full response for inspection
