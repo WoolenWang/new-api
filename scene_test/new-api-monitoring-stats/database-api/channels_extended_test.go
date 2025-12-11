@@ -33,11 +33,11 @@ func TestDB04_Channels_ExtendedFields(t *testing.T) {
 
 	// Step 1: Create a test channel
 	channel := suite.createTestChannel(t, "test-channel-db04", "gpt-4", "default")
-	require.NotZero(t, channel.Id, "Channel should be created with ID")
+	require.NotZero(t, channel.ID, "Channel should be created with ID")
 
 	// Step 2: Update channel with extended statistics fields
 	var updatedChannel model.Channel
-	err := suite.DB.First(&updatedChannel, channel.Id).Error
+	err := suite.DB.First(&updatedChannel, channel.ID).Error
 	require.NoError(t, err, "Failed to retrieve channel")
 
 	// Set extended statistics fields
@@ -57,7 +57,7 @@ func TestDB04_Channels_ExtendedFields(t *testing.T) {
 
 	// Step 3: Read the channel back from database
 	var retrievedChannel model.Channel
-	err = suite.DB.First(&retrievedChannel, channel.Id).Error
+	err = suite.DB.First(&retrievedChannel, channel.ID).Error
 	require.NoError(t, err, "Failed to retrieve updated channel")
 
 	// Step 4: Verify all extended fields are correctly retrieved
@@ -76,7 +76,7 @@ func TestDB04_Channels_ExtendedFields(t *testing.T) {
 	newChannel := suite.createTestChannel(t, "test-channel-db04-defaults", "gpt-3.5-turbo", "vip")
 
 	var freshChannel model.Channel
-	err = suite.DB.First(&freshChannel, newChannel.Id).Error
+	err = suite.DB.First(&freshChannel, newChannel.ID).Error
 	require.NoError(t, err, "Failed to retrieve fresh channel")
 
 	// Verify default values are zero/empty for statistics fields
@@ -145,7 +145,7 @@ func TestDB05_Channels_MonitoringConfig(t *testing.T) {
 
 	// Step 3: Save the channel with monitoring_config
 	var dbChannel model.Channel
-	err = suite.DB.First(&dbChannel, channel.Id).Error
+	err = suite.DB.First(&dbChannel, channel.ID).Error
 	require.NoError(t, err, "Failed to retrieve channel")
 
 	configStr := string(configJSON)
@@ -156,7 +156,7 @@ func TestDB05_Channels_MonitoringConfig(t *testing.T) {
 
 	// Step 4: Retrieve the channel and parse monitoring_config JSON
 	var retrievedChannel model.Channel
-	err = suite.DB.First(&retrievedChannel, channel.Id).Error
+	err = suite.DB.First(&retrievedChannel, channel.ID).Error
 	require.NoError(t, err, "Failed to retrieve channel with monitoring_config")
 
 	// Step 5: Verify JSON data is correctly stored and retrieved
@@ -199,7 +199,7 @@ func TestDB05_Channels_MonitoringConfig(t *testing.T) {
 
 	// Step 7: Verify updates are correctly persisted
 	var reRetrievedChannel model.Channel
-	err = suite.DB.First(&reRetrievedChannel, channel.Id).Error
+	err = suite.DB.First(&reRetrievedChannel, channel.ID).Error
 	require.NoError(t, err, "Failed to retrieve channel after update")
 
 	require.NotNil(t, reRetrievedChannel.MonitoringConfig, "Updated MonitoringConfig should not be nil")
@@ -220,7 +220,7 @@ func TestDB05_Channels_MonitoringConfig(t *testing.T) {
 	nullChannel := suite.createTestChannel(t, "test-channel-db05-null", "claude-3", "default")
 
 	var nullConfigChannel model.Channel
-	err = suite.DB.First(&nullConfigChannel, nullChannel.Id).Error
+	err = suite.DB.First(&nullConfigChannel, nullChannel.ID).Error
 	require.NoError(t, err, "Failed to retrieve null config channel")
 
 	// By default, monitoring_config should be nil
@@ -233,7 +233,7 @@ func TestDB05_Channels_MonitoringConfig(t *testing.T) {
 	require.NoError(t, err, "Failed to save channel with empty monitoring_config")
 
 	var emptyConfigChannel model.Channel
-	err = suite.DB.First(&emptyConfigChannel, nullChannel.Id).Error
+	err = suite.DB.First(&emptyConfigChannel, nullChannel.ID).Error
 	require.NoError(t, err, "Failed to retrieve empty config channel")
 
 	require.NotNil(t, emptyConfigChannel.MonitoringConfig, "MonitoringConfig should not be nil")

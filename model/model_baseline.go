@@ -122,6 +122,15 @@ func (mb *ModelBaseline) Update() error {
 	return DB.Save(mb).Error
 }
 
+// UpdateModelBaseline is a convenience wrapper used by integration tests
+// to update an existing baseline via pointer, delegating to the method.
+func UpdateModelBaseline(baseline *ModelBaseline) error {
+	if baseline == nil {
+		return nil
+	}
+	return baseline.Update()
+}
+
 // DeleteModelBaseline 删除模型基准
 func DeleteModelBaseline(id int) error {
 	return DB.Where("id = ?", id).Delete(&ModelBaseline{}).Error

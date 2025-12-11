@@ -868,6 +868,33 @@ func (c *APIClient) CreateP2PGroup(group *P2PGroupModel) (int, error) {
 	return resp.Data.ID, nil
 }
 
+// AddP2PGroupMember adds or activates a member in a P2P group.
+// This helper is primarily used by integration tests. It performs:
+// 1) POST /api/groups/apply with explicit user_id (root can apply on behalf),
+// 2) optionally PUT /api/groups/members to set status (e.g. Active).
+// Status: 0=Pending, 1=Active, 2=Rejected, 3=Banned, 4=Left.
+func (c *APIClient) AddP2PGroupMember(groupID, userID, status int) error {
+	// First, ensure there is a membership record by applying on behalf of the user.
+	var applyResp APIResponse
+	if err := c.PostJSON("/api/groups/apply", map[string]interface{}{
+		"group_id": groupID,
+		"user_id":  userID,
+	}, &applyResp); err != nil {
+		return fmt.Errorf("apply to P2P group failed: %w", err)
+	}
+	if !applyResp.Success {
+		return fmt.Errorf("apply to P2P group failed: %s", applyResp.Message)
+	}
+
+	// If a specific final status is requested and it's not Pending, perform an explicit update.
+	if status != 0 {
+		if err := c.UpdateMemberStatus(groupID, userID, status); err != nil {
+			return fmt.Errorf("update member status failed: %w", err)
+		}
+	}
+	return nil
+}
+
 // ApplyToP2PGroup applies to join a P2P group.
 func (c *APIClient) ApplyToP2PGroup(groupID int, password string) error {
 	var resp APIResponse

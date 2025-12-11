@@ -53,7 +53,7 @@ func TestDB01_ChannelStatistics_Create(t *testing.T) {
 	var createdStats []*model.ChannelStatistics
 	for i, tc := range testCases {
 		stat := &model.ChannelStatistics{
-			ChannelId:       channel.Id,
+			ChannelId:       channel.ID,
 			ModelName:       "gpt-4",
 			TimeWindowStart: baseTime + tc.timeWindowOffset,
 			RequestCount:    tc.requestCount,
@@ -145,7 +145,7 @@ func TestDB02_ChannelStatistics_Query(t *testing.T) {
 
 	for _, td := range testData {
 		stat := &model.ChannelStatistics{
-			ChannelId:       channel.Id,
+			ChannelId:       channel.ID,
 			ModelName:       td.modelName,
 			TimeWindowStart: baseTime + td.timeOffset,
 			RequestCount:    td.requestCount,
@@ -158,19 +158,19 @@ func TestDB02_ChannelStatistics_Query(t *testing.T) {
 	}
 
 	// Step 3: Query by channel_id only
-	allStats, err := model.GetChannelStatistics(channel.Id, "", 0, 0)
+	allStats, err := model.GetChannelStatistics(channel.ID, "", 0, 0)
 	require.NoError(t, err, "Failed to query all channel statistics")
 	assert.Len(t, allStats, 6, "Should return all 6 records for the channel")
 
 	// Step 4: Query by channel_id and model_name
-	gpt4Stats, err := model.GetChannelStatistics(channel.Id, "gpt-4", 0, 0)
+	gpt4Stats, err := model.GetChannelStatistics(channel.ID, "gpt-4", 0, 0)
 	require.NoError(t, err, "Failed to query gpt-4 statistics")
 	assert.Len(t, gpt4Stats, 3, "Should return 3 gpt-4 records")
 	for _, stat := range gpt4Stats {
 		assert.Equal(t, "gpt-4", stat.ModelName, "All records should be for gpt-4")
 	}
 
-	gpt35Stats, err := model.GetChannelStatistics(channel.Id, "gpt-3.5-turbo", 0, 0)
+	gpt35Stats, err := model.GetChannelStatistics(channel.ID, "gpt-3.5-turbo", 0, 0)
 	require.NoError(t, err, "Failed to query gpt-3.5-turbo statistics")
 	assert.Len(t, gpt35Stats, 3, "Should return 3 gpt-3.5-turbo records")
 	for _, stat := range gpt35Stats {
@@ -181,7 +181,7 @@ func TestDB02_ChannelStatistics_Query(t *testing.T) {
 	// Query for records from last 20 minutes (should include current and -15min windows)
 	startTime := baseTime - 20*60
 	endTime := baseTime + 60 // Include some buffer
-	recentStats, err := model.GetChannelStatistics(channel.Id, "", startTime, endTime)
+	recentStats, err := model.GetChannelStatistics(channel.ID, "", startTime, endTime)
 	require.NoError(t, err, "Failed to query recent statistics")
 	assert.Len(t, recentStats, 4, "Should return 4 records within last 20 minutes")
 
@@ -193,13 +193,13 @@ func TestDB02_ChannelStatistics_Query(t *testing.T) {
 
 	// Step 6: Query with all filters combined
 	// Query gpt-4 records from last 20 minutes
-	filteredStats, err := model.GetChannelStatistics(channel.Id, "gpt-4", startTime, endTime)
+	filteredStats, err := model.GetChannelStatistics(channel.ID, "gpt-4", startTime, endTime)
 	require.NoError(t, err, "Failed to query with all filters")
 	assert.Len(t, filteredStats, 2, "Should return 2 gpt-4 records within last 20 minutes")
 
 	// Verify precise filtering
 	for _, stat := range filteredStats {
-		assert.Equal(t, channel.Id, stat.ChannelId, "ChannelId should match")
+		assert.Equal(t, channel.ID, stat.ChannelId, "ChannelId should match")
 		assert.Equal(t, "gpt-4", stat.ModelName, "ModelName should match")
 		assert.GreaterOrEqual(t, stat.TimeWindowStart, startTime, "TimeWindowStart should be >= startTime")
 		assert.LessOrEqual(t, stat.TimeWindowStart, endTime, "TimeWindowStart should be <= endTime")
@@ -246,7 +246,7 @@ func TestDB03_ChannelStatistics_Update(t *testing.T) {
 	timeWindow := roundToTimeWindow(now)
 
 	initialStat := &model.ChannelStatistics{
-		ChannelId:       channel.Id,
+		ChannelId:       channel.ID,
 		ModelName:       "gpt-4",
 		TimeWindowStart: timeWindow,
 		RequestCount:    100,
@@ -272,7 +272,7 @@ func TestDB03_ChannelStatistics_Update(t *testing.T) {
 
 	// Step 3: Upsert the same record with updated data
 	updatedStat := &model.ChannelStatistics{
-		ChannelId:       channel.Id,
+		ChannelId:       channel.ID,
 		ModelName:       "gpt-4",
 		TimeWindowStart: timeWindow, // Same as initial
 		RequestCount:    200,        // Updated
@@ -290,14 +290,14 @@ func TestDB03_ChannelStatistics_Update(t *testing.T) {
 	require.NoError(t, err, "Failed to upsert statistics")
 
 	// Step 4: Verify only one record exists (no duplicate insertion)
-	stats, err := model.GetChannelStatistics(channel.Id, "gpt-4", timeWindow, timeWindow)
+	stats, err := model.GetChannelStatistics(channel.ID, "gpt-4", timeWindow, timeWindow)
 	require.NoError(t, err, "Failed to query statistics")
 	assert.Len(t, stats, 1, "Should have exactly one record (no duplicate)")
 
 	updatedRecord := stats[0]
 
 	// Step 5: Verify the data was updated correctly
-	assert.Equal(t, channel.Id, updatedRecord.ChannelId, "ChannelId should match")
+	assert.Equal(t, channel.ID, updatedRecord.ChannelId, "ChannelId should match")
 	assert.Equal(t, "gpt-4", updatedRecord.ModelName, "ModelName should match")
 	assert.Equal(t, timeWindow, updatedRecord.TimeWindowStart, "TimeWindowStart should match")
 	assert.Equal(t, 200, updatedRecord.RequestCount, "RequestCount should be updated")
@@ -317,7 +317,7 @@ func TestDB03_ChannelStatistics_Update(t *testing.T) {
 	// Step 7: Insert a new record with different time window
 	newTimeWindow := timeWindow - 15*60 // 15 minutes earlier
 	newStat := &model.ChannelStatistics{
-		ChannelId:       channel.Id,
+		ChannelId:       channel.ID,
 		ModelName:       "gpt-4",
 		TimeWindowStart: newTimeWindow, // Different time window
 		RequestCount:    150,
@@ -335,7 +335,7 @@ func TestDB03_ChannelStatistics_Update(t *testing.T) {
 	require.NoError(t, err, "Failed to insert new statistics")
 
 	// Step 8: Verify both records exist
-	allStats, err := model.GetChannelStatistics(channel.Id, "gpt-4", 0, 0)
+	allStats, err := model.GetChannelStatistics(channel.ID, "gpt-4", 0, 0)
 	require.NoError(t, err, "Failed to query all statistics")
 	assert.Len(t, allStats, 2, "Should have exactly 2 records")
 

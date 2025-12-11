@@ -586,6 +586,9 @@ func (s *CacheSuite) Cleanup() {
 	if s.redisServer != nil {
 		s.redisServer.Close()
 	}
+	// Ensure REDIS_CONN_STRING does not leak into other test suites that
+	// intentionally run without Redis (e.g., routing + cache CON-xx tests).
+	_ = os.Unsetenv("REDIS_CONN_STRING")
 }
 
 // triggerUserGroupsCache issues a chat completion request using the given

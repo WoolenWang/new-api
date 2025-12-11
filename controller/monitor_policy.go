@@ -208,8 +208,10 @@ func CreateMonitorPolicy(c *gin.Context) {
 		"success": true,
 		"message": "创建监控策略成功",
 		// For compatibility with monitoring tests, return the policy ID
-		// instead of the full object.
-		"data": policy.Id,
+		// wrapped in an object so tests can read data.id.
+		"data": gin.H{
+			"id": policy.Id,
+		},
 	})
 }
 

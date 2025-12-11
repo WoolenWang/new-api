@@ -170,8 +170,10 @@ func CreateOrUpdateModelBaseline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "保存模型基准成功",
-		// For API consistency with tests, return the baseline ID as data.
-		"data": baseline.Id,
+		// For API completeness tests, wrap the baseline ID in an object.
+		"data": gin.H{
+			"id": baseline.Id,
+		},
 	})
 }
 

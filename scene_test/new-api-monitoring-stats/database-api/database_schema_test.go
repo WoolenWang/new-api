@@ -104,9 +104,9 @@ func (s *DatabaseSchemaSuite) createTestChannel(t *testing.T, name, modelName, g
 		Group:  group,
 	}
 
-	id, err := s.Client.CreateChannel(channel)
+	id, err := s.Client.AddChannel(channel)
 	require.NoError(t, err, "Failed to create test channel")
-	channel.Id = id
+	channel.ID = id
 
 	return channel
 }
@@ -118,15 +118,14 @@ func (s *DatabaseSchemaSuite) createTestP2PGroup(t *testing.T, name string, owne
 	group := &testutil.P2PGroupModel{
 		Name:        name,
 		DisplayName: fmt.Sprintf("Test Group %s", name),
-		OwnerID:     ownerID,
+		OwnerId:     ownerID,
 		Type:        2, // Shared
 		JoinMethod:  0, // Invite
-		Status:      1, // Active
 	}
 
 	id, err := s.Client.CreateP2PGroup(group)
 	require.NoError(t, err, "Failed to create test P2P group")
-	group.Id = id
+	group.ID = id
 
 	return group
 }

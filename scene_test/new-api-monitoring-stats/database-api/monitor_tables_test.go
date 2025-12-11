@@ -319,7 +319,7 @@ func TestDB13_ModelBaselines_Create(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Write a professional business email about...",
 		BaselineOutput:     "Dear Sir/Madam, I am writing to inform you...",
 	}
@@ -336,7 +336,7 @@ func TestDB13_ModelBaselines_Create(t *testing.T) {
 	assert.Equal(t, "gpt-4", retrieved.ModelName)
 	assert.Equal(t, "style", retrieved.TestType)
 	assert.Equal(t, "standard", retrieved.EvaluationStandard)
-	assert.Equal(t, baselineChannel.Id, retrieved.BaselineChannelId)
+	assert.Equal(t, baselineChannel.ID, retrieved.BaselineChannelId)
 
 	// Test Case 2: Create baselines with different combinations (should all succeed)
 	testCases := []struct {
@@ -355,7 +355,7 @@ func TestDB13_ModelBaselines_Create(t *testing.T) {
 			ModelName:          tc.modelName,
 			TestType:           tc.testType,
 			EvaluationStandard: tc.evaluationStandard,
-			BaselineChannelId:  baselineChannel.Id,
+			BaselineChannelId:  baselineChannel.ID,
 			Prompt:             fmt.Sprintf("Test prompt for %s %s", tc.modelName, tc.testType),
 			BaselineOutput:     fmt.Sprintf("Baseline output for %s %s", tc.modelName, tc.testType),
 		}
@@ -407,7 +407,7 @@ func TestDB14_ModelBaselines_Query(t *testing.T) {
 			ModelName:          tb.modelName,
 			TestType:           tb.testType,
 			EvaluationStandard: tb.evaluationStandard,
-			BaselineChannelId:  baselineChannel.Id,
+			BaselineChannelId:  baselineChannel.ID,
 			Prompt:             tb.prompt,
 			BaselineOutput:     fmt.Sprintf("Output for %s %s %s", tb.modelName, tb.testType, tb.evaluationStandard),
 		}
@@ -475,7 +475,7 @@ func TestDB15_ModelBaselines_Update(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Write a professional email",
 		BaselineOutput:     "Initial baseline output",
 	}
@@ -489,7 +489,7 @@ func TestDB15_ModelBaselines_Update(t *testing.T) {
 	// Update baseline output and prompt
 	baseline.BaselineOutput = "Updated baseline output with new standards"
 	baseline.Prompt = "Write a professional email (updated)"
-	baseline.BaselineChannelId = baselineChannel.Id // Can also update to different channel
+	baseline.BaselineChannelId = baselineChannel.ID // Can also update to different channel
 
 	err = model.UpdateModelBaseline(baseline)
 	require.NoError(t, err, "Failed to update baseline")
@@ -531,7 +531,7 @@ func TestDB16_MonitoringResults_Create(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Test prompt",
 		BaselineOutput:     "Test baseline output",
 	}
@@ -542,7 +542,7 @@ func TestDB16_MonitoringResults_Create(t *testing.T) {
 	reason1 := "Output matches baseline style"
 	rawOutput1 := "Test output that matches the baseline"
 	result1 := &model.ModelMonitoringResult{
-		ChannelId:          channel.Id,
+		ChannelId:          channel.ID,
 		ModelName:          "gpt-4",
 		BaselineId:         baseline.Id,
 		TestType:           "style",
@@ -565,7 +565,7 @@ func TestDB16_MonitoringResults_Create(t *testing.T) {
 	reason2 := "Significant style deviation detected"
 	rawOutput2 := "Test output with different style"
 	result2 := &model.ModelMonitoringResult{
-		ChannelId:          channel.Id,
+		ChannelId:          channel.ID,
 		ModelName:          "gpt-4",
 		BaselineId:         baseline.Id,
 		TestType:           "style",
@@ -585,7 +585,7 @@ func TestDB16_MonitoringResults_Create(t *testing.T) {
 	// Test Case 3: Create a monitor_failed result
 	reason3 := "Upstream timeout after 3 retries"
 	result3 := &model.ModelMonitoringResult{
-		ChannelId:          channel.Id,
+		ChannelId:          channel.ID,
 		ModelName:          "gpt-4",
 		BaselineId:         baseline.Id,
 		TestType:           "reasoning",
@@ -605,7 +605,7 @@ func TestDB16_MonitoringResults_Create(t *testing.T) {
 	// Verify retrieval
 	retrieved, err := model.GetMonitoringResultById(result1.Id)
 	require.NoError(t, err, "Failed to retrieve result")
-	assert.Equal(t, channel.Id, retrieved.ChannelId)
+	assert.Equal(t, channel.ID, retrieved.ChannelId)
 	assert.Equal(t, "gpt-4", retrieved.ModelName)
 	assert.Equal(t, "pass", retrieved.Status)
 	assert.InDelta(t, 5.5, retrieved.DiffScore, 0.01)
@@ -638,7 +638,7 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Test",
 		BaselineOutput:     "Output",
 	}
@@ -649,7 +649,7 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 		ModelName:          "gpt-3.5-turbo",
 		TestType:           "encoding",
 		EvaluationStandard: "strict",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Test",
 		BaselineOutput:     "Output",
 	}
@@ -666,11 +666,11 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 		timeOffset int64
 		status     string
 	}{
-		{channel1.Id, "gpt-4", baseline1.Id, "style", 0, "pass"},
-		{channel1.Id, "gpt-4", baseline1.Id, "style", -3600, "pass"},
-		{channel1.Id, "gpt-4", baseline1.Id, "style", -7200, "fail"},
-		{channel2.Id, "gpt-3.5-turbo", baseline2.Id, "encoding", 0, "pass"},
-		{channel2.Id, "gpt-3.5-turbo", baseline2.Id, "encoding", -3600, "pass"},
+		{channel1.ID, "gpt-4", baseline1.Id, "style", 0, "pass"},
+		{channel1.ID, "gpt-4", baseline1.Id, "style", -3600, "pass"},
+		{channel1.ID, "gpt-4", baseline1.Id, "style", -7200, "fail"},
+		{channel2.ID, "gpt-3.5-turbo", baseline2.Id, "encoding", 0, "pass"},
+		{channel2.ID, "gpt-3.5-turbo", baseline2.Id, "encoding", -3600, "pass"},
 	}
 
 	for i, td := range testData {
@@ -692,11 +692,11 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 	}
 
 	// Query by channel_id
-	ch1Results, err := model.GetMonitoringResultsByChannel(channel1.Id, 0)
+	ch1Results, err := model.GetMonitoringResultsByChannel(channel1.ID, 0)
 	require.NoError(t, err, "Failed to query by channel")
 	assert.Len(t, ch1Results, 3, "Should have 3 results for channel1")
 	for _, result := range ch1Results {
-		assert.Equal(t, channel1.Id, result.ChannelId)
+		assert.Equal(t, channel1.ID, result.ChannelId)
 	}
 
 	// Query by model_name
@@ -707,7 +707,7 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 	// Query by channel_id and model_name with time range
 	startTime := baseTime - 5000
 	endTime := baseTime + 100
-	filteredResults, err := model.GetMonitoringResultsByChannelAndModel(channel1.Id, "gpt-4", startTime, endTime, 0)
+	filteredResults, err := model.GetMonitoringResultsByChannelAndModel(channel1.ID, "gpt-4", "", startTime, endTime, 0)
 	require.NoError(t, err, "Failed to query with filters")
 	assert.GreaterOrEqual(t, len(filteredResults), 3, "Should have at least 3 filtered results")
 
@@ -742,7 +742,7 @@ func TestDB18_MonitoringResults_TimeRange(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelId:  baselineChannel.Id,
+		BaselineChannelId:  baselineChannel.ID,
 		Prompt:             "Test",
 		BaselineOutput:     "Output",
 	}
@@ -763,7 +763,7 @@ func TestDB18_MonitoringResults_TimeRange(t *testing.T) {
 	for i, offset := range timeOffsets {
 		reason := fmt.Sprintf("Result at offset %d", offset)
 		result := &model.ModelMonitoringResult{
-			ChannelId:          channel.Id,
+			ChannelId:          channel.ID,
 			ModelName:          "gpt-4",
 			BaselineId:         baseline.Id,
 			TestType:           "style",
@@ -779,7 +779,7 @@ func TestDB18_MonitoringResults_TimeRange(t *testing.T) {
 
 	// Query last 1 hour (should get 2 results: now and 30 min ago)
 	oneHourAgo := baseTime - 3600
-	results1h, err := model.GetMonitoringResultsByChannelAndModel(channel.Id, "gpt-4", oneHourAgo, baseTime+60, 0)
+	results1h, err := model.GetMonitoringResultsByChannelAndModel(channel.ID, "gpt-4", "style", oneHourAgo, baseTime+60, 0)
 	require.NoError(t, err, "Failed to query last 1 hour")
 	assert.Len(t, results1h, 2, "Should have 2 results in last 1 hour")
 
@@ -791,23 +791,23 @@ func TestDB18_MonitoringResults_TimeRange(t *testing.T) {
 
 	// Query last 3 hours (should get 4 results)
 	threeHoursAgo := baseTime - 10800
-	results3h, err := model.GetMonitoringResultsByChannelAndModel(channel.Id, "gpt-4", threeHoursAgo, baseTime+60, 0)
+	results3h, err := model.GetMonitoringResultsByChannelAndModel(channel.ID, "gpt-4", "style", threeHoursAgo, baseTime+60, 0)
 	require.NoError(t, err, "Failed to query last 3 hours")
 	assert.Len(t, results3h, 4, "Should have 4 results in last 3 hours")
 
 	// Query with start time only (no end time)
 	twoHoursAgo := baseTime - 7200
-	resultsStartOnly, err := model.GetMonitoringResultsByChannelAndModel(channel.Id, "gpt-4", twoHoursAgo, 0, 0)
+	resultsStartOnly, err := model.GetMonitoringResultsByChannelAndModel(channel.ID, "gpt-4", "style", twoHoursAgo, 0, 0)
 	require.NoError(t, err, "Failed to query with start time only")
 	assert.GreaterOrEqual(t, len(resultsStartOnly), 3, "Should have at least 3 results after 2 hours ago")
 
 	// Query with end time only (from beginning)
-	resultsEndOnly, err := model.GetMonitoringResultsByChannelAndModel(channel.Id, "gpt-4", 0, oneHourAgo, 0)
+	resultsEndOnly, err := model.GetMonitoringResultsByChannelAndModel(channel.ID, "gpt-4", "style", 0, oneHourAgo, 0)
 	require.NoError(t, err, "Failed to query with end time only")
 	assert.GreaterOrEqual(t, len(resultsEndOnly), 4, "Should have at least 4 results before 1 hour ago")
 
 	// Test with limit parameter
-	limitedResults, err := model.GetMonitoringResultsByChannelAndModel(channel.Id, "gpt-4", 0, 0, 3)
+	limitedResults, err := model.GetMonitoringResultsByChannelAndModel(channel.ID, "gpt-4", "style", 0, 0, 3)
 	require.NoError(t, err, "Failed to query with limit")
 	assert.LessOrEqual(t, len(limitedResults), 3, "Should have at most 3 results with limit=3")
 

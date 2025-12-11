@@ -99,16 +99,16 @@ func SetupAPICompletenessSuite(t *testing.T) (*APICompletenessSuite, func()) {
 		Group:       "default",
 		Quota:       1000000,
 	}
-	normalUserID, err := adminClient.CreateUser(normalUser)
+	normalUserID, err := adminClient.CreateUserFull(normalUser)
 	if err != nil {
 		_ = server.Stop()
 		t.Fatalf("failed to create normal user: %v", err)
 	}
-	normalUser.Id = normalUserID
+	normalUser.ID = normalUserID
 	suite.NormalUser = normalUser
 
 	// Create a token for normal user
-	tokenKey, err := adminClient.CreateToken(&testutil.TokenModel{
+	tokenKey, err := adminClient.CreateTokenFull(&testutil.TokenModel{
 		UserId:         normalUserID,
 		Name:           "normal-user-token",
 		UnlimitedQuota: false,
@@ -135,29 +135,28 @@ func SetupAPICompletenessSuite(t *testing.T) (*APICompletenessSuite, func()) {
 		Models: "gpt-4,gpt-3.5-turbo",
 		Group:  "default",
 	}
-	channelID, err := adminClient.CreateChannel(channel)
+	channelID, err := adminClient.AddChannel(channel)
 	if err != nil {
 		_ = server.Stop()
 		t.Fatalf("failed to create test channel: %v", err)
 	}
-	channel.Id = channelID
+	channel.ID = channelID
 	suite.TestChannel = channel
 
 	// Create a test P2P group for group statistics tests
 	group := &testutil.P2PGroupModel{
 		Name:        fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
 		DisplayName: "Test Group for API Tests",
-		OwnerID:     1, // Admin user
+		OwnerId:     1, // Admin user
 		Type:        2, // Shared
 		JoinMethod:  0, // Invite
-		Status:      1, // Active
 	}
 	groupID, err := adminClient.CreateP2PGroup(group)
 	if err != nil {
 		_ = server.Stop()
 		t.Fatalf("failed to create test P2P group: %v", err)
 	}
-	group.Id = groupID
+	group.ID = groupID
 	suite.TestP2PGroup = group
 
 	cleanup := func() {
@@ -240,7 +239,7 @@ func TestAPI01_ChannelStats_WithPeriodAndModel(t *testing.T) {
 	baseTime := roundToTimeWindow(now)
 
 	stat := &model.ChannelStatistics{
-		ChannelId:       suite.TestChannel.Id,
+		ChannelId:       suite.TestChannel.ID,
 		ModelName:       "gpt-4",
 		TimeWindowStart: baseTime - 30*60, // 30 minutes ago
 		RequestCount:    100,
@@ -258,7 +257,7 @@ func TestAPI01_ChannelStats_WithPeriodAndModel(t *testing.T) {
 	require.NoError(t, err, "Failed to create test channel statistics")
 
 	// Step 2: Admin user queries channel stats
-	path := fmt.Sprintf("/api/channels/%d/stats?period=1h&model=gpt-4", suite.TestChannel.Id)
+	path := fmt.Sprintf("/api/channels/%d/stats?period=1h&model=gpt-4", suite.TestChannel.ID)
 	resp, err := suite.AdminClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -319,7 +318,7 @@ func TestAPI02_ChannelStats_WithPeriodOnly(t *testing.T) {
 	models := []string{"gpt-4", "gpt-3.5-turbo"}
 	for _, modelName := range models {
 		stat := &model.ChannelStatistics{
-			ChannelId:       suite.TestChannel.Id,
+			ChannelId:       suite.TestChannel.ID,
 			ModelName:       modelName,
 			TimeWindowStart: baseTime - 3600, // 1 hour ago
 			RequestCount:    50,
@@ -338,7 +337,7 @@ func TestAPI02_ChannelStats_WithPeriodOnly(t *testing.T) {
 	}
 
 	// Step 2: Admin user queries channel stats without model filter
-	path := fmt.Sprintf("/api/channels/%d/stats?period=7d", suite.TestChannel.Id)
+	path := fmt.Sprintf("/api/channels/%d/stats?period=7d", suite.TestChannel.ID)
 	resp, err := suite.AdminClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -386,7 +385,7 @@ func TestAPI03_ChannelStats_NormalUserPermission(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Normal user attempts to query channel stats
-	path := fmt.Sprintf("/api/channels/%d/stats?period=1h", suite.TestChannel.Id)
+	path := fmt.Sprintf("/api/channels/%d/stats?period=1h", suite.TestChannel.ID)
 	resp, err := suite.NormalClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -427,7 +426,7 @@ func TestAPI04_CreateModelBaseline(t *testing.T) {
 		"model_name":          "gpt-4",
 		"test_type":           "style",
 		"evaluation_standard": "standard",
-		"baseline_channel_id": suite.TestChannel.Id,
+		"baseline_channel_id": suite.TestChannel.ID,
 		"prompt":              "Write a short story about a robot.",
 		"baseline_output":     "Once upon a time, in a distant future, there was a robot named R2D2...",
 	}
@@ -496,7 +495,7 @@ func TestAPI05_GetAllBaselines(t *testing.T) {
 			"model_name":          "gpt-4",
 			"test_type":           "style",
 			"evaluation_standard": "strict",
-			"baseline_channel_id": suite.TestChannel.Id,
+			"baseline_channel_id": suite.TestChannel.ID,
 			"prompt":              "Test prompt 1",
 			"baseline_output":     "Test output 1",
 		},
@@ -504,7 +503,7 @@ func TestAPI05_GetAllBaselines(t *testing.T) {
 			"model_name":          "gpt-3.5-turbo",
 			"test_type":           "encoding",
 			"evaluation_standard": "standard",
-			"baseline_channel_id": suite.TestChannel.Id,
+			"baseline_channel_id": suite.TestChannel.ID,
 			"prompt":              "Test prompt 2",
 			"baseline_output":     "Test output 2",
 		},
@@ -800,7 +799,7 @@ func TestAPI09_GetChannelMonitoringHistory(t *testing.T) {
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelID:  suite.TestChannel.Id,
+		BaselineChannelId:  suite.TestChannel.ID,
 		Prompt:             "Test prompt",
 		BaselineOutput:     "Test baseline output",
 		CreatedAt:          time.Now().Unix(),
@@ -809,26 +808,30 @@ func TestAPI09_GetChannelMonitoringHistory(t *testing.T) {
 	require.NoError(t, err, "Failed to create baseline")
 
 	// Create monitoring results
+	reason1 := "Output matches baseline well"
+	raw1 := "Test output 1"
+	reason2 := "Significant deviation from baseline"
+	raw2 := "Test output 2"
 	results := []model.ModelMonitoringResult{
 		{
-			ChannelId:     suite.TestChannel.Id,
+			ChannelId:     suite.TestChannel.ID,
 			ModelName:     "gpt-4",
 			BaselineId:    baseline.Id,
 			TestTimestamp: time.Now().Unix() - 3600, // 1 hour ago
 			Status:        "pass",
 			DiffScore:     5.0,
-			Reason:        "Output matches baseline well",
-			RawOutput:     "Test output 1",
+			Reason:        &reason1,
+			RawOutput:     &raw1,
 		},
 		{
-			ChannelId:     suite.TestChannel.Id,
+			ChannelId:     suite.TestChannel.ID,
 			ModelName:     "gpt-4",
 			BaselineId:    baseline.Id,
 			TestTimestamp: time.Now().Unix() - 1800, // 30 minutes ago
 			Status:        "fail",
 			DiffScore:     70.0,
-			Reason:        "Significant deviation from baseline",
-			RawOutput:     "Test output 2",
+			Reason:        &reason2,
+			RawOutput:     &raw2,
 		},
 	}
 
@@ -838,7 +841,7 @@ func TestAPI09_GetChannelMonitoringHistory(t *testing.T) {
 	}
 
 	// Step 2: Admin user queries monitoring results
-	path := fmt.Sprintf("/api/channels/%d/monitoring_results?model_name=gpt-4", suite.TestChannel.Id)
+	path := fmt.Sprintf("/api/channels/%d/monitoring_results?model_name=gpt-4", suite.TestChannel.ID)
 	resp, err := suite.AdminClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -902,16 +905,16 @@ func TestAPI10_GetModelMonitoringReport(t *testing.T) {
 		Models: "gpt-4",
 		Group:  "default",
 	}
-	channel2ID, err := suite.AdminClient.CreateChannel(channel2)
+	channel2ID, err := suite.AdminClient.AddChannel(channel2)
 	require.NoError(t, err, "Failed to create second channel")
-	channel2.Id = channel2ID
+	channel2.ID = channel2ID
 
 	// Create baseline
 	baseline := &model.ModelBaseline{
 		ModelName:          "gpt-4",
 		TestType:           "style",
 		EvaluationStandard: "standard",
-		BaselineChannelID:  suite.TestChannel.Id,
+		BaselineChannelId:  suite.TestChannel.ID,
 		Prompt:             "Test prompt",
 		BaselineOutput:     "Test baseline output",
 		CreatedAt:          time.Now().Unix(),
@@ -920,16 +923,20 @@ func TestAPI10_GetModelMonitoringReport(t *testing.T) {
 	require.NoError(t, err, "Failed to create baseline")
 
 	// Create monitoring results for both channels
+	reasonPass := "Good match"
+	rawPass := "Output 1"
+	reasonFail := "Poor match"
+	rawFail := "Output 2"
 	results := []model.ModelMonitoringResult{
 		{
-			ChannelId:     suite.TestChannel.Id,
+			ChannelId:     suite.TestChannel.ID,
 			ModelName:     "gpt-4",
 			BaselineId:    baseline.Id,
 			TestTimestamp: time.Now().Unix(),
 			Status:        "pass",
 			DiffScore:     10.0,
-			Reason:        "Good match",
-			RawOutput:     "Output 1",
+			Reason:        &reasonPass,
+			RawOutput:     &rawPass,
 		},
 		{
 			ChannelId:     channel2ID,
@@ -938,8 +945,8 @@ func TestAPI10_GetModelMonitoringReport(t *testing.T) {
 			TestTimestamp: time.Now().Unix(),
 			Status:        "fail",
 			DiffScore:     80.0,
-			Reason:        "Poor match",
-			RawOutput:     "Output 2",
+			Reason:        &reasonFail,
+			RawOutput:     &rawFail,
 		},
 	}
 
@@ -1003,13 +1010,13 @@ func TestAPI11_GetGroupStats_AsMember(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Add normal user as member to the test P2P group
-	err := suite.AdminClient.AddP2PGroupMember(suite.TestP2PGroup.Id, suite.NormalUser.Id, 1) // status=1 (Active)
+	err := suite.AdminClient.AddP2PGroupMember(suite.TestP2PGroup.ID, suite.NormalUser.ID, 1) // status=1 (Active)
 	require.NoError(t, err, "Failed to add normal user to group")
 
 	// Step 2: Create test group statistics data
 	now := time.Now()
 	groupStat := &model.GroupStatistics{
-		GroupId:         suite.TestP2PGroup.Id,
+		GroupId:         suite.TestP2PGroup.ID,
 		ModelName:       "gpt-4",
 		TimeWindowStart: roundToTimeWindow(now),
 		TPM:             5000,
@@ -1028,7 +1035,7 @@ func TestAPI11_GetGroupStats_AsMember(t *testing.T) {
 	require.NoError(t, err, "Failed to create group statistics")
 
 	// Step 3: Normal user (as group member) queries group stats
-	path := fmt.Sprintf("/api/p2p_groups/%d/stats", suite.TestP2PGroup.Id)
+	path := fmt.Sprintf("/api/p2p_groups/%d/stats", suite.TestP2PGroup.ID)
 	resp, err := suite.NormalClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -1081,7 +1088,7 @@ func TestAPI12_GetGroupStats_NonMemberPermission(t *testing.T) {
 	// (Normal user is not added to the group by default in setup)
 
 	// Step 2: Normal user attempts to query group stats
-	path := fmt.Sprintf("/api/p2p_groups/%d/stats", suite.TestP2PGroup.Id)
+	path := fmt.Sprintf("/api/p2p_groups/%d/stats", suite.TestP2PGroup.ID)
 	resp, err := suite.NormalClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
@@ -1114,7 +1121,7 @@ func TestAPI13_GetGroupStats_WithModelFilter(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Add normal user as member to the test P2P group
-	err := suite.AdminClient.AddP2PGroupMember(suite.TestP2PGroup.Id, suite.NormalUser.Id, 1) // status=1 (Active)
+	err := suite.AdminClient.AddP2PGroupMember(suite.TestP2PGroup.ID, suite.NormalUser.ID, 1) // status=1 (Active)
 	require.NoError(t, err, "Failed to add normal user to group")
 
 	// Step 2: Create statistics for multiple models
@@ -1124,7 +1131,7 @@ func TestAPI13_GetGroupStats_WithModelFilter(t *testing.T) {
 	models := []string{"gpt-4", "gpt-3.5-turbo", "claude-3-opus"}
 	for i, modelName := range models {
 		groupStat := &model.GroupStatistics{
-			GroupId:         suite.TestP2PGroup.Id,
+			GroupId:         suite.TestP2PGroup.ID,
 			ModelName:       modelName,
 			TimeWindowStart: baseTime,
 			TPM:             1000 * (i + 1),
@@ -1144,7 +1151,7 @@ func TestAPI13_GetGroupStats_WithModelFilter(t *testing.T) {
 	}
 
 	// Step 3: Normal user queries group stats with model filter
-	path := fmt.Sprintf("/api/p2p_groups/%d/stats?model=gpt-4", suite.TestP2PGroup.Id)
+	path := fmt.Sprintf("/api/p2p_groups/%d/stats?model=gpt-4", suite.TestP2PGroup.ID)
 	resp, err := suite.NormalClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()

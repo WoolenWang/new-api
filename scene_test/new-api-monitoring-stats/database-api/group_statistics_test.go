@@ -33,10 +33,10 @@ func TestDB06_GroupStatistics_Create(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Create a test user and P2P group
-	testUser, err := testutil.CreateTestUser(suite.Client, "groupstats-owner", "default")
+	testUser, err := suite.Fixtures.CreateTestUser("groupstats-owner", "defaultpass", "default")
 	require.NoError(t, err, "Failed to create test user")
 
-	group := suite.createTestP2PGroup(t, "test-group-db06", testUser.Id)
+	group := suite.createTestP2PGroup(t, "test-group-db06", testUser.ID)
 
 	// Step 2: Insert multiple group statistics records with different models and time windows
 	now := time.Now()
@@ -61,7 +61,7 @@ func TestDB06_GroupStatistics_Create(t *testing.T) {
 	var createdStats []*model.GroupStatistics
 	for i, tc := range testCases {
 		stat := &model.GroupStatistics{
-			GroupId:            group.Id,
+			GroupId:            group.ID,
 			ModelName:          tc.modelName,
 			TimeWindowStart:    baseTime + tc.timeOffset,
 			TPM:                tc.tpm,
@@ -112,7 +112,7 @@ func TestDB06_GroupStatistics_Create(t *testing.T) {
 	}
 
 	// Verify composite key uniqueness - try to query all records for the group
-	allStats, err := model.GetGroupStatisticsByGroupId(group.Id)
+	allStats, err := model.GetGroupStatisticsByGroupId(group.ID)
 	require.NoError(t, err, "Failed to query all group statistics")
 	assert.Len(t, allStats, len(testCases), "Should have exactly %d records", len(testCases))
 
@@ -141,10 +141,10 @@ func TestDB07_GroupStatistics_Query(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Create a test group
-	testUser, err := testutil.CreateTestUser(suite.Client, "groupstats-query", "default")
+	testUser, err := suite.Fixtures.CreateTestUser("groupstats-query", "defaultpass", "default")
 	require.NoError(t, err, "Failed to create test user")
 
-	group := suite.createTestP2PGroup(t, "test-group-db07", testUser.Id)
+	group := suite.createTestP2PGroup(t, "test-group-db07", testUser.ID)
 
 	// Step 2: Insert multiple statistics records
 	now := time.Now()
@@ -166,7 +166,7 @@ func TestDB07_GroupStatistics_Query(t *testing.T) {
 
 	for _, td := range testData {
 		stat := &model.GroupStatistics{
-			GroupId:           group.Id,
+			GroupId:           group.ID,
 			ModelName:         td.modelName,
 			TimeWindowStart:   baseTime + td.timeOffset,
 			TPM:               td.tpm,
@@ -179,20 +179,20 @@ func TestDB07_GroupStatistics_Query(t *testing.T) {
 	}
 
 	// Step 3: Query by group_id only
-	allStats, err := model.GetGroupStatistics(group.Id, "", 0, 0)
+	allStats, err := model.GetGroupStatistics(group.ID, "", 0, 0)
 	require.NoError(t, err, "Failed to query all group statistics")
 	assert.Len(t, allStats, 7, "Should return all 7 records for the group")
 
 	// Step 4: Query by group_id and model_name
-	gpt4Stats, err := model.GetGroupStatistics(group.Id, "gpt-4", 0, 0)
+	gpt4Stats, err := model.GetGroupStatistics(group.ID, "gpt-4", 0, 0)
 	require.NoError(t, err, "Failed to query gpt-4 statistics")
 	assert.Len(t, gpt4Stats, 4, "Should return 4 gpt-4 records")
 	for _, stat := range gpt4Stats {
 		assert.Equal(t, "gpt-4", stat.ModelName, "All records should be for gpt-4")
-		assert.Equal(t, group.Id, stat.GroupId, "All records should be for the correct group")
+		assert.Equal(t, group.ID, stat.GroupId, "All records should be for the correct group")
 	}
 
-	gpt35Stats, err := model.GetGroupStatistics(group.Id, "gpt-3.5-turbo", 0, 0)
+	gpt35Stats, err := model.GetGroupStatistics(group.ID, "gpt-3.5-turbo", 0, 0)
 	require.NoError(t, err, "Failed to query gpt-3.5-turbo statistics")
 	assert.Len(t, gpt35Stats, 3, "Should return 3 gpt-3.5-turbo records")
 
@@ -200,7 +200,7 @@ func TestDB07_GroupStatistics_Query(t *testing.T) {
 	// Query for records from last 20 minutes (should include current and -15min windows)
 	startTime := baseTime - 20*60
 	endTime := baseTime + 60
-	recentStats, err := model.GetGroupStatistics(group.Id, "", startTime, endTime)
+	recentStats, err := model.GetGroupStatistics(group.ID, "", startTime, endTime)
 	require.NoError(t, err, "Failed to query recent statistics")
 	assert.Len(t, recentStats, 4, "Should return 4 records within last 20 minutes")
 
@@ -211,20 +211,20 @@ func TestDB07_GroupStatistics_Query(t *testing.T) {
 	}
 
 	// Step 6: Query latest statistics
-	latestGpt4, err := model.GetLatestGroupStatistics(group.Id, "gpt-4")
+	latestGpt4, err := model.GetLatestGroupStatistics(group.ID, "gpt-4")
 	require.NoError(t, err, "Failed to query latest gpt-4 statistics")
 	assert.NotNil(t, latestGpt4, "Should return latest gpt-4 statistics")
 	assert.Equal(t, "gpt-4", latestGpt4.ModelName, "Should be gpt-4")
 	assert.Equal(t, baseTime, latestGpt4.TimeWindowStart, "Should be the most recent time window")
 	assert.Equal(t, 50000, latestGpt4.TPM, "Should have correct TPM value")
 
-	latestGpt35, err := model.GetLatestGroupStatistics(group.Id, "gpt-3.5-turbo")
+	latestGpt35, err := model.GetLatestGroupStatistics(group.ID, "gpt-3.5-turbo")
 	require.NoError(t, err, "Failed to query latest gpt-3.5-turbo statistics")
 	assert.Equal(t, "gpt-3.5-turbo", latestGpt35.ModelName, "Should be gpt-3.5-turbo")
 	assert.Equal(t, baseTime, latestGpt35.TimeWindowStart, "Should be the most recent time window")
 
 	// Query latest without specifying model
-	latestAny, err := model.GetLatestGroupStatistics(group.Id, "")
+	latestAny, err := model.GetLatestGroupStatistics(group.ID, "")
 	require.NoError(t, err, "Failed to query latest statistics (any model)")
 	assert.NotNil(t, latestAny, "Should return latest statistics")
 	assert.Equal(t, baseTime, latestAny.TimeWindowStart, "Should be the most recent time window")
@@ -262,17 +262,17 @@ func TestDB08_GroupStatistics_Update(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Create a test group
-	testUser, err := testutil.CreateTestUser(suite.Client, "groupstats-update", "default")
+	testUser, err := suite.Fixtures.CreateTestUser("groupstats-update", "defaultpass", "default")
 	require.NoError(t, err, "Failed to create test user")
 
-	group := suite.createTestP2PGroup(t, "test-group-db08", testUser.Id)
+	group := suite.createTestP2PGroup(t, "test-group-db08", testUser.ID)
 
 	// Step 2: Insert an initial group statistics record
 	now := time.Now()
 	timeWindow := roundToTimeWindow(now)
 
 	initialStat := &model.GroupStatistics{
-		GroupId:            group.Id,
+		GroupId:            group.ID,
 		ModelName:          "gpt-4",
 		TimeWindowStart:    timeWindow,
 		TPM:                50000,
@@ -299,7 +299,7 @@ func TestDB08_GroupStatistics_Update(t *testing.T) {
 	time.Sleep(time.Millisecond * 100)
 
 	updatedStat := &model.GroupStatistics{
-		GroupId:            group.Id,
+		GroupId:            group.ID,
 		ModelName:          "gpt-4",
 		TimeWindowStart:    timeWindow, // Same composite key
 		TPM:                60000,      // Updated
@@ -324,7 +324,7 @@ func TestDB08_GroupStatistics_Update(t *testing.T) {
 	assert.Greater(t, updatedStat.UpdatedAt, initialUpdatedAt, "UpdatedAt should be greater after update")
 
 	// Step 5: Verify data was updated correctly
-	retrievedStats, err := model.GetGroupStatistics(group.Id, "gpt-4", timeWindow, timeWindow)
+	retrievedStats, err := model.GetGroupStatistics(group.ID, "gpt-4", timeWindow, timeWindow)
 	require.NoError(t, err, "Failed to query updated statistics")
 
 	// Step 6: Verify no duplicate records were created
@@ -352,7 +352,7 @@ func TestDB08_GroupStatistics_Update(t *testing.T) {
 
 	// Third update
 	thirdUpdateStat := &model.GroupStatistics{
-		GroupId:            group.Id,
+		GroupId:            group.ID,
 		ModelName:          "gpt-4",
 		TimeWindowStart:    timeWindow,
 		TPM:                70000,
@@ -376,7 +376,7 @@ func TestDB08_GroupStatistics_Update(t *testing.T) {
 	assert.Greater(t, thirdUpdateStat.UpdatedAt, secondUpdatedAt, "UpdatedAt should increase with each update")
 
 	// Verify final state
-	finalStats, err := model.GetGroupStatistics(group.Id, "gpt-4", timeWindow, timeWindow)
+	finalStats, err := model.GetGroupStatistics(group.ID, "gpt-4", timeWindow, timeWindow)
 	require.NoError(t, err, "Failed to query final statistics")
 	assert.Len(t, finalStats, 1, "Should still have exactly one record")
 
