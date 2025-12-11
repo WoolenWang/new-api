@@ -710,6 +710,57 @@ func (ci *CacheInspector) VerifyConsistency(userID int) error {
 }
 ```
 
+### 4.4 用例 ID 与自动化测试函数映射（2.1 ~ 2.4）
+
+> 说明：本节将 2.1~2.4 中的每个用例 ID（BR / TG / TP / MR）与当前仓库中已经落地的集成测试函数进行映射，便于从业务用例快速跳转到具体 `*_test.go` 实现。若某些用例尚无一一对应的自动化测试，则在“自动化测试函数”列中标记为“TODO”。
+
+#### 4.4.1 计费与路由解耦（2.1 BR-xx）
+
+| 用例ID | 场景摘要 | 自动化测试函数 | 所在文件 | 备注 |
+| :--- | :--- | :--- | :--- | :--- |
+| BR-01 | 基线-无P2P（同一系统分组路由与计费） | `TestRouting_R01_BasicSystemGroup`<br>`TestBilling_B01_HighRateUserLowRateChannel`（baseline 部分） | `scene_test/new-api-data-plane/routing-authorization/routing_test.go`<br>`scene_test/new-api-data-plane/billing/billing_test.go` | R-01 验证同组路由，B-01/B-02 的基线场景验证“计费看自己”原则 |
+| BR-02 | 加入低费率P2P不影响计费 | `TestRouting_R03_P2PBasicSharing`<br>`TestBilling_B01_HighRateUserLowRateChannel` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go`<br>`scene_test/new-api-data-plane/billing/billing_test.go` | R-03 验证 P2P 共享路由，B-01 验证高费率用户使用低费率渠道时仍按高费率计费 |
+| BR-03 | Token 强制降级计费 | `TestBilling_B03_TokenForceBillingGroup` | `scene_test/new-api-data-plane/billing/billing_test.go` | 用户在 vip 组，Token.Group=`["default"]`，验证 BillingGroup 被 Token 覆盖且倍率从 2.0→1.0 |
+| BR-04 | P2P 扩展路由范围但不允许跨系统升级 | `TestRouting_R02_CrossSystemGroup` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | R-02 验证 default 用户无法访问 vip 渠道；当前实现不支持“通过 P2P 升级系统分组”，与 BR-04 期望一致 |
+| BR-05 | 计费组与 P2P 组交集 | `TestRouting_R03_P2PBasicSharing`<br>`TestBilling_B02_LowRateUserHighRateChannel` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go`<br>`scene_test/new-api-data-plane/billing/billing_test.go` | R-03 验证 P2P 授权 + 成员关系，B-02 验证低费率用户使用高费率渠道时仍按低费率计费，二者组合体现“系统分组 ∧ P2P 授权，计费看自己” |
+
+#### 4.4.2 Token 计费组列表与优先级（2.2 TG-xx）
+
+| 用例ID | 场景摘要 | 自动化测试函数 | 所在文件 | 备注 |
+| :--- | :--- | :--- | :--- | :--- |
+| TG-01 | 单个计费组 | `TestBilling_B03_TokenForceBillingGroup` | `scene_test/new-api-data-plane/billing/billing_test.go` | Token.Group=`["default"]`，等价于单计费组场景，验证覆盖用户组的单一 BillingGroup |
+| TG-02 | 多个计费组-优先匹配 | `TestRouting_TokenWithBillingGroupList_Success` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | Token.Group=`["vip","default"]`，vip 与 default 均有渠道，验证优先命中第一个计费组（vip） |
+| TG-03 | 多个计费组-降级匹配 | `TestRouting_TokenWithBillingGroupList_Failover`<br>`TestBilling_B04_TokenBillingGroupFailover` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go`<br>`scene_test/new-api-data-plane/billing/billing_test.go` | Routing 侧验证从 vip→default 的失败转移；Billing 侧验证 group=`["svip","default"]` 时按 default 倍率计费 |
+| TG-04 | 多个计费组-最终降级 | `TestRouting_TokenWithBillingGroupList_Failover`<br>`TestBilling_B04_TokenBillingGroupFailover` | 同上 | 与 TG-03 相同组合，表示所有高优先级计费组无渠道时最终降级到 default |
+| TG-05 | 所有计费组均无渠道 | （部分覆盖）`TestRouting_R02_CrossSystemGroup` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | R-02 中 default 用户访问 vip 渠道时“无可用渠道”错误，等价于 BillingGroup 候选列表下无匹配渠道；尚无专门针对多计费组全失败的单独用例 |
+| TG-06 | 空列表回退用户分组 | （间接覆盖）多处未设置 Token.Group 的用例，如 `TestRouting_R01_BasicSystemGroup`、各 Billing 测试基线场景 | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` 等 | 所有未显式配置 Token.Group 的集成测试均依赖“回退到 User.Group”行为，当前通过整体路由链路间接验证 |
+| TG-07 | 找到渠道后立即停止 | TODO | - | 现有 `TestRouting_TokenWithBillingGroupList_Success` 只断言首个计费组被命中，未对“是否继续遍历后续计费组”做显式断言，需要后续补充性能/次数级校验 |
+| TG-08 | 与 P2P 组合-优先级 | TODO | - | 当前仓库暂未实现“Token.BillingGroupList + P2P 授权”联合优先级的专门集成用例 |
+| TG-09 | JSON 格式兼容性（`\"vip\"` 旧格式） | TODO | - | 现有测试均使用 JSON 数组格式（如 `["vip"]`），未覆盖单字符串旧格式，需要后续补充 Token 层单测或集成测试 |
+
+#### 4.4.3 Token P2P 分组限制（2.3 TP-xx）
+
+> 注意：当前实现采用了更严格的“无 p2p_group_id 时不访问 P2P 渠道”的语义，相关实现分析见 `docs/Token与b2b分组计费相关实现问题.md`，与 2.3 表中 TP-01 的旧语义略有差异，映射表中已注明。
+
+| 用例ID | 场景摘要 | 自动化测试函数 | 所在文件 | 备注 |
+| :--- | :--- | :--- | :--- | :--- |
+| TP-01 | 无限制 Token 对 P2P 的行为 | `TestRouting_P2P_NoTokenRestriction_CannotUseP2PChannels`<br>`TestRouting_P2P_NoTokenRestriction_UsesPublicChannel`<br>`TestRouting_P2P_NoTokenRestriction_OwnerCanUseOwnP2P` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | 实际语义为：无 p2p_group_id 时普通用户只走公共渠道，不使用 P2P 渠道；渠道 owner 仍可自用自己的 P2P 渠道 |
+| TP-02 | 限制单个 P2P 组 | `TestRouting_P2P_TokenRestricted_SelectsOnlyMatchingP2PChannel`<br>`TestRouting_TokenWithP2PRestriction` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | 两个用例分别验证“同一计费组下仅选中绑定 G1 的渠道”和“用户加入 G1+G2 时，Token.p2p_group_id=G1 只允许访问 G1 渠道” |
+| TP-03 | 限制到非成员组 | TODO | - | 当前没有场景“Token.p2p_group_id 指向用户未加入的 P2P 组”的专门集成测试 |
+| TP-04 | 限制与系统分组结合（AND 逻辑） | （部分覆盖）`TestRouting_TokenWithP2PRestriction` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | 该用例验证“系统分组匹配 + P2P 授权 + Token 限制”的组合，但未构造跨系统分组场景（如 default 用户访问 vip 渠道） |
+| TP-05 | 限制与计费组列表结合 | TODO | - | 当前未实现“Token.BillingGroupList + Token.p2p_group_id + 多渠道”的组合用例 |
+
+#### 4.4.4 多计费组迭代选路（2.4 MR-xx）
+
+| 用例ID | 场景摘要 | 自动化测试函数 | 所在文件 | 备注 |
+| :--- | :--- | :--- | :--- | :--- |
+| MR-01 | 第一个计费组立即匹配 | `TestRouting_TokenWithBillingGroupList_Success` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | Token.Group=`["vip","default"]`，vip 组下有渠道，验证直接命中第一个计费组 |
+| MR-02 | 第二个计费组匹配 | `TestRouting_TokenWithBillingGroupList_Failover` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | 同样使用 `["vip","default"]`，未创建 vip 渠道，仅 default 有渠道，验证从第一个计费组失败转移到第二个 |
+| MR-03 | 跳过不可用渠道 | TODO | - | 当前仅在 `channel-stickiness` 套件中有“禁用渠道后重新选路”的测试，尚无针对“多计费组迭代时跳过禁用渠道”的专门用例 |
+| MR-04 | P2P 组与逻辑-第一组失败 | TODO | - | 需要补充“第一个计费组系统分组匹配但 P2P 授权不匹配，第二个计费组成功”的组合场景 |
+| MR-05 | 停止遍历验证 | （部分覆盖）`TestRouting_TokenWithBillingGroupList_Success` | `scene_test/new-api-data-plane/routing-authorization/routing_test.go` | 现有用例保证首个计费组一定被命中，但未对“后续计费组是否被继续遍历”做严格断言，更多体现为性能风险 |
+| MR-06 | Auto 分组展开后遍历 | TODO | - | 虽在 Billing 环境中配置了 `auto` 组（包含 vip + svip），但尚未有以 `Token.Group=["auto"]` 触发自动展开的专门集成测试 |
+
 ---
 
 ## 五、测试执行策略与报告

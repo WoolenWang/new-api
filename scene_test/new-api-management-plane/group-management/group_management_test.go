@@ -1,4 +1,4 @@
-// Package group_management contains integration tests for P2P group management APIs.
+// Package p2p_management contains integration tests for P2P group management APIs.
 //
 // Test Focus:
 // ===========
@@ -14,7 +14,7 @@
 // - G-03: Application and approval workflow
 // - G-04: Member leave and kick
 // - G-05: Group deletion with cascade
-package group_management
+package p2p_management
 
 import (
 	"fmt"
@@ -232,9 +232,20 @@ func TestGroup_G02_PasswordJoin(t *testing.T) {
 		t.Fatalf("failed to create password group: %v", err)
 	}
 
-	// Member tries to join with wrong password -> expect failure and no active membership.
-	if err := memberClient.ApplyToP2PGroup(groupID, "wrong-password"); err == nil {
-		t.Fatalf("expected apply with wrong password to fail, but got nil error")
+	// Member tries to join with wrong password:
+	// New design: request succeeds but creates a Pending membership,
+	// and the member should not see the group in joined list yet.
+	if err := memberClient.ApplyToP2PGroup(groupID, "wrong-password"); err != nil {
+		t.Fatalf("expected apply with wrong password to succeed (Pending), but got error: %v", err)
+	}
+
+	memberInfoAfterWrong, err := admin.GetGroupMemberInfo(groupID, memberID)
+	if err != nil {
+		t.Fatalf("failed to get member info after wrong password join: %v", err)
+	}
+	if memberInfoAfterWrong.Status != model.MemberStatusPending {
+		t.Fatalf("expected member status Pending(%d) after wrong password, got %d",
+			model.MemberStatusPending, memberInfoAfterWrong.Status)
 	}
 
 	joinedGroups, err := memberClient.GetSelfJoinedGroups()
@@ -247,9 +258,9 @@ func TestGroup_G02_PasswordJoin(t *testing.T) {
 		}
 	}
 
-	// Member joins with correct password -> expect immediate Active status.
-	if err := memberClient.ApplyToP2PGroup(groupID, joinPassword); err != nil {
-		t.Fatalf("apply with correct password failed: %v", err)
+	// Owner approves the pending application -> status should become Active.
+	if err := ownerClient.UpdateMemberStatus(groupID, memberID, model.MemberStatusActive); err != nil {
+		t.Fatalf("failed to approve member after wrong password: %v", err)
 	}
 
 	memberInfo, err := admin.GetGroupMemberInfo(groupID, memberID)

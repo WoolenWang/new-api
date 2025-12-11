@@ -492,11 +492,15 @@ func ApplyToJoinGroup(userId, groupId int, password string) (int, error) {
 		// 记录已存在,检查状态
 		switch existing.Status {
 		case MemberStatusActive:
-			return 0, errors.New("您已经是该分组的成员")
+			// 已经是成员: 拒绝重复加入
+			return 0, errors.New("user is already a member of this group")
 		case MemberStatusPending:
 			return 0, errors.New("您的申请正在审核中")
-		case MemberStatusRejected, MemberStatusBanned, MemberStatusLeft:
-			// 允许重新申请,但需要根据加入方式决定状态
+		case MemberStatusBanned:
+			// 被踢出(Banned)的用户不允许重新申请，防止绕过封禁
+			return 0, errors.New("user is banned from this group")
+		case MemberStatusRejected, MemberStatusLeft:
+			// 拒绝或主动退出的用户允许重新申请,但需要根据加入方式决定状态
 			// 如果是密码模式,需要验证密码
 			if group.JoinMethod == JoinMethodPassword {
 				if password != group.JoinKey {
@@ -526,11 +530,14 @@ func ApplyToJoinGroup(userId, groupId int, password string) (int, error) {
 	// 根据加入方式决定初始状态
 	switch group.JoinMethod {
 	case JoinMethodPassword:
-		// 密码模式:验证密码
-		if password != group.JoinKey {
-			return 0, errors.New("密码错误")
+		// 密码模式:
+		// - 密码正确 -> 直接加入 (Active)
+		// - 密码错误 -> 进入待审核 (Pending)，由Owner决定是否通过
+		if password == group.JoinKey {
+			userGroup.Status = MemberStatusActive
+		} else {
+			userGroup.Status = MemberStatusPending
 		}
-		userGroup.Status = MemberStatusActive // 直接通过
 	case JoinMethodApproval:
 		// 审核模式:待审核
 		userGroup.Status = MemberStatusPending

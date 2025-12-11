@@ -17,6 +17,11 @@ type APIClient struct {
 	Token      string
 	UserID     int // For New-Api-User header
 	HTTPClient *http.Client
+	// Server is the underlying test server instance when the client is
+	// created via NewAPIClient. It is nil for ad-hoc clients created
+	// with NewAPIClientWithToken and is used by some tests to locate
+	// the SQLite database on disk.
+	Server *TestServer
 }
 
 // NewAPIClient creates a new API client for the given test server.
@@ -26,6 +31,7 @@ func NewAPIClient(server *TestServer) *APIClient {
 	return &APIClient{
 		BaseURL: server.BaseURL,
 		Token:   server.AdminToken,
+		Server:  server,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar,
@@ -39,6 +45,7 @@ func NewAPIClientWithToken(baseURL, token string) *APIClient {
 	return &APIClient{
 		BaseURL: baseURL,
 		Token:   token,
+		Server:  nil,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar,
@@ -180,6 +187,7 @@ func (c *APIClient) WithToken(token string) *APIClient {
 	return &APIClient{
 		BaseURL: c.BaseURL,
 		Token:   token,
+		Server:  c.Server,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar, // Fresh cookie jar
@@ -193,6 +201,7 @@ func (c *APIClient) Clone() *APIClient {
 	return &APIClient{
 		BaseURL: c.BaseURL,
 		Token:   c.Token,
+		Server:  c.Server,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar,

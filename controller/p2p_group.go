@@ -209,11 +209,28 @@ func UpdateP2PGroup(c *gin.Context) {
 		return
 	}
 
-	// Security check: Only owner can update group
-	// This check can be bypassed by admin token, handled in middleware
-	if existingGroup.OwnerId != group.OwnerId && group.OwnerId != 0 {
-		common.ApiError(c, errors.New("only group owner can update group"))
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+
+	isRoot := myRole == common.RoleRootUser
+	isOwner := existingGroup.OwnerId == myUserId
+
+	// Security check: Only group owner or root admin can update group metadata.
+	if !isRoot && !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "只有分组所有者或超级管理员可以更新分组",
+		})
 		return
+	}
+
+	// Owner transfer support:
+	// - If owner_id is omitted (0), keep existing owner.
+	// - If owner_id is provided and different, allow:
+	//   * root admin to transfer ownership to any user
+	//   * current owner to transfer ownership to another user
+	if group.OwnerId == 0 {
+		group.OwnerId = existingGroup.OwnerId
 	}
 
 	// Update group
@@ -251,6 +268,20 @@ func DeleteP2PGroup(c *gin.Context) {
 	group, err := model.GetGroupById(groupId)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+
+	// Permission check:
+	// - Group owner can delete their own group
+	// - Root admin can delete any group
+	// - Other users must NOT be able to delete the group (PM-01)
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+	if myRole != common.RoleRootUser && group.OwnerId != myUserId {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "只有分组所有者或超级管理员可以删除分组",
+		})
 		return
 	}
 

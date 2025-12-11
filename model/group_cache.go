@@ -177,8 +177,11 @@ func invalidateUserGroupsInMemoryCache(userId int) error {
 		return errors.New("memory cache is not enabled")
 	}
 
-	// 方式1: 直接删除整个用户缓存
-	return invalidateUserCache(userId)
+	// 仅清除 L1 内存缓存中的用户分组信息。这里需要操作的是
+	// userMemoryCacheM（见 user_cache.go），而不是 Redis 中的
+	// user hash，因此调用 invalidateUserMemoryCache 而不是
+	// invalidateUserCache。
+	return invalidateUserMemoryCache(userId)
 
 	// 方式2: 仅清空ExtendedGroups字段 (保留其他缓存数据)
 	// userCache, err := getUserCache(userId)

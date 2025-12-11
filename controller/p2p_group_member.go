@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ApplyToJoinGroup handles user application to join a P2P group
@@ -150,6 +151,54 @@ func UpdateMemberStatus(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	myRole := c.GetInt("role")
+	myUserId := c.GetInt("id")
+
+	// Load group to determine owner.
+	group, err := model.GetGroupById(req.GroupId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// Root admin can always manage members.
+	if myRole != common.RoleRootUser {
+		isOwner := group.OwnerId == myUserId
+		isAdmin := false
+
+		// For non-owners, check if the acting user is an active group admin.
+		if !isOwner && myUserId != 0 {
+			actorMember, err := model.GetMemberInfo(req.GroupId, myUserId)
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				common.ApiError(c, err)
+				return
+			}
+			if err == nil &&
+				actorMember.Status == model.MemberStatusActive &&
+				actorMember.Role == model.MemberRoleAdmin {
+				isAdmin = true
+			}
+		}
+
+		// Protect the group owner from being modified by non-root users who are not the owner.
+		if req.UserId == group.OwnerId && !isOwner {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "only group owner or root admin can operate owner member",
+			})
+			return
+		}
+
+		// If the acting user is neither owner nor group admin, deny the operation.
+		if !isOwner && !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "只有分组所有者或管理员可以管理成员",
+			})
+			return
+		}
 	}
 
 	// Get current member info
