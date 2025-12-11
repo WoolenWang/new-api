@@ -21,15 +21,16 @@
 package database_api
 
 import (
-	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
-	"github.com/stretchr/testify/assert"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // DatabaseSchemaSuite holds shared test resources for database schema tests.
@@ -71,8 +72,8 @@ func SetupDatabaseSchemaSuite(t *testing.T) (*DatabaseSchemaSuite, func()) {
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
-	// Get direct database access
-	db := model.DB
+	// Open direct database access to the same SQLite file used by the test server.
+	db := openTestDB(t, server)
 
 	suite := &DatabaseSchemaSuite{
 		Server:   server,
@@ -89,6 +90,20 @@ func SetupDatabaseSchemaSuite(t *testing.T) (*DatabaseSchemaSuite, func()) {
 	}
 
 	return suite, cleanup
+}
+
+// openTestDB opens a gorm DB connection to the SQLite database file used by the
+// external test server process. This allows tests to inspect and manipulate
+// persistent state created via HTTP APIs.
+func openTestDB(t *testing.T, server *testutil.TestServer) *model.DBWrapper {
+	t.Helper()
+
+	dbFile := filepath.Join(server.DataDir, "one-api.db")
+	gdb, err := gorm.Open(sqlite.Open(dbFile), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open test sqlite db at %s: %v", dbFile, err)
+	}
+	return gdb
 }
 
 // Helper function to create a test channel for database tests

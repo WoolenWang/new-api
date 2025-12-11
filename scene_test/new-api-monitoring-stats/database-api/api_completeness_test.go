@@ -79,8 +79,8 @@ func SetupAPICompletenessSuite(t *testing.T) (*APICompletenessSuite, func()) {
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
-	// Get direct database access
-	db := model.DB
+	// Get direct database access to the same SQLite file used by the test server.
+	db := openTestDB(t, server)
 
 	suite := &APICompletenessSuite{
 		Server:      server,
@@ -89,22 +89,17 @@ func SetupAPICompletenessSuite(t *testing.T) (*APICompletenessSuite, func()) {
 		Fixtures:    testutil.NewTestFixtures(t, adminClient),
 	}
 
-	// Create a normal (non-admin) user for permission tests
-	normalUser := &testutil.UserModel{
-		Username:    fmt.Sprintf("normal-user-%d", time.Now().UnixNano()),
-		Password:    "password123",
-		DisplayName: "Normal User",
-		Role:        1, // Common user role
-		Status:      1, // Enabled
-		Group:       "default",
-		Quota:       1000000,
-	}
-	normalUserID, err := adminClient.CreateUserFull(normalUser)
+	// Create a normal (non-admin) user for permission tests, using fixtures
+	normalUser, err := suite.Fixtures.CreateTestUser(
+		fmt.Sprintf("normal-user-%d", time.Now().UnixNano()),
+		"password123",
+		"default",
+	)
 	if err != nil {
 		_ = server.Stop()
 		t.Fatalf("failed to create normal user: %v", err)
 	}
-	normalUser.ID = normalUserID
+	normalUserID := normalUser.ID
 	suite.NormalUser = normalUser
 
 	// Create a token for normal user
@@ -122,9 +117,15 @@ func SetupAPICompletenessSuite(t *testing.T) (*APICompletenessSuite, func()) {
 	}
 	suite.NormalUserToken = tokenKey
 
-	// Create a client for normal user
-	suite.NormalClient = adminClient.WithToken(tokenKey)
-	suite.NormalClient.UserID = normalUserID
+	// Create a client for normal user using session-based auth.
+	normalClient := testutil.NewAPIClient(server)
+	if _, err := normalClient.Login(normalUser.Username, "password123"); err != nil {
+		_ = server.Stop()
+		t.Fatalf("failed to login as normal user: %v", err)
+	}
+	// Ensure we don't accidentally use an admin access token for user routes.
+	normalClient.Token = ""
+	suite.NormalClient = normalClient
 
 	// Create a test channel for statistics tests
 	channel := &testutil.ChannelModel{
@@ -175,6 +176,7 @@ func parseResponseBody(t *testing.T, resp *http.Response) map[string]interface{}
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err, "Failed to read response body")
+	t.Logf("raw response body: %s", string(body))
 
 	var result map[string]interface{}
 	err = json.Unmarshal(body, &result)
@@ -235,30 +237,29 @@ func TestAPI01_ChannelStats_WithPeriodAndModel(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Prepare test channel statistics data
-	now := time.Now()
-	baseTime := roundToTimeWindow(now)
-
-	stat := &model.ChannelStatistics{
-		ChannelId:       suite.TestChannel.ID,
-		ModelName:       "gpt-4",
-		TimeWindowStart: baseTime - 30*60, // 30 minutes ago
-		RequestCount:    100,
-		FailCount:       5,
-		TotalTokens:     10000,
-		TotalQuota:      1000,
-		TotalLatencyMs:  20000, // 200ms avg
-		StreamReqCount:  50,
-		CacheHitCount:   25,
-		DowntimeSeconds: 0,
-		UniqueUsers:     10,
+	// Prepare one statistics snapshot via internal admin API so that
+	// /api/channels/{id}/stats can aggregate it correctly.
+	payload := map[string]interface{}{
+		"channel_id":       suite.TestChannel.ID,
+		"model_name":       "gpt-4",
+		"request_count":    100,
+		"fail_count":       5,
+		"total_tokens":     10000,
+		"total_quota":      1000,
+		"total_latency_ms": 20000,
+		"stream_req_count": 50,
+		"cache_hit_count":  25,
+		"downtime_seconds": 0,
+		"unique_users":     10,
 	}
 
-	err := model.UpsertChannelStatistics(stat)
-	require.NoError(t, err, "Failed to create test channel statistics")
+	resp, err := suite.AdminClient.Post("/api/internal/channel_statistics", payload)
+	require.NoError(t, err, "Failed to seed channel statistics via internal API")
+	resp.Body.Close()
 
 	// Step 2: Admin user queries channel stats
 	path := fmt.Sprintf("/api/channels/%d/stats?period=1h&model=gpt-4", suite.TestChannel.ID)
-	resp, err := suite.AdminClient.Get(path)
+	resp, err = suite.AdminClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
 
@@ -312,28 +313,26 @@ func TestAPI02_ChannelStats_WithPeriodOnly(t *testing.T) {
 	defer cleanup()
 
 	// Step 1: Prepare test channel statistics for multiple models
-	now := time.Now()
-	baseTime := roundToTimeWindow(now)
-
+	// Step 1: Prepare test channel statistics for multiple models via internal API
 	models := []string{"gpt-4", "gpt-3.5-turbo"}
 	for _, modelName := range models {
-		stat := &model.ChannelStatistics{
-			ChannelId:       suite.TestChannel.ID,
-			ModelName:       modelName,
-			TimeWindowStart: baseTime - 3600, // 1 hour ago
-			RequestCount:    50,
-			FailCount:       2,
-			TotalTokens:     5000,
-			TotalQuota:      500,
-			TotalLatencyMs:  10000,
-			StreamReqCount:  25,
-			CacheHitCount:   10,
-			DowntimeSeconds: 0,
-			UniqueUsers:     5,
+		payload := map[string]interface{}{
+			"channel_id":       suite.TestChannel.ID,
+			"model_name":       modelName,
+			"request_count":    50,
+			"fail_count":       2,
+			"total_tokens":     5000,
+			"total_quota":      500,
+			"total_latency_ms": 10000,
+			"stream_req_count": 25,
+			"cache_hit_count":  10,
+			"downtime_seconds": 0,
+			"unique_users":     5,
 		}
 
-		err := model.UpsertChannelStatistics(stat)
-		require.NoError(t, err, "Failed to create test channel statistics for %s", modelName)
+		resp, err := suite.AdminClient.Post("/api/internal/channel_statistics", payload)
+		require.NoErrorf(t, err, "Failed to create test channel statistics for %s", modelName)
+		resp.Body.Close()
 	}
 
 	// Step 2: Admin user queries channel stats without model filter

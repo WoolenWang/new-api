@@ -3,7 +3,6 @@
 package database_api
 
 import (
-	"fmt"
 	"testing"
 	"time"
 

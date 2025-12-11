@@ -3,12 +3,10 @@
 package database_api
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

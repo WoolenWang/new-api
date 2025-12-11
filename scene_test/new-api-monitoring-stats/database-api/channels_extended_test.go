@@ -4,7 +4,6 @@ package database_api
 
 import (
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
