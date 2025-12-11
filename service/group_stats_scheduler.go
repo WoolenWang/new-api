@@ -255,7 +255,7 @@ func (s *GroupStatsScheduler) processTasks() {
 // Phase 10.3: GS3-1 使用分布式锁防止多节点并发聚合同一分组
 func (s *GroupStatsScheduler) executeTask(task GroupStatsUpdateTask) {
 	groupID := task.GroupId
-	common.SysLog("Executing group stats aggregation for group %d", groupID)
+	common.SysLog("Executing group stats aggregation for group %d at window %d", groupID, task.TimeWindowStart)
 
 	// 1. 尝试获取分布式锁（防止多实例并发聚合）
 	lockKey := fmt.Sprintf("group_stats_lock:%d", groupID)
@@ -285,7 +285,7 @@ func (s *GroupStatsScheduler) executeTask(task GroupStatsUpdateTask) {
 	}()
 
 	// 3. 执行实际的聚合计算
-	common.SysLog("Lock acquired, starting aggregation for group %d", groupID)
+	common.SysLog("Lock acquired, starting aggregation for group %d at window %d", groupID, task.TimeWindowStart)
 	err = AggregateGroupStatsForAllModels(groupID, task.TimeWindowStart)
 	if err != nil {
 		common.SysLog("Error aggregating group stats for group %d: %v", groupID, err)
@@ -306,6 +306,20 @@ func (s *GroupStatsScheduler) GetLastUpdateTime(groupId int) (int64, bool) {
 	defer s.lastUpdateTimeMu.RUnlock()
 	t, exists := s.lastUpdateTime[groupId]
 	return t, exists
+}
+
+// ResetThrottleState 重置所有分组的节流计时信息。
+// 说明：
+//   - 在长生命周期进程中（特别是集成测试场景），不同测试用例会复用同一个
+//     GroupStatsScheduler 实例，如果不清理 lastUpdateTime，将导致后续用例
+//     认为“最近 30 分钟内已更新过”，从而被意外节流。
+//   - 该方法主要服务于测试与运维场景（例如手动重置节流窗口），不会改变
+//     生产环境下默认的节流策略，只在显式调用时生效。
+func (s *GroupStatsScheduler) ResetThrottleState() {
+	s.lastUpdateTimeMu.Lock()
+	defer s.lastUpdateTimeMu.Unlock()
+	s.lastUpdateTime = make(map[int]int64)
+	common.SysLog("GroupStatsScheduler throttle state reset")
 }
 
 // TriggerGroupAggregation 手动触发指定分组的聚合任务

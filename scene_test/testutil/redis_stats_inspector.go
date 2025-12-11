@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/QuantumNous/new-api/service"
 )
 
 // RedisStatsInspector provides utilities to inspect Redis state for channel statistics.
@@ -51,10 +53,16 @@ func (r *RedisStatsInspector) Close() error {
 
 // GetChannelStatsHash retrieves the statistics Hash for a channel and model.
 //
-// Redis key format: channel_stats:{channel_id}:{model_name}
-// Returns: map of field -> value
+// Redis key format (aligned with ChannelStatsL2Service):
+//
+//	channel_stats:{channel_id}:{model_name}:{window_start}
+//
+// Here we implicitly use the current aligned window_start so that tests
+// respect CHANNEL_STATS_WINDOW_SECONDS just like the production service.
+// Returns: map of field -> value.
 func (r *RedisStatsInspector) GetChannelStatsHash(channelID int, modelName string) (map[string]string, error) {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	result, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Hash %s: %w", key, err)
@@ -64,7 +72,8 @@ func (r *RedisStatsInspector) GetChannelStatsHash(channelID int, modelName strin
 
 // GetChannelStatsField retrieves a specific field from the statistics Hash.
 func (r *RedisStatsInspector) GetChannelStatsField(channelID int, modelName, field string) (string, error) {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	result, err := r.client.HGet(r.ctx, key, field).Result()
 	if err == redis.Nil {
 		return "", fmt.Errorf("field %s not found in %s", field, key)
@@ -77,8 +86,11 @@ func (r *RedisStatsInspector) GetChannelStatsField(channelID int, modelName, fie
 
 // GetUniqueUsersCount retrieves the unique users count from HyperLogLog.
 //
-// Redis key format: user_hll:{channel_id}:{model_name}:{time_window}
-// Returns: count of unique users
+// Redis key format (aligned with ChannelStatsL2Service):
+//
+//	user_hll:{channel_id}:{model_name}:{window_start}
+//
+// Returns: count of unique users.
 func (r *RedisStatsInspector) GetUniqueUsersCount(channelID int, modelName, timeWindow string) (int64, error) {
 	key := fmt.Sprintf("user_hll:%d:%s:%s", channelID, modelName, timeWindow)
 	count, err := r.client.PFCount(r.ctx, key).Result()
@@ -109,7 +121,11 @@ func (r *RedisStatsInspector) AddUserToHLL(channelID int, modelName, timeWindow 
 // GetDirtyChannels retrieves all dirty channels from the ZSet.
 //
 // Redis key: dirty_channels
-// Returns: map of {channel_id}:{model} -> timestamp score
+// Member format (aligned with ChannelStatsL2Service):
+//
+//	{channel_id}:{model_name}:{window_start}
+//
+// Returns: map of member -> timestamp score.
 func (r *RedisStatsInspector) GetDirtyChannels() (map[string]float64, error) {
 	result, err := r.client.ZRangeWithScores(r.ctx, "dirty_channels", 0, -1).Result()
 	if err != nil {
@@ -127,7 +143,8 @@ func (r *RedisStatsInspector) GetDirtyChannels() (map[string]float64, error) {
 
 // GetDirtyChannelScore retrieves the score for a specific channel:model in dirty_channels.
 func (r *RedisStatsInspector) GetDirtyChannelScore(channelID int, modelName string) (float64, bool, error) {
-	member := fmt.Sprintf("%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	member := fmt.Sprintf("%d:%s:%d", channelID, modelName, windowStart)
 	score, err := r.client.ZScore(r.ctx, "dirty_channels", member).Result()
 	if err == redis.Nil {
 		return 0, false, nil // Not in set
@@ -149,7 +166,8 @@ func (r *RedisStatsInspector) GetTTL(key string) (time.Duration, error) {
 
 // GetChannelStatsTTL retrieves the TTL for a channel stats key.
 func (r *RedisStatsInspector) GetChannelStatsTTL(channelID int, modelName string) (time.Duration, error) {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	return r.GetTTL(key)
 }
 
@@ -170,13 +188,14 @@ func (r *RedisStatsInspector) DeleteKey(key string) error {
 // DeleteChannelStatsKeys deletes all statistics keys for a channel.
 func (r *RedisStatsInspector) DeleteChannelStatsKeys(channelID int, modelName string) error {
 	// Delete Hash.
-	hashKey := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	hashKey := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	if err := r.client.Del(r.ctx, hashKey).Err(); err != nil {
 		return err
 	}
 
 	// Delete from dirty_channels.
-	member := fmt.Sprintf("%d:%s", channelID, modelName)
+	member := fmt.Sprintf("%d:%s:%d", channelID, modelName, windowStart)
 	if err := r.client.ZRem(r.ctx, "dirty_channels", member).Err(); err != nil {
 		return err
 	}
@@ -214,7 +233,8 @@ func (r *RedisStatsInspector) WaitForRedisKey(key string, timeout time.Duration)
 
 // WaitForChannelStats waits for channel statistics to appear in Redis.
 func (r *RedisStatsInspector) WaitForChannelStats(channelID int, modelName string, timeout time.Duration) error {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	return r.WaitForRedisKey(key, timeout)
 }
 
@@ -238,7 +258,8 @@ func (r *RedisStatsInspector) WaitForDirtyChannel(channelID int, modelName strin
 //
 // This is used for testing purposes to manually populate Redis with test data.
 func (r *RedisStatsInspector) IncrementChannelStats(channelID int, modelName string, fields map[string]int64) error {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 
 	pipe := r.client.Pipeline()
 	for field, value := range fields {
@@ -253,9 +274,17 @@ func (r *RedisStatsInspector) IncrementChannelStats(channelID int, modelName str
 }
 
 // GetNextDBSyncTime retrieves the next_db_sync_time for a channel.
+//
+// In the current implementation, ChannelStatsL3Service.shouldSync stores this
+// timestamp in a dedicated string key:
+//
+//	channel_sync_time:{channel_id}:{model_name}
+//
+// We align the inspector with that behaviour so tests can directly control
+// L3 scheduling.
 func (r *RedisStatsInspector) GetNextDBSyncTime(channelID int, modelName string) (int64, error) {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
-	result, err := r.client.HGet(r.ctx, key, "next_db_sync_time").Result()
+	key := fmt.Sprintf("channel_sync_time:%d:%s", channelID, modelName)
+	result, err := r.client.Get(r.ctx, key).Result()
 	if err == redis.Nil {
 		return 0, nil // Not set
 	}
@@ -270,8 +299,9 @@ func (r *RedisStatsInspector) GetNextDBSyncTime(channelID int, modelName string)
 
 // SetNextDBSyncTime sets the next_db_sync_time for testing.
 func (r *RedisStatsInspector) SetNextDBSyncTime(channelID int, modelName string, timestamp int64) error {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
-	return r.client.HSet(r.ctx, key, "next_db_sync_time", timestamp).Err()
+	key := fmt.Sprintf("channel_sync_time:%d:%s", channelID, modelName)
+	// Use a generous TTL so that the key survives for the duration of tests.
+	return r.client.Set(r.ctx, key, fmt.Sprintf("%d", timestamp), 30*time.Minute).Err()
 }
 
 // FlushDB flushes all data from Redis (use with caution, only in tests).
@@ -305,7 +335,8 @@ func (r *RedisStatsInspector) CountChannelStatsKeys() (int, error) {
 // 3. TTL is set correctly
 func (r *RedisStatsInspector) VerifyRedisDataFlow(channelID int, modelName string) error {
 	// Check Hash exists.
-	hashKey := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	hashKey := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	exists, err := r.KeyExists(hashKey)
 	if err != nil {
 		return err
@@ -324,7 +355,7 @@ func (r *RedisStatsInspector) VerifyRedisDataFlow(channelID int, modelName strin
 	}
 
 	// Check dirty channel marking.
-	member := fmt.Sprintf("%d:%s", channelID, modelName)
+	member := fmt.Sprintf("%d:%s:%d", channelID, modelName, windowStart)
 	score, exists, err := r.GetDirtyChannelScore(channelID, modelName)
 	if err != nil {
 		return err
@@ -344,7 +375,8 @@ func (r *RedisStatsInspector) VerifyRedisDataFlow(channelID int, modelName strin
 
 // GetChannelStatFieldsAsInt retrieves multiple Hash fields as integers.
 func (r *RedisStatsInspector) GetChannelStatFieldsAsInt(channelID int, modelName string, fields []string) (map[string]int64, error) {
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 	result := make(map[string]int64)
 
 	for _, field := range fields {
@@ -370,9 +402,10 @@ func (r *RedisStatsInspector) GetChannelStatFieldsAsInt(channelID int, modelName
 // This manually writes data to Redis as the Flush Worker would.
 // Used for testing L2/L3 operations without waiting for actual flush.
 func (r *RedisStatsInspector) SimulateL1Flush(channelID int, modelName string, stats map[string]int64, userIDs []int) error {
-	hashKey := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
-	dirtyMember := fmt.Sprintf("%d:%s", channelID, modelName)
-	hllKey := fmt.Sprintf("user_hll:%d:%s:%s", channelID, modelName, getCurrentTimeWindow())
+	windowStart := getCurrentWindowStart()
+	hashKey := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
+	dirtyMember := fmt.Sprintf("%d:%s:%d", channelID, modelName, windowStart)
+	hllKey := fmt.Sprintf("user_hll:%d:%s:%d", channelID, modelName, windowStart)
 
 	pipe := r.client.Pipeline()
 
@@ -404,18 +437,19 @@ func (r *RedisStatsInspector) SimulateL1Flush(channelID int, modelName string, s
 	return err
 }
 
-// getCurrentTimeWindow returns current time window identifier.
-func getCurrentTimeWindow() string {
-	// Use 15-minute windows.
-	now := time.Now()
-	windowStart := now.Truncate(15 * time.Minute)
-	return fmt.Sprintf("%d", windowStart.Unix())
+// getCurrentWindowStart returns the current aligned window start timestamp,
+// using the same alignment logic as ChannelStatsL2Service.AlignToWindow and
+// the CHANNEL_STATS_WINDOW_SECONDS configuration.
+func getCurrentWindowStart() int64 {
+	now := time.Now().Unix()
+	return service.AlignToWindow(now)
 }
 
 // WaitForFieldValue waits for a Hash field to reach a specific value.
 func (r *RedisStatsInspector) WaitForFieldValue(channelID int, modelName, field string, expectedValue int64, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	key := fmt.Sprintf("channel_stats:%d:%s", channelID, modelName)
+	windowStart := getCurrentWindowStart()
+	key := fmt.Sprintf("channel_stats:%d:%s:%d", channelID, modelName, windowStart)
 
 	for time.Now().Before(deadline) {
 		val, err := r.client.HGet(r.ctx, key, field).Result()
@@ -443,8 +477,8 @@ func (r *RedisStatsInspector) WaitForFieldValue(channelID int, modelName, field 
 //
 // Adds duplicate user IDs and verifies the count matches unique users.
 func (r *RedisStatsInspector) VerifyHLLDeduplication(channelID int, modelName string, userIDs []int, expectedUniqueCount int64) error {
-	timeWindow := getCurrentTimeWindow()
-	hllKey := fmt.Sprintf("user_hll:%d:%s:%s", channelID, modelName, timeWindow)
+	windowStart := getCurrentWindowStart()
+	hllKey := fmt.Sprintf("user_hll:%d:%s:%d", channelID, modelName, windowStart)
 
 	// Add user IDs (including duplicates).
 	for _, userID := range userIDs {

@@ -74,6 +74,7 @@ type ChannelStatisticsRecord struct {
 	StreamReqCount  int
 	CacheHitCount   int
 	DowntimeSeconds int
+	UniqueUsers     int
 }
 
 // QueryChannelStatistics queries the channel_statistics table.
@@ -84,7 +85,7 @@ func (d *DBStatsInspector) QueryChannelStatistics(channelID int, modelName strin
 	query := `
 		SELECT id, channel_id, model_name, time_window_start,
 		       request_count, fail_count, total_tokens, total_quota,
-		       total_latency_ms, stream_req_count, cache_hit_count, downtime_seconds
+		       total_latency_ms, stream_req_count, cache_hit_count, downtime_seconds, unique_users
 		FROM channel_statistics
 		WHERE channel_id = ? AND model_name = ?
 	`
@@ -113,7 +114,7 @@ func (d *DBStatsInspector) QueryChannelStatistics(channelID int, modelName strin
 		err := rows.Scan(
 			&r.ID, &r.ChannelID, &r.ModelName, &r.TimeWindowStart,
 			&r.RequestCount, &r.FailCount, &r.TotalTokens, &r.TotalQuota,
-			&r.TotalLatencyMS, &r.StreamReqCount, &r.CacheHitCount, &r.DowntimeSeconds,
+			&r.TotalLatencyMS, &r.StreamReqCount, &r.CacheHitCount, &r.DowntimeSeconds, &r.UniqueUsers,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
@@ -303,7 +304,7 @@ func (d *DBStatsInspector) GetTimeWindowRecords(timeWindowStart int64) ([]Channe
 	query := `
 		SELECT id, channel_id, model_name, time_window_start,
 		       request_count, fail_count, total_tokens, total_quota,
-		       total_latency_ms, stream_req_count, cache_hit_count, downtime_seconds
+		       total_latency_ms, stream_req_count, cache_hit_count, downtime_seconds, unique_users
 		FROM channel_statistics
 		WHERE time_window_start = ?
 		ORDER BY channel_id, model_name
@@ -321,7 +322,7 @@ func (d *DBStatsInspector) GetTimeWindowRecords(timeWindowStart int64) ([]Channe
 		err := rows.Scan(
 			&r.ID, &r.ChannelID, &r.ModelName, &r.TimeWindowStart,
 			&r.RequestCount, &r.FailCount, &r.TotalTokens, &r.TotalQuota,
-			&r.TotalLatencyMS, &r.StreamReqCount, &r.CacheHitCount, &r.DowntimeSeconds,
+			&r.TotalLatencyMS, &r.StreamReqCount, &r.CacheHitCount, &r.DowntimeSeconds, &r.UniqueUsers,
 		)
 		if err != nil {
 			return nil, err

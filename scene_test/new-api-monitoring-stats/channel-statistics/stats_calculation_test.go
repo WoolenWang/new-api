@@ -1067,11 +1067,11 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Wait for statistics aggregation.
-	t.Logf("Waiting for statistics aggregation...")
-	time.Sleep(65 * time.Second) // L1 → L2
+	// 等待一个短周期，让 L1→L2→L3 在缩短窗口/同步间隔配置下完成一次聚合。
+	t.Logf("CS-07: waiting briefly for L2/L3 aggregation with shortened window...")
+	time.Sleep(4 * time.Second)
 
-	// Verify: Check logs to confirm both users accessed the channel.
+	// 先通过日志确认两个用户都实际使用了该渠道（行为模式校验）。
 	logsA, err := userAClient.GetUserLogs(userA.ID, 7)
 	if err != nil {
 		t.Fatalf("failed to get userA logs: %v", err)
@@ -1082,7 +1082,6 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 		t.Fatalf("failed to get userB logs: %v", err)
 	}
 
-	// Verify channel usage.
 	userAUsedChannel := false
 	userBUsedChannel := false
 
@@ -1103,16 +1102,72 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 	if !userAUsedChannel {
 		t.Errorf("CS-07: UserA did not use the shared channel")
 	}
-
 	if !userBUsedChannel {
 		t.Errorf("CS-07: UserB did not use the shared channel")
 	}
 
-	// Note: Full verification would require querying Redis HyperLogLog
-	// or the channel statistics API to verify unique_users = 2.
-	// For now, we verify that both users successfully used the channel.
+	// --- 新增：使用 SQLite + /api 验证 unique_users 聚合结果 ---
 
-	t.Logf("CS-07 PASSED: Unique users test completed (both users used channel)")
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	// 轮询 channel_statistics，直到该渠道/模型出现统计记录，并读取其中的 unique_users。
+	var records []testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		records, err = dbInspector.QueryChannelStatistics(channelModel.ID, modelName, 0, 0)
+		if err == nil && len(records) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CS-07 FAILED: no channel_statistics records found for channel %d: last error=%v",
+				channelModel.ID, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	maxUnique := 0
+	for _, r := range records {
+		if r.UniqueUsers > maxUnique {
+			maxUnique = r.UniqueUsers
+		}
+	}
+
+	t.Logf("CS-07 DB statistics: found %d records, max(unique_users)=%d",
+		len(records), maxUnique)
+
+	if maxUnique < 2 {
+		t.Errorf("CS-07 FAILED: expected at least 2 unique_users in DB for channel %d, got %d",
+			channelModel.ID, maxUnique)
+	}
+
+	// 通过 /api/channels/:id/stats 验证 API 聚合视图中的 unique_users
+	// 至少覆盖 DB 中的统计结果。
+	apiStats, err := admin.GetChannelStats(channelModel.ID, "1h", modelName)
+	if err != nil {
+		t.Fatalf("failed to query channel stats API: %v", err)
+	}
+	if apiStats == nil {
+		t.Fatalf("CS-07 FAILED: channel stats API returned nil data")
+	}
+
+	t.Logf("CS-07 API stats: unique_users=%d (DB max=%d)",
+		apiStats.UniqueUsers, maxUnique)
+
+	if apiStats.UniqueUsers < maxUnique {
+		t.Errorf("CS-07: API unique_users (%d) should be >= DB max unique_users (%d)",
+			apiStats.UniqueUsers, maxUnique)
+	}
+	if apiStats.UniqueUsers < 2 {
+		t.Errorf("CS-07 FAILED: expected API unique_users >= 2, got %d", apiStats.UniqueUsers)
+	}
+
+	t.Logf("CS-07 PASSED: Unique users (HyperLogLog) verified via DB + API with shortened window")
 }
 
 // TestCS08_DowntimePercentage tests downtime percentage calculation.
