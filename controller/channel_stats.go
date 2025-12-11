@@ -285,21 +285,46 @@ func buildStatsResponse(channel *model.Channel, data *ChannelStatsData, period, 
 		streamRatio = float64(data.StreamReqCount) / float64(data.RequestCount) * 100.0
 	}
 
+	// 计算每分钟请求数与Tokens数 (RPM / TPM)，仅用于统计展示。
+	var minutes float64
+	switch period {
+	case "1h":
+		minutes = 60
+	case "6h":
+		minutes = 6 * 60
+	case "7d":
+		minutes = 7 * 24 * 60
+	case "30d":
+		minutes = 30 * 24 * 60
+	default:
+		// 不支持的 period 使用0，保守返回0值
+		minutes = 0
+	}
+
+	var rpm, tpm int64
+	if minutes > 0 {
+		rpm = int64(float64(data.RequestCount) / minutes)
+		tpm = int64(float64(data.TotalTokens) / minutes)
+	}
+
 	response := &ChannelStatsSummaryResponse{
-		ChannelID:      channel.Id,
-		ChannelName:    channel.Name,
-		ModelName:      modelName,
-		Period:         period,
-		RequestCount:   data.RequestCount,
-		FailCount:      data.FailCount,
-		FailRate:       failRate,
-		TotalTokens:    data.TotalTokens,
-		TotalQuota:     data.TotalQuota,
-		AvgLatencyMs:   avgLatency,
-		CacheHitRate:   cacheHitRate,
-		StreamReqRatio: streamRatio,
-		UniqueUsers:    data.UniqueUsers,
-		QueryTime:      time.Now().Unix(),
+		ChannelID:       channel.Id,
+		ChannelName:     channel.Name,
+		ModelName:       modelName,
+		Period:          period,
+		RequestCount:    data.RequestCount,
+		FailCount:       data.FailCount,
+		FailRate:        failRate,
+		TotalTokens:     data.TotalTokens,
+		TotalQuota:      data.TotalQuota,
+		AvgLatencyMs:    avgLatency,
+		AvgResponseTime: avgLatency,
+		CacheHitRate:    cacheHitRate,
+		StreamReqRatio:  streamRatio,
+		TPM:             tpm,
+		RPM:             rpm,
+		UniqueUsers:     data.UniqueUsers,
+		QueryTime:       time.Now().Unix(),
 	}
 
 	return response
@@ -307,20 +332,23 @@ func buildStatsResponse(channel *model.Channel, data *ChannelStatsData, period, 
 
 // ChannelStatsSummaryResponse API响应结构
 type ChannelStatsSummaryResponse struct {
-	ChannelID      int     `json:"channel_id"`
-	ChannelName    string  `json:"channel_name"`
-	ModelName      string  `json:"model_name,omitempty"`
-	Period         string  `json:"period"`
-	RequestCount   int64   `json:"request_count"`
-	FailCount      int64   `json:"fail_count"`
-	FailRate       float64 `json:"fail_rate"` // %
-	TotalTokens    int64   `json:"total_tokens"`
-	TotalQuota     int64   `json:"total_quota"`
-	AvgLatencyMs   float64 `json:"avg_latency_ms"`   // ms
-	CacheHitRate   float64 `json:"cache_hit_rate"`   // %
-	StreamReqRatio float64 `json:"stream_req_ratio"` // %
-	UniqueUsers    int     `json:"unique_users"`
-	QueryTime      int64   `json:"query_time"` // Unix timestamp
+	ChannelID       int     `json:"channel_id"`
+	ChannelName     string  `json:"channel_name"`
+	ModelName       string  `json:"model_name,omitempty"`
+	Period          string  `json:"period"`
+	RequestCount    int64   `json:"request_count"`
+	FailCount       int64   `json:"fail_count"`
+	FailRate        float64 `json:"fail_rate"`         // %
+	TotalTokens     int64   `json:"total_tokens"`      // 总 tokens
+	TotalQuota      int64   `json:"total_quota"`       // 总额度
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`    // ms
+	AvgResponseTime float64 `json:"avg_response_time"` // ms, 为兼容测试的别名
+	CacheHitRate    float64 `json:"cache_hit_rate"`    // %
+	StreamReqRatio  float64 `json:"stream_req_ratio"`  // %
+	TPM             int64   `json:"tpm"`               // Tokens per minute
+	RPM             int64   `json:"rpm"`               // Requests per minute
+	UniqueUsers     int     `json:"unique_users"`      // 去重用户数
+	QueryTime       int64   `json:"query_time"`        // Unix timestamp
 }
 
 // GetChannelCurrentStats 获取渠道当前实时统计（从channels表）
