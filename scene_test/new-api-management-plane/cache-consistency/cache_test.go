@@ -54,6 +54,13 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	cfg := testutil.DefaultConfig()
 	cfg.ProjectRoot = projectRoot
 	cfg.Verbose = testing.Verbose()
+	// Cache consistency CON-xx / high-concurrency tests can run under heavier
+	// SQLite contention, so allow a slightly longer startup window for the
+	// test server to become ready to avoid flaky 60s startup timeouts when
+	// running the entire cache-consistency suite together.
+	if cfg.StartupTimeout < 2*time.Minute {
+		cfg.StartupTimeout = 2 * time.Minute
+	}
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
