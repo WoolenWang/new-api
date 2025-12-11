@@ -599,6 +599,19 @@ func (c *APIClient) DeleteChannel(id int) error {
 	return nil
 }
 
+// UpdateChannel updates an existing channel.
+func (c *APIClient) UpdateChannel(channel *ChannelModel) error {
+	var resp APIResponse
+	err := c.PutJSON("/api/channel/", channel, &resp)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("update channel failed: %s", resp.Message)
+	}
+	return nil
+}
+
 // UserModel represents user data
 type UserModel struct {
 	ID                    int    `json:"id"`

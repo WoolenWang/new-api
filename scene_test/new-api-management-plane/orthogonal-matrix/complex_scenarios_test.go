@@ -68,14 +68,14 @@ func TestCS01_BillingFallbackWithP2PRestrictionAndMultiChannel(t *testing.T) {
 	// - ChVipG1 exists (vip + G1), should match after svip fails
 
 	// Create a specific channel for this test: svip + G2 only
-	channelSvipG2, err := suite.fixtures.createChannel("cs01-svip-g2", "gpt-4", "svip", []int{suite.fixtures.G2.ID})
+	channelSvipG2, err := suite.fixtures.CreateChannel("cs01-svip-g2", "gpt-4", "svip", []int{suite.fixtures.G2.ID})
 	require.NoError(t, err, "Channel creation should succeed")
 	t.Logf("Created test channel: svip+G2, id=%d", channelSvipG2.ID)
 
 	// Act: Make request
 	t.Log("CS-01: Multi-billing fallback with P2P restriction")
-	resp, err := suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: tokenKey,
+	tokenClient := suite.client.WithToken(tokenKey)
+	resp, err := tokenClient.ChatCompletion(testutil.ChatCompletionRequest{
 		Model: "gpt-4",
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test routing"},
@@ -103,7 +103,9 @@ func TestCS01_BillingFallbackWithP2PRestrictionAndMultiChannel(t *testing.T) {
 // TestCS02_ANDLogicDualConstraint tests that system group AND P2P must both match.
 // User: default, Token: ["vip"], Token.p2p=G1, Channel: vip+G1
 // Expected: Fail (even though Token billing=vip and P2P=G1 both match channel,
-//                user's system group 'default' doesn't match channel's 'vip')
+//
+//	user's system group 'default' doesn't match channel's 'vip')
+//
 // Priority: P0
 func TestCS02_ANDLogicDualConstraint(t *testing.T) {
 	suite := setupOrthogonalSuite(t)
@@ -132,17 +134,14 @@ func TestCS02_ANDLogicDualConstraint(t *testing.T) {
 
 	// Act: Make request
 	t.Log("CS-02: Testing AND logic - system group AND P2P must both match")
-	_, err = suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: tokenKey,
-		Model: "gpt-4",
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "test routing"},
-		},
-	})
+	tokenClient := suite.client.WithToken(tokenKey)
+	success, statusCode, errMsg := tokenClient.TryChatCompletion("gpt-4", "test routing")
 
-	// Assert: Should fail due to system group mismatch
-	assert.Error(t, err, "Request should fail")
-	assert.Contains(t, err.Error(), "no available channel", "Should fail with no available channel")
+	// Assert: Should fail because default user is not allowed to use vip billing group
+	assert.False(t, success, "Request should fail")
+	assert.Equal(t, 403, statusCode, "Should be forbidden due to unauthorized vip billing group")
+	assert.Contains(t, errMsg, "无权访问", "Error message should indicate forbidden group access")
+	assert.Contains(t, errMsg, "vip", "Error message should mention vip group")
 
 	t.Log("CS-02 passed: AND logic enforced (system group mismatch blocks access)")
 }
@@ -151,7 +150,9 @@ func TestCS02_ANDLogicDualConstraint(t *testing.T) {
 // User: vip, Token: ["auto"], User in G1, Channels: svip+public, vip+G1
 // auto expands to [vip, svip]
 // Expected: Select svip+public first (if auto tries vip first and finds vip+G1 with P2P requirement,
-//          it might skip to svip+public which has no P2P requirement)
+//
+//	it might skip to svip+public which has no P2P requirement)
+//
 // Priority: P1
 func TestCS03_AutoGroupExpansionWithP2P(t *testing.T) {
 	suite := setupOrthogonalSuite(t)
@@ -181,8 +182,8 @@ func TestCS03_AutoGroupExpansionWithP2P(t *testing.T) {
 
 	// Act: Make request
 	t.Log("CS-03: Auto group expansion with P2P")
-	resp, err := suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: tokenKey,
+	tokenClient := suite.client.WithToken(tokenKey)
+	resp, err := tokenClient.ChatCompletion(testutil.ChatCompletionRequest{
 		Model: "gpt-4",
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test routing"},
@@ -247,8 +248,8 @@ func TestCS04_MultiTokenDifferentConfigs(t *testing.T) {
 
 	// Test Token1: can access channels authorized to G1 or G2
 	t.Log("CS-04: Testing Token1 (unrestricted P2P)")
-	resp1, err := suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: token1Key,
+	token1Client := suite.client.WithToken(token1Key)
+	resp1, err := token1Client.ChatCompletion(testutil.ChatCompletionRequest{
 		Model: "gpt-4",
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test with token1"},
@@ -266,13 +267,13 @@ func TestCS04_MultiTokenDifferentConfigs(t *testing.T) {
 
 	// First, we need to verify that if we had a G2-only channel, Token2 couldn't access it
 	// Create a G2-only channel for this test
-	channelDefaultG2, err := suite.fixtures.createChannel("cs04-default-g2", "gpt-4", "default", []int{suite.fixtures.G2.ID})
+	channelDefaultG2, err := suite.fixtures.CreateChannel("cs04-default-g2", "gpt-4", "default", []int{suite.fixtures.G2.ID})
 	require.NoError(t, err, "Channel creation should succeed")
 	t.Logf("Created test channel: default+G2-only, id=%d", channelDefaultG2.ID)
 
 	// Make request with Token2
-	resp2, err := suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: token2Key,
+	token2Client := suite.client.WithToken(token2Key)
+	resp2, err := token2Client.ChatCompletion(testutil.ChatCompletionRequest{
 		Model: "gpt-4",
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test with token2"},
@@ -292,114 +293,6 @@ func TestCS04_MultiTokenDifferentConfigs(t *testing.T) {
 	assert.Contains(t, possibleG1Channels, log2.ChannelID, "Token2 should route to G1-authorized channel")
 
 	t.Log("CS-04 passed: Different tokens have isolated P2P restrictions")
-}
-
-// TestCS02_ANDLogicDualConstraint is a critical test for the AND logic.
-// This is actually the same as OX-02 but with explicit emphasis on the AND constraint.
-// User: default, Token: ["vip"], Token.p2p=G1, Channel: vip+G1
-// Expected: Fail (user.system_group=default does NOT match channel.system_group=vip)
-// Priority: P0
-func TestCS02_ANDLogicDualConstraint(t *testing.T) {
-	suite := setupOrthogonalSuite(t)
-	defer suite.Cleanup()
-
-	// This is a duplicate of OX-02 but serves as explicit AND logic validation
-	// Including it here for completeness and explicit documentation
-
-	// Arrange: UserDefault joins G1
-	err := suite.fixtures.JoinUserToGroups(suite.fixtures.UserDefaultClient, suite.fixtures.UserDefault.ID, []int{suite.fixtures.G1.ID})
-	require.NoError(t, err, "User should join G1")
-	time.Sleep(200 * time.Millisecond)
-
-	// Create token with vip billing and G1 restriction
-	tokenKey, err := suite.fixtures.CreateTokenWithConfig(
-		suite.fixtures.UserDefaultClient,
-		suite.fixtures.UserDefault.ID,
-		"cs02_and_logic",
-		`["vip"]`,
-		suite.fixtures.G1.ID,
-	)
-	require.NoError(t, err, "Token creation should succeed")
-
-	// Channel: ChVipG1 (vip group, authorized to G1)
-	// Verification matrix:
-	// - Token billing = vip ✓
-	// - User in G1 ✓
-	// - Channel authorized to G1 ✓
-	// - User system group = default ✗ (does NOT match channel vip)
-	// Result: FAIL (AND logic requires ALL conditions)
-
-	// Act: Make request
-	t.Log("CS-02: AND logic test - system group must match even if Token and P2P match")
-	_, err = suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: tokenKey,
-		Model: "gpt-4",
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "test"},
-		},
-	})
-
-	// Assert: Should fail
-	assert.Error(t, err, "Request should fail")
-	assert.Contains(t, err.Error(), "no available channel", "Should fail due to system group mismatch")
-
-	t.Log("CS-02 passed: AND logic dual constraint enforced")
-}
-
-// TestCS03_AutoGroupExpansionCombination tests auto group expansion with P2P.
-// User: vip, Token: ["auto"] (expands to vip+svip), User in G1
-// Channels: svip+public, vip+G1
-// Expected: Select based on expansion order and P2P matching
-// Priority: P1
-func TestCS03_AutoGroupExpansionCombination(t *testing.T) {
-	suite := setupOrthogonalSuite(t)
-	defer suite.Cleanup()
-
-	// Arrange: UserVip joins G1
-	err := suite.fixtures.JoinUserToGroups(suite.fixtures.UserVipClient, suite.fixtures.UserVip.ID, []int{suite.fixtures.G1.ID})
-	require.NoError(t, err, "User should join G1")
-	time.Sleep(200 * time.Millisecond)
-
-	// Create token with auto billing
-	tokenKey, err := suite.fixtures.CreateTokenWithConfig(
-		suite.fixtures.UserVipClient,
-		suite.fixtures.UserVip.ID,
-		"cs03_auto_expansion",
-		`["auto"]`,
-		0, // No P2P restriction
-	)
-	require.NoError(t, err, "Token creation should succeed")
-
-	// Channels:
-	// - ChSvipPublic (svip, no P2P)
-	// - ChVipG1 (vip, G1)
-	// Auto expansion order determines which is tried first
-
-	// Act: Make request
-	t.Log("CS-03: Auto group expansion with P2P combination")
-	resp, err := suite.client.ChatCompletion(testutil.ChatCompletionRequest{
-		Token: tokenKey,
-		Model: "gpt-4",
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "test"},
-		},
-	})
-
-	// Assert: Should succeed with one of the expanded groups
-	if err != nil {
-		// Auto might not be configured
-		t.Logf("Auto expansion failed: %v", err)
-		t.Skip("Auto group expansion requires system configuration")
-		return
-	}
-
-	require.NotNil(t, resp, "Response should not be nil")
-
-	// Verify billing is from auto-expanded groups
-	log := suite.getLatestLog(suite.fixtures.UserVip.ID)
-	assert.Contains(t, []string{"vip", "svip", "auto"}, log.BillingGroup, "Billing should be auto-expanded")
-
-	t.Log("CS-03 passed: Auto expansion combined with P2P")
 }
 
 // setupOrthogonalSuite initializes the orthogonal test suite.

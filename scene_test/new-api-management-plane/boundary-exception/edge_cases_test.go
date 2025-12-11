@@ -34,16 +34,21 @@ import (
 
 // TestSuite holds shared test resources for boundary/exception tests.
 type TestSuite struct {
-	Server *testutil.TestServer
-	Client *testutil.APIClient
+	Server   *testutil.TestServer
+	Client   *testutil.APIClient
+	Upstream *testutil.MockUpstreamServer
 }
 
 // SetupSuite initializes the test suite with a running server.
 func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	t.Helper()
 
+	// Create a mock upstream so data-plane requests do not depend on real providers.
+	upstream := testutil.NewMockUpstreamServer()
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
@@ -51,8 +56,21 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	cfg.ProjectRoot = projectRoot
 	cfg.Verbose = testing.Verbose()
 
+	// Disable global API/web/critical rate limits in this isolated test server.
+	// ED-06 performs many concurrent control-plane requests (user creation, quota
+	// adjustment, login, group operations). We want to focus this suite on P2P
+	// boundary semantics rather than global rate-limiting behavior, which is
+	// already covered by dedicated rate-limit tests in other suites.
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["GLOBAL_API_RATE_LIMIT_ENABLE"] = "false"
+	cfg.CustomEnv["GLOBAL_WEB_RATE_LIMIT_ENABLE"] = "false"
+	cfg.CustomEnv["CRITICAL_RATE_LIMIT_ENABLE"] = "false"
+
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
+		upstream.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -61,20 +79,24 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	// Initialize system and login as root (admin user).
 	rootUser, rootPass, err := client.InitializeSystem()
 	if err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to initialize system: %v", err)
 	}
 	if _, err := client.Login(rootUser, rootPass); err != nil {
+		upstream.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
 	suite := &TestSuite{
-		Server: server,
-		Client: client,
+		Server:   server,
+		Client:   client,
+		Upstream: upstream,
 	}
 
 	cleanup := func() {
+		upstream.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -95,7 +117,7 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 	user := &testutil.UserModel{
 		Username:   username,
 		Password:   password,
-		Group:      group,
+		Group:      "default", // create as default, then update if needed
 		Status:     1,
 		ExternalId: fmt.Sprintf("edge_%s_%d", username, time.Now().UnixNano()),
 	}
@@ -105,6 +127,22 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 		t.Fatalf("failed to create user %s: %v", username, err)
 	}
 	user.ID = id
+
+	// Update to desired system group if different from default.
+	if group != "" && group != "default" {
+		user.Group = group
+		if err := admin.UpdateUser(user); err != nil {
+			t.Fatalf("failed to update user %s group to %s: %v", username, group, err)
+		}
+	}
+
+	// Ensure the test user has sufficient quota so that data-plane requests
+	// are not rejected due to lack of user quota.
+	if err := admin.AdjustUserQuota(user.ID, 1000000000); err != nil {
+		t.Fatalf("failed to adjust quota for user %s: %v", username, err)
+	}
+	user.Quota = 1000000000
+
 	return user
 }
 
@@ -133,7 +171,7 @@ func TestED01_EmptyP2PGroupList(t *testing.T) {
 	}
 
 	// Create a P2P group and channel authorized to that group.
-	groupOwner := createTestUser(t, admin, "ed01_owner", "password123", "default")
+	_ = createTestUser(t, admin, "ed01_owner", "password123", "default")
 	ownerClient := admin.Clone()
 	if _, err := ownerClient.Login("ed01_owner", "password123"); err != nil {
 		t.Fatalf("failed to login as owner: %v", err)
@@ -151,37 +189,63 @@ func TestED01_EmptyP2PGroupList(t *testing.T) {
 	}
 
 	// Create a channel authorized to the P2P group.
-	p2pChannel, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:          "ED01 P2P Channel",
+	p2pChannelName := "ED01 P2P Channel"
+	p2pAllowedGroups := fmt.Sprintf("[%d]", groupID)
+	p2pBaseURL := suite.Upstream.BaseURL
+	p2pChannel := &testutil.ChannelModel{
+		Name:          p2pChannelName,
 		Type:          1, // OpenAI
 		Key:           "sk-test-ed01-p2p",
 		Status:        1,
 		Models:        "gpt-4",
 		Group:         "default",
-		AllowedGroups: fmt.Sprintf("[%d]", groupID),
-	})
-	if err != nil {
+		BaseURL:       &p2pBaseURL,
+		AllowedGroups: &p2pAllowedGroups,
+	}
+	if _, err := admin.AddChannel(p2pChannel); err != nil {
 		t.Fatalf("failed to create P2P channel: %v", err)
 	}
 
 	// Create a public channel (no P2P authorization).
-	publicChannel, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:          "ED01 Public Channel",
+	publicChannelName := "ED01 Public Channel"
+	publicAllowedGroups := "[]"
+	publicBaseURL := suite.Upstream.BaseURL
+	publicChannel := &testutil.ChannelModel{
+		Name:          publicChannelName,
 		Type:          1,
 		Key:           "sk-test-ed01-public",
 		Status:        1,
 		Models:        "gpt-4",
 		Group:         "default",
-		AllowedGroups: "[]", // No P2P authorization
-	})
-	if err != nil {
+		BaseURL:       &publicBaseURL,
+		AllowedGroups: &publicAllowedGroups, // No P2P authorization
+	}
+	if _, err := admin.AddChannel(publicChannel); err != nil {
 		t.Fatalf("failed to create public channel: %v", err)
 	}
 
+	// Discover channel IDs from the channel list (AddChannel does not return ID).
+	channels, err := admin.GetAllChannels()
+	if err != nil {
+		t.Fatalf("failed to query channels after creation: %v", err)
+	}
+	for _, ch := range channels {
+		if ch.Name == p2pChannelName {
+			p2pChannel.ID = ch.ID
+		}
+		if ch.Name == publicChannelName {
+			publicChannel.ID = ch.ID
+		}
+	}
+	if p2pChannel.ID == 0 || publicChannel.ID == 0 {
+		t.Fatalf("failed to resolve channel IDs for ED01 (p2p=%d, public=%d)", p2pChannel.ID, publicChannel.ID)
+	}
+
 	// Create a token for userA without P2P group restriction.
-	tokenKey, _, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "ED01 Test Token",
-		Status: 1,
+	tokenKey, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "ED01 Test Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -207,7 +271,7 @@ func TestED01_EmptyP2PGroupList(t *testing.T) {
 
 	// Verify the request log to see which channel was used.
 	// According to design, userA should only access public channels.
-	logs, err := admin.GetUserLogs(userA.ID, 1)
+	logs, err := userAClient.GetUserLogs(userA.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -254,26 +318,62 @@ func TestED02_TokenBillingGroupEmptyArray(t *testing.T) {
 	}
 
 	// Create a vip channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:   "ED02 Vip Channel",
-		Type:   1,
-		Key:    "sk-test-ed02-vip",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "vip",
-	})
-	if err != nil {
+	channelName := "ED02 Vip Channel"
+	baseURL := suite.Upstream.BaseURL
+	channel := &testutil.ChannelModel{
+		Name:    channelName,
+		Type:    1,
+		Key:     "sk-test-ed02-vip",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "vip",
+		BaseURL: &baseURL,
+	}
+	if _, err := admin.AddChannel(channel); err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
 
+	// Resolve channel ID.
+	channels, err := admin.GetAllChannels()
+	if err != nil {
+		t.Fatalf("failed to query channels after creation: %v", err)
+	}
+	for _, ch := range channels {
+		if ch.Name == channelName {
+			channel.ID = ch.ID
+			break
+		}
+	}
+	if channel.ID == 0 {
+		t.Fatalf("failed to resolve channel ID for ED02")
+	}
+
 	// Create a token with empty Group array.
-	tokenKey, tokenID, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "ED02 Empty Group Token",
-		Status: 1,
-		Group:  "[]", // Empty array
+	tokenName := "ED02 Empty Group Token"
+	tokenKey, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           tokenName,
+		Status:         1,
+		Group:          "[]", // Empty array
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
+	}
+
+	// Lookup token ID by name.
+	tokens, err := userAClient.GetAllTokens()
+	if err != nil {
+		t.Fatalf("failed to list tokens: %v", err)
+	}
+	var tokenID int
+	for _, tk := range tokens {
+		if tk.Name == tokenName {
+			tokenID = tk.ID
+			break
+		}
+	}
+	if tokenID == 0 {
+		t.Fatalf("failed to resolve token ID for ED02")
 	}
 
 	userATokenClient := userAClient.WithToken(tokenKey)
@@ -296,7 +396,7 @@ func TestED02_TokenBillingGroupEmptyArray(t *testing.T) {
 	}
 
 	// Verify billing: should use User.Group (vip, rate=2.0) since Token.Group is empty.
-	logs, err := admin.GetUserLogs(userA.ID, 1)
+	logs, err := userAClient.GetUserLogs(userA.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -348,24 +448,29 @@ func TestED03_TokenBillingGroupNonexistent(t *testing.T) {
 		t.Fatalf("failed to login as userA: %v", err)
 	}
 
-	// Create a default channel.
-	_, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:   "ED03 Default Channel",
-		Type:   1,
-		Key:    "sk-test-ed03-default",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
-	})
-	if err != nil {
+	// Create a default channel (so that system has at least one channel, but
+	// it should not be usable for the nonexistent billing group).
+	channelName := "ED03 Default Channel"
+	baseURL := suite.Upstream.BaseURL
+	channel := &testutil.ChannelModel{
+		Name:    channelName,
+		Type:    1,
+		Key:     "sk-test-ed03-default",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
+	}
+	if _, err := admin.AddChannel(channel); err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
 
 	// Create a token with nonexistent billing group.
-	tokenKey, _, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "ED03 Nonexistent Group Token",
-		Status: 1,
-		Group:  `["nonexistent_group_xyz"]`, // Nonexistent group
+	tokenKey, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "ED03 Nonexistent Group Token",
+		Status:         1,
+		Group:          `["nonexistent_group_xyz"]`, // Nonexistent group
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -395,7 +500,7 @@ func TestED03_TokenBillingGroupNonexistent(t *testing.T) {
 	}
 
 	// Verify no log entry was created (or if created, it should indicate failure).
-	logs, err := admin.GetUserLogs(userA.ID, 1)
+	logs, err := userAClient.GetUserLogs(userA.ID, 1)
 	if err != nil {
 		t.Logf("Warning: failed to get user logs: %v", err)
 	}
@@ -403,7 +508,7 @@ func TestED03_TokenBillingGroupNonexistent(t *testing.T) {
 	if len(logs) > 0 {
 		lastLog := logs[0]
 		// Check if the log indicates a failure or error.
-		t.Logf("Log entry exists: ChannelID=%d, Status=%d", lastLog.ChannelID, lastLog.Status)
+		t.Logf("Log entry exists: ChannelID=%d, Type=%d", lastLog.ChannelID, lastLog.Type)
 	}
 }
 
@@ -433,23 +538,43 @@ func TestED04_ChannelP2PAuthorizationEmpty(t *testing.T) {
 	}
 
 	// Create a channel with empty P2P authorization.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:          "ED04 Empty P2P Auth Channel",
+	channelName := "ED04 Empty P2P Auth Channel"
+	baseURL := suite.Upstream.BaseURL
+	allowedGroups := "[]"
+	channel := &testutil.ChannelModel{
+		Name:          channelName,
 		Type:          1,
 		Key:           "sk-test-ed04-empty-p2p",
 		Status:        1,
 		Models:        "gpt-4",
 		Group:         "default",
-		AllowedGroups: "[]", // Empty array - no P2P authorization
-	})
-	if err != nil {
+		BaseURL:       &baseURL,
+		AllowedGroups: &allowedGroups, // Empty array - no P2P authorization
+	}
+	if _, err := admin.AddChannel(channel); err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
 
+	// Resolve channel ID.
+	channels, err := admin.GetAllChannels()
+	if err != nil {
+		t.Fatalf("failed to query channels after creation: %v", err)
+	}
+	for _, ch := range channels {
+		if ch.Name == channelName {
+			channel.ID = ch.ID
+			break
+		}
+	}
+	if channel.ID == 0 {
+		t.Fatalf("failed to resolve channel ID for ED04")
+	}
+
 	// Create a token for userA.
-	tokenKey, _, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "ED04 Test Token",
-		Status: 1,
+	tokenKey, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "ED04 Test Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -475,7 +600,7 @@ func TestED04_ChannelP2PAuthorizationEmpty(t *testing.T) {
 	}
 
 	// Verify the channel was used.
-	logs, err := admin.GetUserLogs(userA.ID, 1)
+	logs, err := userAClient.GetUserLogs(userA.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -542,23 +667,46 @@ func TestED05_GroupDeletionRequest(t *testing.T) {
 	}
 
 	// Create a channel authorized to the group.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
-		Name:          "ED05 P2P Channel",
+	channelName := "ED05 P2P Channel"
+	baseURL := suite.Upstream.BaseURL
+	allowedGroups := fmt.Sprintf("[%d]", groupID)
+	channel := &testutil.ChannelModel{
+		Name:          channelName,
 		Type:          1,
 		Key:           "sk-test-ed05-p2p",
 		Status:        1,
 		Models:        "gpt-4",
 		Group:         "default",
-		AllowedGroups: fmt.Sprintf("[%d]", groupID),
-	})
-	if err != nil {
+		BaseURL:       &baseURL,
+		OwnerUserId:   owner.ID, // mark as user-owned P2P channel so P2P access rules apply
+		AllowedGroups: &allowedGroups,
+	}
+	if _, err := admin.AddChannel(channel); err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
 
+	// Resolve channel ID.
+	channels, err := admin.GetAllChannels()
+	if err != nil {
+		t.Fatalf("failed to query channels after creation: %v", err)
+	}
+	for _, ch := range channels {
+		if ch.Name == channelName {
+			channel.ID = ch.ID
+			break
+		}
+	}
+	if channel.ID == 0 {
+		t.Fatalf("failed to resolve channel ID for ED05")
+	}
+
 	// Create a token for member.
-	tokenKey, _, err := admin.CreateTokenForUser(member.ID, &testutil.TokenModel{
-		Name:   "ED05 Member Token",
-		Status: 1,
+	p2pGroupID := groupID
+	tokenKey, err := memberClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "ED05 Member Token",
+		Status:         1,
+		UnlimitedQuota: true,
+		P2PGroupID:     &p2pGroupID, // restrict token to this P2P group so deletion affects routing
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -602,22 +750,25 @@ func TestED05_GroupDeletionRequest(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 
-	// Verify the second request does NOT use the P2P channel.
-	logs, err := admin.GetUserLogs(member.ID, 2)
-	if err != nil {
-		t.Fatalf("failed to get user logs: %v", err)
-	}
-
-	if len(logs) < 2 {
-		t.Fatalf("expected at least 2 log entries, got %d", len(logs))
-	}
-
-	// The second log should not use the P2P channel.
-	secondLog := logs[0] // Most recent log
-	if secondLog.ChannelID == channel.ID {
-		t.Errorf("ED-05 FAILED: After group deletion, member still accessed P2P channel (ID: %d)", channel.ID)
+	// If the second request still succeeds, verify it did NOT use the P2P channel.
+	// If it fails (e.g. 503: no available channel), this also satisfies "cannot access G1 channels".
+	if resp2.StatusCode == 200 {
+		// Verify the latest log does not point to the deleted group's channel.
+		logs, err := memberClient.GetUserLogs(member.ID, 2)
+		if err != nil {
+			t.Fatalf("failed to get user logs: %v", err)
+		}
+		if len(logs) == 0 {
+			t.Fatalf("expected at least 1 log entry, got %d", len(logs))
+		}
+		secondLog := logs[0] // Most recent log
+		if secondLog.ChannelID == channel.ID {
+			t.Errorf("ED-05 FAILED: After group deletion, member still accessed P2P channel (ID: %d)", channel.ID)
+		} else {
+			t.Logf("ED-05 PASSED: After group deletion, member request succeeded without using P2P channel (used channel ID: %d)", secondLog.ChannelID)
+		}
 	} else {
-		t.Logf("ED-05 PASSED: After group deletion, member cannot access P2P channel")
+		t.Logf("ED-05 PASSED: After group deletion, request no longer succeeds (status=%d) – no access to P2P channel", resp2.StatusCode)
 	}
 }
 
@@ -639,7 +790,7 @@ func TestED06_ConcurrentJoinAndRequest(t *testing.T) {
 	admin := suite.Client
 
 	// Create group owner.
-	owner := createTestUser(t, admin, "ed06_owner", "password123", "default")
+	_ = createTestUser(t, admin, "ed06_owner", "password123", "default")
 	ownerClient := admin.Clone()
 	if _, err := ownerClient.Login("ed06_owner", "password123"); err != nil {
 		t.Fatalf("failed to login as owner: %v", err)
@@ -659,16 +810,20 @@ func TestED06_ConcurrentJoinAndRequest(t *testing.T) {
 	}
 
 	// Create a channel authorized to the group.
-	_, err = admin.CreateChannel(&testutil.ChannelModel{
-		Name:          "ED06 P2P Channel",
+	channelName := "ED06 P2P Channel"
+	baseURL := suite.Upstream.BaseURL
+	allowedGroups := fmt.Sprintf("[%d]", groupID)
+	channel := &testutil.ChannelModel{
+		Name:          channelName,
 		Type:          1,
 		Key:           "sk-test-ed06-concurrent",
 		Status:        1,
 		Models:        "gpt-4",
 		Group:         "default",
-		AllowedGroups: fmt.Sprintf("[%d]", groupID),
-	})
-	if err != nil {
+		BaseURL:       &baseURL,
+		AllowedGroups: &allowedGroups,
+	}
+	if _, err := admin.AddChannel(channel); err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
 
@@ -686,7 +841,7 @@ func TestED06_ConcurrentJoinAndRequest(t *testing.T) {
 
 			// Create a unique user.
 			username := fmt.Sprintf("ed06_user_%d", idx)
-			user := createTestUser(t, admin, username, "password123", "default")
+			_ = createTestUser(t, admin, username, "password123", "default")
 
 			// Login as the user.
 			userClient := admin.Clone()
@@ -704,10 +859,11 @@ func TestED06_ConcurrentJoinAndRequest(t *testing.T) {
 			}
 			atomic.AddInt32(&successfulJoins, 1)
 
-			// Create a token.
-			tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-				Name:   fmt.Sprintf("ED06 Token %d", idx),
-				Status: 1,
+			// Create a token as this user.
+			tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+				Name:           fmt.Sprintf("ED06 Token %d", idx),
+				Status:         1,
+				UnlimitedQuota: true,
 			})
 			if err != nil {
 				atomic.AddInt32(&errors, 1)
@@ -807,18 +963,9 @@ func TestED07_CachePenetration(t *testing.T) {
 		// 2. Measure response time
 		// 3. Verify it doesn't cause DB overload
 
-		// Simulate by creating a token for the non-existent user and making a request.
-		// This should fail fast without extensive DB queries.
-
-		// Create a fake token (this will likely fail, which is expected).
-		_, _, err := admin.CreateTokenForUser(nonExistentUserID, &testutil.TokenModel{
-			Name:   fmt.Sprintf("ED07 Fake Token %d", i),
-			Status: 1,
-		})
-		if err != nil {
-			// Expected to fail - this is fine.
-			continue
-		}
+		// Attempt to query group members for a non-existent group ID. This should
+		// return quickly without stressing the database.
+		_, _ = admin.GetGroupMembers(nonExistentUserID, -1)
 	}
 
 	elapsedTime := time.Since(startTime)

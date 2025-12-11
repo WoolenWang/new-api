@@ -265,6 +265,15 @@ func TokenAuth() func(c *gin.Context) {
 		userGroup := userCache.Group
 		tokenGroup := token.Group
 
+		// 如果 Token.Group 是 JSON 数组格式（例如 ["vip","default"] 或 []），则只通过
+		// billingGroupList 分支处理，不再走兼容的单字符串逻辑。特别地：
+		//   - Token.Group="[]" 表示“显式配置为空列表”，应当回退到用户默认分组，
+		//     而不是当作字符串 "[]" 参与权限校验。
+		trimmedTokenGroup := strings.TrimSpace(tokenGroup)
+		if strings.HasPrefix(trimmedTokenGroup, "[") && strings.HasSuffix(trimmedTokenGroup, "]") {
+			tokenGroup = ""
+		}
+
 		// 解析 Token 的计费分组列表 (支持 JSON 数组或单字符串)
 		billingGroupList := token.GetBillingGroupList()
 
