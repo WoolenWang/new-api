@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"one-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
 // PolicyScheduleSuite tests the monitor policy and scheduling functionality.

@@ -228,23 +228,17 @@ func TestOX05_VipUserTokenOverrideWithP2PMismatch(t *testing.T) {
 	// With billing=vip, system group mismatch (vip vs svip)
 
 	// Act: Make request
-	t.Log("OX-05: vip user, Token restricts to G3 (not a member) - current impl falls back to pure vip routing")
+	t.Log("OX-05: vip user, Token restricts to G3 (not a member), should fail due to P2P restriction")
 	tokenClient := suite.client.WithToken(tokenKey)
-	resp, err := tokenClient.ChatCompletion(testutil.ChatCompletionRequest{
-		Model: "gpt-4",
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "test"},
-		},
-	})
+	success, statusCode, errMsg := tokenClient.TryChatCompletion("gpt-4", "test")
 
-	// Assert: Under current behavior the request succeeds and routes via vip billing group.
-	require.NoError(t, err, "Request should succeed under current implementation")
-	require.NotNil(t, resp, "Response should not be nil")
+	// Assert: With corrected semantics, having a Token-level P2P 限制但用户未加入该组时，
+	// 不应再退回到纯系统分组渠道，而是直接视为无可用渠道。
+	assert.False(t, success, "Request should fail")
+	assert.NotEqual(t, 200, statusCode, "HTTP status should indicate failure")
+	assert.Contains(t, errMsg, "无可用渠道", "Error message should indicate no available channel due to P2P restriction")
 
-	log := suite.getLatestLog(suite.fixtures.UserVip.ID)
-	assert.Equal(t, "vip", log.BillingGroup, "Billing group should remain vip despite P2P mismatch")
-
-	t.Log("OX-05 passed: current implementation ignores unusable Token P2P group and still routes by vip system group")
+	t.Log("OX-05 passed: P2P restriction to non-member group blocks access instead of falling back to system-only channels")
 }
 
 // TestOX06_MultiBillingGroupFallbackWithP2P tests billing group fallback with P2P matching.
@@ -323,29 +317,17 @@ func TestOX07_SvipUserWithInvalidP2PRestriction(t *testing.T) {
 	// User in G1, but Token restricts to G3 -> effective P2P = empty
 
 	// Act: Make request
-	t.Log("OX-07: svip user, Token restricts to G3 (not a member) - current impl falls back to pure svip routing")
+	t.Log("OX-07: svip user, Token restricts to G3 (not a member), should fail due to P2P restriction")
 	tokenClient := suite.client.WithToken(tokenKey)
-	resp, err := tokenClient.ChatCompletion(testutil.ChatCompletionRequest{
-		Model: "gpt-4",
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "test"},
-		},
-	})
+	success, statusCode, errMsg := tokenClient.TryChatCompletion("gpt-4", "test")
 
-	// Assert: Under current behavior the request succeeds and routes via svip billing group.
-	require.NoError(t, err, "Request should succeed under current implementation")
-	require.NotNil(t, resp, "Response should not be nil")
+	// Assert: With corrected semantics, Token P2P 限制与用户加入分组无交集时，不允许继续使用
+	// svip 系统分组公共渠道，应直接视为无可用 P2P 渠道。
+	assert.False(t, success, "Request should fail")
+	assert.NotEqual(t, 200, statusCode, "HTTP status should indicate failure")
+	assert.Contains(t, errMsg, "无可用渠道", "Error message should indicate no available channel due to P2P restriction")
 
-	log := suite.getLatestLog(suite.fixtures.UserSvip.ID)
-	assert.Equal(t, "svip", log.BillingGroup, "Billing group should remain svip despite P2P mismatch")
-
-	svipChannelIDs := []int{
-		suite.fixtures.ChSvipPublic.ID,
-		suite.fixtures.ChSvipG1G2.ID,
-	}
-	assert.Contains(t, svipChannelIDs, log.ChannelID, "Should route to one of svip channels")
-
-	t.Log("OX-07 passed: current implementation ignores unusable Token P2P group and still routes by svip system group")
+	t.Log("OX-07 passed: invalid P2P restriction (no intersection) blocks access")
 }
 
 // TestOX08_SvipUserCrossGroupAttempt tests svip user trying to access default channel without P2P.

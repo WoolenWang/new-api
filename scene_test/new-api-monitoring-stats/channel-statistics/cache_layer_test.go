@@ -101,21 +101,24 @@ func TestCL01_L1MemoryWrite(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL01 L1 Memory Channel",
 		Type:   1,
 		Key:    "sk-test-cl01",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL01 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL01 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -158,7 +161,7 @@ func TestCL01_L1MemoryWrite(t *testing.T) {
 
 	if len(logs) == 0 {
 		t.Errorf("CL-01 FAILED: No log entry created")
-	} else if logs[0].ChannelID == channel.ID {
+	} else if logs[0].ChannelID == channelModel.ID {
 		t.Logf("CL-01 PASSED: L1 memory write completed (async, no blocking)")
 	}
 
@@ -192,21 +195,24 @@ func TestCL02_L1ToL2Flush(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL02 Flush Test Channel",
 		Type:   1,
 		Key:    "sk-test-cl02",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL02 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL02 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -289,30 +295,34 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	}
 
 	// Create shared channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL03 HLL Test Channel",
 		Type:   1,
 		Key:    "sk-test-cl03-hll",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
 	// Create tokens.
-	tokenA, _, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "CL03 Token A",
-		Status: 1,
+	tokenA, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL03 Token A",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token A: %v", err)
 	}
 
-	tokenB, _, err := admin.CreateTokenForUser(userB.ID, &testutil.TokenModel{
-		Name:   "CL03 Token B",
-		Status: 1,
+	tokenB, err := userBClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL03 Token B",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token B: %v", err)
@@ -348,14 +358,14 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	}
 
 	// User A sends 1 more request.
-	resp, _ = userATokenClient.Post("/v1/chat/completions", map[string]interface{}{
+	respFinal, _ := userATokenClient.Post("/v1/chat/completions", map[string]interface{}{
 		"model": "gpt-4",
 		"messages": []map[string]string{
 			{"role": "user", "content": "userA final request"},
 		},
 	})
-	if resp != nil {
-		resp.Body.Close()
+	if respFinal != nil {
+		respFinal.Body.Close()
 	}
 
 	t.Logf("CL-03: Sent 6 total requests (userA: 4, userB: 2)")
@@ -372,13 +382,13 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	userBCount := 0
 
 	for _, log := range logsA {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			userACount++
 		}
 	}
 
 	for _, log := range logsB {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			userBCount++
 		}
 	}
@@ -423,21 +433,24 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL04 Dirty Mark Channel",
 		Type:   1,
 		Key:    "sk-test-cl04-dirty",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL04 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL04 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -477,7 +490,7 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 		return
 	}
 
-	if logs[0].ChannelID != channel.ID {
+	if logs[0].ChannelID != channelModel.ID {
 		t.Errorf("CL-04 FAILED: Log channel mismatch")
 		return
 	}
@@ -501,89 +514,7 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 // Priority: P1
 // Scenario: Create stats key, verify TTL=24h, mock time advance 25h, check expiration
 // Expected: Cold data automatically expires
-func TestCL05_RedisTTLMechanism(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CL-05: Requires Redis TTL mock and time control")
-
-	// Test implementation would:
-	// 1. Create a statistics Redis key
-	// 2. Verify TTL is set to 24 hours
-	// 3. Mock time advance 25 hours
-	// 4. Verify key no longer exists (expired)
-}
-
-// TestCL06_L2ToL3StaggeredSync tests L2 to L3 staggered synchronization.
-//
-// Test Case: CL-06
-// Priority: P0
-// Scenario: Multiple channels have dirty data, trigger DB Sync Worker
-// Expected: Sync times spread across 15-minute window with random jitter
-func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CL-06: Requires multiple channels and DB Sync Worker observation")
-
-	// Test implementation would:
-	// 1. Create 10 channels
-	// 2. Send requests to all channels
-	// 3. Wait for L1 → L2 flush
-	// 4. Trigger DB Sync Worker
-	// 5. Monitor actual sync times for each channel
-	// 6. Verify times are distributed within 15-minute window
-	// 7. Verify random jitter is applied (not all at exactly 15 minutes)
-}
-
-// TestCL07_L3DataAggregationAndDeduplication tests L3 data aggregation.
-//
-// Test Case: CL-07
-// Priority: P0
-// Scenario: Same channel triggers sync multiple times in one window
-// Expected: channel_statistics table has only one record per window, no duplicate accumulation
-func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CL-07: Requires DB Sync Worker control and DB query")
-
-	// Test implementation would:
-	// 1. Send requests to channel Ch1
-	// 2. Trigger DB Sync Worker (first sync)
-	// 3. Send more requests to Ch1
-	// 4. Trigger DB Sync Worker again (second sync, same window)
-	// 5. Query channel_statistics table
-	// 6. Verify only one record exists for the time window
-	// 7. Verify data is correct (not duplicated)
-}
-
-// TestCL08_ReadPathThreeLevelCache tests read path cache hierarchy.
-//
-// Test Case: CL-08
-// Priority: P1
-// Scenario: Query channel stats API three times
-// Expected: 1st query hits DB, 2nd hits Redis, 3rd hits memory
-func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CL-08: Requires stats query API and cache hit tracking")
-
-	// Test implementation would:
-	// 1. Clear all caches
-	// 2. Query GET /api/channels/{id}/stats (1st time)
-	//    - Should hit DB, cache miss logged
-	// 3. Query again (2nd time)
-	//    - Should hit Redis L2 cache
-	// 4. Query again (3rd time)
-	//    - Should hit memory L1 cache
-	// 5. Verify cache hit metrics
-}
+// CL-05 ~ CL-08 are implemented in cache_layer_unlocked_test.go
 
 // TestCL09_CachePenetrationProtection tests cache penetration protection.
 //
@@ -631,24 +562,7 @@ func TestCL09_CachePenetrationProtection(t *testing.T) {
 // Priority: P1
 // Scenario: Create 100 channels, 50 have no updates for 5 minutes
 // Expected: Cold channels removed from memory Map, hot channels retained
-func TestCL10_MemoryEvictionMechanism(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CL-10: Requires internal memory Map access and eviction task control")
-
-	// Test implementation would:
-	// 1. Create 100 channels
-	// 2. Send requests to all channels (populate L1 memory)
-	// 3. Wait 2 minutes
-	// 4. Send requests to 50 channels (keep them hot)
-	// 5. Wait 3 more minutes (cold channels now 5 minutes old)
-	// 6. Trigger eviction task
-	// 7. Check L1 memory Map
-	// 8. Verify 50 cold channels are evicted
-	// 9. Verify 50 hot channels are retained
-}
+// CL-10 unlocked implementation is in cache_layer_unlocked_test.go
 
 // TestConcurrentL1Writes tests concurrent writes to L1 memory.
 //
@@ -673,21 +587,24 @@ func TestConcurrentL1Writes(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL Concurrent Test Channel",
 		Type:   1,
 		Key:    "sk-test-cl-concurrent",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL Concurrent Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL Concurrent Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -750,7 +667,7 @@ func TestConcurrentL1Writes(t *testing.T) {
 
 	logCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			logCount++
 		}
 	}

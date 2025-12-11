@@ -27,6 +27,11 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+const (
+	ctxKeyTokenHasP2PConstraint         = "token_has_p2p_constraint"
+	ctxKeyTokenP2PConstraintNoEffective = "token_p2p_constraint_no_effective_group"
+)
+
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
@@ -199,6 +204,19 @@ func Distribute() func(c *gin.Context) {
 				// 单计费组选路逻辑（兼容原有逻辑）
 				if len(routingGroups) == 0 {
 					routingGroups = ComputeRoutingGroups(c, usingGroup)
+				}
+
+				// 当 Token 显式设置了 P2P 分组，但用户在该分组内没有任何可用 P2P 组时，
+				// 不允许退回到纯系统分组渠道（例如 vip/svip 公共渠道），而是直接视为
+				// 「无可用渠道」以符合设计语义。
+				if hasP2PConstraintButNoGroup(c) {
+					showGroup := usingGroup
+					if usingGroup == "" {
+						showGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+					}
+					message := fmt.Sprintf("分组 %s 下模型 %s 无可用渠道（P2P 限制）", showGroup, modelRequest.Model)
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, string(types.ErrorCodeModelNotFound))
+					return
 				}
 
 				channel, selectGroup, err = service.CacheGetRandomSatisfiedChannelMultiGroup(c, routingGroups, modelRequest.Model, 0)
@@ -764,13 +782,19 @@ func computeEffectiveP2PGroupIDs(c *gin.Context, userP2PGroupIDs []int, userId i
 	if !exists || tokenAllowedP2PGroupIDs == nil {
 		// Token 未选择任何 P2P 分组：不使用用户的任何 P2P 分组
 		// 后续仅依赖系统分组进行选路，P2P 渠道需要显式的 p2p_group_id 才可访问
+		c.Set(ctxKeyTokenHasP2PConstraint, false)
+		c.Set(ctxKeyTokenP2PConstraintNoEffective, false)
 		return []int{}
 	}
+
+	// Token 显式选择了 P2P 分组
+	c.Set(ctxKeyTokenHasP2PConstraint, true)
 
 	tokenP2PList, ok := tokenAllowedP2PGroupIDs.([]int)
 	if !ok {
 		common.SysLog(fmt.Sprintf("token_allowed_p2p_groups type assertion failed for user %d in distributor", userId))
 		// 类型断言失败时，为避免意外放宽权限，同样不使用任何 P2P 分组
+		c.Set(ctxKeyTokenP2PConstraintNoEffective, true)
 		return []int{}
 	}
 
@@ -787,7 +811,30 @@ func computeEffectiveP2PGroupIDs(c *gin.Context, userP2PGroupIDs []int, userId i
 			effectiveP2PGroupIDs = append(effectiveP2PGroupIDs, groupID)
 		}
 	}
+
+	// 若 Token 配置了 P2P 分组，但用户在这些分组中没有任何有效成员关系，
+	// 标记为「有 P2P 限制但无有效分组」，后续路由阶段将直接视为无可用渠道，
+	// 而不是退回到纯系统分组渠道。
+	if len(effectiveP2PGroupIDs) == 0 {
+		c.Set(ctxKeyTokenP2PConstraintNoEffective, true)
+	} else {
+		c.Set(ctxKeyTokenP2PConstraintNoEffective, false)
+	}
+
 	return effectiveP2PGroupIDs
+}
+
+// hasP2PConstraintButNoGroup returns true when the current request's Token
+// explicitly configured a P2P group, but the user has no effective membership
+// in that group (i.e. intersection is empty). In this case, design dictates
+// that we must not fallback to pure system-group channels.
+func hasP2PConstraintButNoGroup(c *gin.Context) bool {
+	raw, ok := c.Get(ctxKeyTokenP2PConstraintNoEffective)
+	if !ok {
+		return false
+	}
+	flag, ok := raw.(bool)
+	return ok && flag
 }
 
 // deduplicateGroups 对分组列表去重，保持原有顺序
@@ -821,6 +868,12 @@ func selectChannelWithBillingGroupList(c *gin.Context, billingGroupList []string
 	for _, billingGroup := range billingGroupList {
 		// 为当前计费分组构建 RoutingGroups
 		routingGroups := ComputeRoutingGroupsForBillingGroup(c, billingGroup)
+
+		// 如果 Token 显式配置了 P2P 分组但没有任何有效 P2P 成员关系，
+		// 直接视为在所有计费分组下都无可用渠道，不继续进行 fallback。
+		if hasP2PConstraintButNoGroup(c) {
+			return nil, "", fmt.Errorf("分组 %s 下模型 %s 无可用渠道（P2P 限制）", billingGroup, modelName)
+		}
 
 		logger.LogDebug(c, fmt.Sprintf("BillingGroupList iteration: trying billing_group=%s, routing_groups=%v, model=%s",
 			billingGroup, routingGroups, modelName))

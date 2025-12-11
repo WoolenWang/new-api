@@ -566,6 +566,22 @@ func (c *APIClient) AddChannelWithResponse(channel *ChannelModel) (*http.Respons
 	return c.Post("/api/channel/", req)
 }
 
+// GetChannel retrieves a single channel by ID.
+func (c *APIClient) GetChannel(id int) (*ChannelModel, error) {
+	var resp struct {
+		Success bool         `json:"success"`
+		Message string       `json:"message"`
+		Data    ChannelModel `json:"data"`
+	}
+	if err := c.GetJSON(fmt.Sprintf("/api/channel/%d", id), &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get channel failed: %s", resp.Message)
+	}
+	return &resp.Data, nil
+}
+
 // GetAllChannels retrieves all channels.
 func (c *APIClient) GetAllChannels() ([]ChannelModel, error) {
 	var resp struct {

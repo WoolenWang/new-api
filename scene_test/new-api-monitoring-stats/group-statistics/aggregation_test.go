@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"one-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
 // AggregationSuite tests the group statistics aggregation calculation correctness.

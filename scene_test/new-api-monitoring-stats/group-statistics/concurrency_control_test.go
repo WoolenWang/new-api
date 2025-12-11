@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"one-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
 // ConcurrencyControlSuite tests the concurrent aggregation control mechanisms.

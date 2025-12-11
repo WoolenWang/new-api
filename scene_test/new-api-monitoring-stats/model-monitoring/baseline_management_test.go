@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"one-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
 // BaselineManagementSuite tests the model baseline management functionality.

@@ -417,3 +417,18 @@ func CleanupTestExecutable(exePath string) error {
 func FindProjectRoot() (string, error) {
 	return findProjectRoot()
 }
+
+// StartTestServer is a convenience helper used by higher-level
+// scene tests. It starts a NewAPI server with default test
+// configuration and an auto-detected project root.
+func StartTestServer() (*TestServer, error) {
+	cfg := DefaultConfig()
+
+	projectRoot, err := findProjectRoot()
+	if err != nil {
+		return nil, fmt.Errorf("failed to find project root for test server: %w", err)
+	}
+	cfg.ProjectRoot = projectRoot
+
+	return StartServer(cfg)
+}

@@ -95,21 +95,24 @@ func TestCON01_HighConcurrencyL1Writes(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CON01 Concurrent Channel",
 		Type:   1,
 		Key:    "sk-test-con01",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CON01 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CON01 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -187,7 +190,7 @@ func TestCON01_HighConcurrencyL1Writes(t *testing.T) {
 	} else {
 		channelLogCount := 0
 		for _, log := range logs {
-			if log.ChannelID == channel.ID {
+			if log.ChannelID == channelModel.ID {
 				channelLogCount++
 			}
 		}
@@ -205,43 +208,7 @@ func TestCON01_HighConcurrencyL1Writes(t *testing.T) {
 // Priority: P0
 // Scenario: Multiple flush tasks trigger simultaneously
 // Expected: Use locks or atomic operations to avoid duplicate flushes
-func TestCON02_FlushConcurrencySafety(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CON-02: Requires internal Flush Worker control and lock observation")
-
-	// Test implementation would:
-	// 1. Populate L1 with statistics data
-	// 2. Trigger multiple Flush Workers simultaneously (via test hooks)
-	// 3. Verify only one flush actually executes (via locks/atomic flags)
-	// 4. Check Redis data is not duplicated
-	// 5. Verify L1 counter is reset exactly once
-}
-
-// TestCON03_DBSyncConcurrencyControl tests DB Sync concurrency control.
-//
-// Test Case: CON-03
-// Priority: P0
-// Scenario: Multiple workers try to sync the same channel
-// Expected: Distributed lock ensures only one worker executes
-func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	t.Skip("CON-03: Requires DB Sync Worker control and distributed lock testing")
-
-	// Test implementation would:
-	// 1. Create channel with dirty data in Redis
-	// 2. Spawn 5 DB Sync Workers simultaneously
-	// 3. All workers attempt to sync the same channel
-	// 4. Verify distributed lock (Redis SET NX) ensures only one succeeds
-	// 5. Other workers should fail lock acquisition and skip
-	// 6. Check DB has exactly one statistics record (no duplicates)
-	// 7. Verify lock is released after sync completes
-}
+// CON-02 and CON-03 unlocked implementations are in cache_layer_unlocked_test.go
 
 // TestCON04_StatisticsAndChannelDisableConflict tests conflict resolution.
 //
@@ -249,7 +216,8 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 // Priority: P1
 // Scenario: Channel has ongoing request, admin disables channel simultaneously
 // Expected: Ongoing request completes and statistics are recorded normally,
-//          subsequent requests are rejected
+//
+//	subsequent requests are rejected
 func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -267,21 +235,24 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 		t.Fatalf("failed to login as user: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CON04 Test Channel",
 		Type:   1,
 		Key:    "sk-test-con04",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CON04 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CON04 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -326,7 +297,8 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Disable the channel while request is ongoing.
-	err = admin.UpdateChannel(channel.ID, &testutil.ChannelModel{
+	err = admin.UpdateChannel(&testutil.ChannelModel{
+		ID:     channelModel.ID,
 		Status: 0, // Disable
 	})
 	if err != nil {
@@ -354,8 +326,8 @@ func TestCON04_StatisticsAndChannelDisableConflict(t *testing.T) {
 		t.Errorf("CON-04 FAILED: No log entry for ongoing request")
 	} else {
 		lastLog := logs[0]
-		if lastLog.ChannelID == channel.ID {
-			t.Logf("CON-04: Ongoing request was logged correctly (channel_id=%d)", channel.ID)
+		if lastLog.ChannelID == channelModel.ID {
+			t.Logf("CON-04: Ongoing request was logged correctly (channel_id=%d)", channelModel.ID)
 		}
 	}
 
@@ -406,45 +378,52 @@ func TestConcurrentMultiChannel(t *testing.T) {
 	}
 
 	// Create three channels.
-	channel1, err := admin.CreateChannel(&testutil.ChannelModel{
+	channel1 := &testutil.ChannelModel{
 		Name:   "CON Multi Ch1",
 		Type:   1,
 		Key:    "sk-test-con-multi-1",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	ch1ID, err := admin.AddChannel(channel1)
 	if err != nil {
 		t.Fatalf("failed to create channel 1: %v", err)
 	}
+	channel1.ID = ch1ID
 
-	channel2, err := admin.CreateChannel(&testutil.ChannelModel{
+	channel2 := &testutil.ChannelModel{
 		Name:   "CON Multi Ch2",
 		Type:   1,
 		Key:    "sk-test-con-multi-2",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	ch2ID, err := admin.AddChannel(channel2)
 	if err != nil {
 		t.Fatalf("failed to create channel 2: %v", err)
 	}
+	channel2.ID = ch2ID
 
-	channel3, err := admin.CreateChannel(&testutil.ChannelModel{
+	channel3 := &testutil.ChannelModel{
 		Name:   "CON Multi Ch3",
 		Type:   1,
 		Key:    "sk-test-con-multi-3",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	ch3ID, err := admin.AddChannel(channel3)
 	if err != nil {
 		t.Fatalf("failed to create channel 3: %v", err)
 	}
+	channel3.ID = ch3ID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CON Multi Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CON Multi Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)

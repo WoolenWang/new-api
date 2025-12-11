@@ -6,7 +6,6 @@ package channel_statistics
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,26 +30,31 @@ func TestCL05_RedisTTLMechanism(t *testing.T) {
 
 	// Create user and channel.
 	user := createTestUser(t, admin, "cl05_user", "password123", "default")
+	t.Logf("CL-05: created test user id=%d", user.ID)
+
 	userClient := admin.Clone()
 	if _, err := userClient.Login("cl05_user", "password123"); err != nil {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL05 TTL Channel",
 		Type:   1,
 		Key:    "sk-test-cl05-ttl",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL05 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL05 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -106,18 +110,20 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 	channels := make([]*testutil.ChannelModel, numChannels)
 
 	for i := 0; i < numChannels; i++ {
-		ch, err := admin.CreateChannel(&testutil.ChannelModel{
+		chModel := &testutil.ChannelModel{
 			Name:   fmt.Sprintf("CL06 Channel %d", i),
 			Type:   1,
 			Key:    fmt.Sprintf("sk-test-cl06-%d", i),
 			Status: 1,
 			Models: "gpt-4",
 			Group:  "default",
-		})
+		}
+		chID, err := admin.AddChannel(chModel)
 		if err != nil {
 			t.Fatalf("failed to create channel %d: %v", i, err)
 		}
-		channels[i] = ch
+		chModel.ID = chID
+		channels[i] = chModel
 	}
 
 	// Create user and send requests to all channels.
@@ -127,9 +133,10 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL06 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL06 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -138,7 +145,7 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 	userTokenClient := userClient.WithToken(tokenKey)
 
 	// Send request to each channel.
-	for i, ch := range channels {
+	for i := range channels {
 		resp, _ := userTokenClient.Post("/v1/chat/completions", map[string]interface{}{
 			"model": "gpt-4",
 			"messages": []map[string]string{
@@ -209,21 +216,24 @@ func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL07 Dedup Channel",
 		Type:   1,
 		Key:    "sk-test-cl07-dedup",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL07 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL07 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -273,7 +283,7 @@ func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}
@@ -314,26 +324,31 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 
 	// Create channel and send requests to populate statistics.
 	user := createTestUser(t, admin, "cl08_user", "password123", "default")
+	t.Logf("CL-08: created test user id=%d", user.ID)
+
 	userClient := admin.Clone()
 	if _, err := userClient.Login("cl08_user", "password123"); err != nil {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CL08 Read Cache Channel",
 		Type:   1,
 		Key:    "sk-test-cl08-read",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CL08 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CL08 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -360,7 +375,7 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 
 	// Query 1: Should hit DB (cold).
 	start1 := time.Now()
-	stats1, err := admin.GetChannelStats(channel.ID, "1h", "gpt-4")
+	stats1, err := admin.GetChannelStats(channelModel.ID, "1h", "gpt-4")
 	query1Duration := time.Since(start1)
 
 	if err != nil {
@@ -371,7 +386,7 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 
 	// Query 2: Should hit Redis (warm).
 	start2 := time.Now()
-	stats2, _ := admin.GetChannelStats(channel.ID, "1h", "gpt-4")
+	stats2, _ := admin.GetChannelStats(channelModel.ID, "1h", "gpt-4")
 	query2Duration := time.Since(start2)
 
 	if stats2 != nil {
@@ -380,7 +395,7 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 
 	// Query 3: Should hit memory (hot).
 	start3 := time.Now()
-	stats3, _ := admin.GetChannelStats(channel.ID, "1h", "gpt-4")
+	stats3, _ := admin.GetChannelStats(channelModel.ID, "1h", "gpt-4")
 	query3Duration := time.Since(start3)
 
 	if stats3 != nil {
@@ -449,21 +464,24 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CON02 Flush Safety Channel",
 		Type:   1,
 		Key:    "sk-test-con02-flush",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	chID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = chID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CON02 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CON02 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -501,7 +519,7 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}
@@ -537,21 +555,24 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CON03 DB Sync Channel",
 		Type:   1,
 		Key:    "sk-test-con03-dbsync",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	chID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = chID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CON03 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CON03 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -593,7 +614,7 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"one-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
 // ResultQuerySuite tests the monitoring result storage and query functionality.

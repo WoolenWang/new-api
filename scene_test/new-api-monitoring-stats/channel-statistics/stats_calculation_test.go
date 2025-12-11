@@ -25,10 +25,10 @@ package channel_statistics
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
@@ -87,6 +87,14 @@ func findProjectRoot() (string, error) {
 	return testutil.FindProjectRoot()
 }
 
+// abs returns the absolute value of a float64.
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // createTestUser creates a user with unique external_id.
 func createTestUser(t *testing.T, admin *testutil.APIClient, username, password, group string) *testutil.UserModel {
 	t.Helper()
@@ -132,22 +140,25 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 	}
 
 	// Create a channel for the user.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS01 Test Channel",
 		Type:   1, // OpenAI type
 		Key:    "sk-test-cs01-channel",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
 	// Create a token for the user.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS01 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS01 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -194,8 +205,8 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 
 	// Verify all requests used the same channel.
 	for i, log := range logs[:numRequests] {
-		if log.ChannelID != channel.ID {
-			t.Errorf("log %d: expected channel ID %d, got %d", i, channel.ID, log.ChannelID)
+		if log.ChannelID != channelModel.ID {
+			t.Errorf("log %d: expected channel ID %d, got %d", i, channelModel.ID, log.ChannelID)
 		}
 	}
 
@@ -249,6 +260,8 @@ func TestCS02_FailureRateCalculation(t *testing.T) {
 
 	// Create test user.
 	user := createTestUser(t, admin, "cs02_user", "password123", "default")
+	t.Logf("CS-02: created test user id=%d", user.ID)
+
 	userClient := admin.Clone()
 	if _, err := userClient.Login("cs02_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -260,7 +273,7 @@ func TestCS02_FailureRateCalculation(t *testing.T) {
 	// For this test, we'll use a simplified approach: send requests and
 	// verify failure statistics based on actual responses.
 
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS02 Flakey Channel",
 		Type:   1,
 		Key:    "sk-test-cs02-flakey",
@@ -268,14 +281,17 @@ func TestCS02_FailureRateCalculation(t *testing.T) {
 		Models: "gpt-4",
 		Group:  "default",
 		// BaseURL: mockLLM.URL(), // Would set this if supported
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS02 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS02 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -352,21 +368,24 @@ func TestCS03_AverageResponseTime(t *testing.T) {
 	}
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS03 Response Time Channel",
 		Type:   1,
 		Key:    "sk-test-cs03",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS03 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS03 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -424,8 +443,8 @@ func TestCS03_AverageResponseTime(t *testing.T) {
 
 	// Verify all used the same channel.
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
-			t.Logf("  Log entry confirmed for channel %d", channel.ID)
+		if log.ChannelID == channelModel.ID {
+			t.Logf("  Log entry confirmed for channel %d", channelModel.ID)
 			break
 		}
 	}
@@ -460,21 +479,24 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	}
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS04 TPM RPM Channel",
 		Type:   1,
 		Key:    "sk-test-cs04-tpm",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS04 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS04 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -530,7 +552,7 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	channelLogCount := 0
 
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 			totalTokens += int64(log.PromptTokens + log.CompletionTokens)
 		}
@@ -582,21 +604,24 @@ func TestCS05_StreamRequestRatio(t *testing.T) {
 	}
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS05 Stream Ratio Channel",
 		Type:   1,
 		Key:    "sk-test-cs05-stream",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS05 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS05 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -653,7 +678,7 @@ func TestCS05_StreamRequestRatio(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}
@@ -694,21 +719,24 @@ func TestCS06_CacheHitRate(t *testing.T) {
 	}
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS06 Cache Hit Channel",
 		Type:   1,
 		Key:    "sk-test-cs06-cache",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS06 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS06 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -759,7 +787,7 @@ func TestCS06_CacheHitRate(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}
@@ -805,30 +833,34 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 	}
 
 	// Create a shared channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS07 Shared Channel",
 		Type:   1,
 		Key:    "sk-test-cs07-shared",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
 	// Create tokens for both users.
-	tokenA, _, err := admin.CreateTokenForUser(userA.ID, &testutil.TokenModel{
-		Name:   "CS07 Token A",
-		Status: 1,
+	tokenA, err := userAClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS07 Token A",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token A: %v", err)
 	}
 
-	tokenB, _, err := admin.CreateTokenForUser(userB.ID, &testutil.TokenModel{
-		Name:   "CS07 Token B",
-		Status: 1,
+	tokenB, err := userBClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS07 Token B",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token B: %v", err)
@@ -899,14 +931,14 @@ func TestCS07_UniqueUsersCount(t *testing.T) {
 	userBUsedChannel := false
 
 	for _, log := range logsA {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			userAUsedChannel = true
 			break
 		}
 	}
 
 	for _, log := range logsB {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			userBUsedChannel = true
 			break
 		}
@@ -944,20 +976,22 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	admin := suite.Client
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS08 Downtime Channel",
 		Type:   1,
 		Key:    "sk-test-cs08-downtime",
 		Status: 1, // Initially enabled
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
 	t.Logf("CS-08: Starting downtime percentage test")
-	t.Logf("  Channel ID: %d", channel.ID)
+	t.Logf("  Channel ID: %d", channelModel.ID)
 	t.Logf("  Initial status: enabled")
 
 	// Record start time.
@@ -968,7 +1002,8 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	time.Sleep(5 * time.Minute)
 
 	// Disable the channel.
-	err = admin.UpdateChannel(channel.ID, &testutil.ChannelModel{
+	err = admin.UpdateChannel(&testutil.ChannelModel{
+		ID:     channelModel.ID,
 		Status: 0, // Disable
 	})
 	if err != nil {
@@ -982,7 +1017,8 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	time.Sleep(5 * time.Minute)
 
 	// Re-enable the channel.
-	err = admin.UpdateChannel(channel.ID, &testutil.ChannelModel{
+	err = admin.UpdateChannel(&testutil.ChannelModel{
+		ID:     channelModel.ID,
 		Status: 1, // Enable
 	})
 	if err != nil {
@@ -1043,21 +1079,24 @@ func TestCS09_AverageConcurrency(t *testing.T) {
 	}
 
 	// Create channel.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS09 Concurrency Channel",
 		Type:   1,
 		Key:    "sk-test-cs09-concurrency",
 		Status: 1,
 		Models: "gpt-4",
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS09 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS09 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -1120,7 +1159,7 @@ func TestCS09_AverageConcurrency(t *testing.T) {
 
 	channelLogCount := 0
 	for _, log := range logs {
-		if log.ChannelID == channel.ID {
+		if log.ChannelID == channelModel.ID {
 			channelLogCount++
 		}
 	}
@@ -1172,22 +1211,25 @@ func TestCS10_PerModelStatistics(t *testing.T) {
 	}
 
 	// Create a channel supporting multiple models.
-	channel, err := admin.CreateChannel(&testutil.ChannelModel{
+	channelModel := &testutil.ChannelModel{
 		Name:   "CS10 Multi-Model Channel",
 		Type:   1,
 		Key:    "sk-test-cs10-multi",
 		Status: 1,
 		Models: "gpt-4,gpt-3.5-turbo", // Support both models
 		Group:  "default",
-	})
+	}
+	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {
 		t.Fatalf("failed to create channel: %v", err)
 	}
+	channelModel.ID = channelID
 
 	// Create token.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
-		Name:   "CS10 Token",
-		Status: 1,
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS10 Token",
+		Status:         1,
+		UnlimitedQuota: true,
 	})
 	if err != nil {
 		t.Fatalf("failed to create token: %v", err)
@@ -1237,12 +1279,12 @@ func TestCS10_PerModelStatistics(t *testing.T) {
 	gpt35Count := 0
 
 	for _, log := range logs {
-		if log.ChannelID != channel.ID {
+		if log.ChannelID != channelModel.ID {
 			continue
 		}
-		if log.Model == "gpt-4" {
+		if log.ModelName == "gpt-4" {
 			gpt4Count++
-		} else if log.Model == "gpt-3.5-turbo" {
+		} else if log.ModelName == "gpt-3.5-turbo" {
 			gpt35Count++
 		}
 	}

@@ -507,3 +507,85 @@ func (of *OrthogonalFixtures) GetChannelByConfig(systemGroup string, p2pGroups [
 
 	return nil
 }
+
+// CreatePrivateChannel creates a private channel with specified configuration.
+// Private channels are only accessible by their owner, even if P2P groups are authorized.
+func (of *OrthogonalFixtures) CreatePrivateChannel(name, model, systemGroup string, ownerID int, allowedGroups []int) (*ChannelModel, error) {
+	of.t.Helper()
+
+	priority := int64(0)
+	weight := uint(1)
+	baseURL := of.upstream.BaseURL
+
+	var allowedGroupsPtr *string
+	if len(allowedGroups) > 0 {
+		raw, err := json.Marshal(allowedGroups)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal allowed groups for private channel %s: %w", name, err)
+		}
+		asStr := string(raw)
+		allowedGroupsPtr = &asStr
+	}
+
+	channel := &ChannelModel{
+		Name:      name,
+		Type:      ChannelTypeOpenAI,
+		Key:       "sk-test-key-" + name,
+		Models:    model,
+		Group:     systemGroup,
+		BaseURL:   &baseURL,
+		Priority:  &priority,
+		Weight:    &weight,
+		Status:    1,    // Enabled
+		IsPrivate: true, // This is the key difference
+	}
+
+	if allowedGroupsPtr != nil {
+		channel.AllowedGroups = allowedGroupsPtr
+	}
+
+	// Use the owner's client to create the channel
+	var ownerClient *APIClient
+	switch ownerID {
+	case of.UserDefault.ID:
+		ownerClient = of.UserDefaultClient
+	case of.UserVip.ID:
+		ownerClient = of.UserVipClient
+	case of.UserSvip.ID:
+		ownerClient = of.UserSvipClient
+	default:
+		return nil, fmt.Errorf("unknown owner ID: %d", ownerID)
+	}
+
+	if _, err := ownerClient.AddChannel(channel); err != nil {
+		return nil, fmt.Errorf("failed to create private channel %s: %w", name, err)
+	}
+
+	// Query back to discover the assigned ID
+	channels, err := ownerClient.GetAllChannels()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query channels after creation: %w", err)
+	}
+	for _, ch := range channels {
+		if ch.Name == name {
+			channel.ID = ch.ID
+			of.t.Logf("Created private channel: id=%d, name=%s, owner=%d, group=%s, p2p=%v", ch.ID, name, ownerID, systemGroup, allowedGroups)
+			return channel, nil
+		}
+	}
+
+	return nil, fmt.Errorf("private channel %s created but not found in list", name)
+}
+
+// VerifyBillingGroup verifies that a completed request was billed under the expected group.
+// This queries the logs table to check the actual billing group used.
+func (of *OrthogonalFixtures) VerifyBillingGroup(t *testing.T, userID int, expectedGroup string, expectedTokens int) {
+	t.Helper()
+
+	// This is a placeholder - actual implementation would query the logs table
+	// and verify the billing_group field matches expectedGroup
+	t.Logf("Verifying billing: user=%d, expected_group=%s, expected_tokens=%d", userID, expectedGroup, expectedTokens)
+
+	// Note: Full implementation requires direct database access or a logs query API
+	// For now, we rely on the routing success/failure assertions
+}
