@@ -13,7 +13,13 @@ package testutil
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"time"
+
+	// Register the SQLite driver for database/sql. glebarez/go-sqlite
+	// wraps modernc.org/sqlite and exposes it under the standard
+	// driver name "sqlite", which matches the DSN used in tests.
+	_ "github.com/glebarez/go-sqlite"
 )
 
 // DBStatsInspector provides utilities to inspect database statistics.
@@ -26,8 +32,9 @@ type DBStatsInspector struct {
 // Note: In actual test environment, this would receive a connection to the
 // test database (in-memory SQLite).
 func NewDBStatsInspector(dbPath string) (*DBStatsInspector, error) {
-	// For SQLite in-memory database used in tests.
-	db, err := sql.Open("sqlite3", dbPath)
+	// For SQLite database used in tests, we rely on the "sqlite" driver
+	// provided by modernc.org/sqlite.
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -35,6 +42,17 @@ func NewDBStatsInspector(dbPath string) (*DBStatsInspector, error) {
 	return &DBStatsInspector{
 		db: db,
 	}, nil
+}
+
+// NewDBStatsInspectorFromServer creates a DBStatsInspector for the SQLite
+// database used by a TestServer. The server stores its data (including
+// one-api.db) under TestServer.DataDir.
+func NewDBStatsInspectorFromServer(server *TestServer) (*DBStatsInspector, error) {
+	if server == nil || server.DataDir == "" {
+		return nil, fmt.Errorf("invalid test server: missing DataDir")
+	}
+	dbPath := filepath.Join(server.DataDir, "one-api.db")
+	return NewDBStatsInspector(dbPath)
 }
 
 // Close closes the database connection.
@@ -62,17 +80,28 @@ type ChannelStatisticsRecord struct {
 //
 // Returns all records for a channel and model within a time range.
 func (d *DBStatsInspector) QueryChannelStatistics(channelID int, modelName string, startTime, endTime int64) ([]ChannelStatisticsRecord, error) {
+	// Build query dynamically so that startTime/endTime are optional.
 	query := `
 		SELECT id, channel_id, model_name, time_window_start,
 		       request_count, fail_count, total_tokens, total_quota,
 		       total_latency_ms, stream_req_count, cache_hit_count, downtime_seconds
 		FROM channel_statistics
 		WHERE channel_id = ? AND model_name = ?
-		  AND time_window_start >= ? AND time_window_start < ?
-		ORDER BY time_window_start DESC
 	`
 
-	rows, err := d.db.Query(query, channelID, modelName, startTime, endTime)
+	args := []interface{}{channelID, modelName}
+	if startTime > 0 {
+		query += " AND time_window_start >= ?"
+		args = append(args, startTime)
+	}
+	if endTime > 0 {
+		query += " AND time_window_start < ?"
+		args = append(args, endTime)
+	}
+
+	query += " ORDER BY time_window_start DESC"
+
+	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query channel_statistics: %w", err)
 	}

@@ -35,6 +35,8 @@ type GroupStatsScheduler struct {
 	cancel               context.CancelFunc
 	enabled              bool
 	concurrencySemaphore chan struct{} // 用于全局并发控制
+	started              bool          // 标记调度器是否已启动（避免重复启动）
+	startMu              sync.Mutex
 }
 
 var (
@@ -63,10 +65,19 @@ func GetGlobalScheduler() *GroupStatsScheduler {
 // Start 启动调度器
 // 开始监听渠道统计更新事件，并调度分组聚合任务
 func (s *GroupStatsScheduler) Start() {
+	s.startMu.Lock()
+	if s.started {
+		s.startMu.Unlock()
+		common.SysLog("GroupStatsScheduler already started, skipping")
+		return
+	}
 	if !s.enabled {
+		s.startMu.Unlock()
 		common.SysLog("GroupStatsScheduler is disabled, not starting")
 		return
 	}
+	s.started = true
+	s.startMu.Unlock()
 
 	common.SysLog("GroupStatsScheduler starting...")
 
@@ -295,6 +306,50 @@ func (s *GroupStatsScheduler) GetLastUpdateTime(groupId int) (int64, bool) {
 	defer s.lastUpdateTimeMu.RUnlock()
 	t, exists := s.lastUpdateTime[groupId]
 	return t, exists
+}
+
+// TriggerGroupAggregation 手动触发指定分组的聚合任务
+// 该方法用于测试或运维场景，通过内部API直接对某个分组执行一次聚合，
+// 而不依赖渠道统计事件与节流窗口。
+func TriggerGroupAggregation(groupId int) error {
+	scheduler := GetGlobalScheduler()
+	// 确保调度器已启动（幂等）
+	scheduler.Start()
+
+	// 1. 获取分组内所有活跃渠道
+	channelIds, err := getGroupChannelIds(groupId)
+	if err != nil {
+		return fmt.Errorf("failed to get group channel ids for group %d: %w", groupId, err)
+	}
+	if len(channelIds) == 0 {
+		common.SysLog("TriggerGroupAggregation: no active channels for group %d, skipping", groupId)
+		return nil
+	}
+
+	// 2. 查询这些渠道最新的统计窗口时间
+	var latestWindowStart int64
+	err = model.DB.
+		Model(&model.ChannelStatistics{}).
+		Where("channel_id IN ?", channelIds).
+		Select("MAX(time_window_start)").
+		Scan(&latestWindowStart).Error
+	if err != nil {
+		return fmt.Errorf("failed to query latest time_window_start for group %d: %w", groupId, err)
+	}
+	if latestWindowStart == 0 {
+		common.SysLog("TriggerGroupAggregation: no channel_statistics rows for group %d, skipping", groupId)
+		return nil
+	}
+
+	// 3. 将任务加入调度器队列，交由现有并发与锁机制处理
+	task := GroupStatsUpdateTask{
+		GroupId:         groupId,
+		TriggerTime:     time.Now().Unix(),
+		TimeWindowStart: latestWindowStart,
+	}
+	scheduler.enqueueTask(task)
+	common.SysLog("TriggerGroupAggregation: enqueued manual aggregation task for group %d, window %d", groupId, latestWindowStart)
+	return nil
 }
 
 // Enable 启用调度器

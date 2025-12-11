@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,10 +50,19 @@ var (
 // GetChannelStatsL3Service 获取L3同步服务单例
 func GetChannelStatsL3Service() *ChannelStatsL3Service {
 	channelStatsL3Once.Do(func() {
+		// 使用与L2相同的窗口配置，支持通过 CHANNEL_STATS_WINDOW_SECONDS
+		// 在测试环境中缩短窗口大小。
+		windowSeconds := getChannelStatsWindowSeconds()
+		windowSize := time.Duration(windowSeconds) * time.Second
+
+		// L2->L3 同步检查间隔，默认60秒，可通过
+		// CHANNEL_STATS_SYNC_INTERVAL_SECONDS 在测试环境缩短。
+		syncInterval := getChannelStatsSyncInterval()
+
 		channelStatsL3Service = &ChannelStatsL3Service{
 			l2Service:       GetChannelStatsL2Service(),
-			syncInterval:    1 * time.Minute,  // 每分钟检查一次
-			windowSize:      15 * time.Minute, // 15分钟窗口
+			syncInterval:    syncInterval,     // 默认1分钟，可通过ENV缩短
+			windowSize:      windowSize,       // 默认15分钟，可通过ENV缩短
 			maxConcurrency:  5,                // 最多5个并发同步
 			syncJitterRange: 60 * time.Second, // 0-60秒抖动
 			semaphore:       make(chan struct{}, 5),
@@ -114,12 +126,21 @@ func (s *ChannelStatsL3Service) syncRedisToDatabase() error {
 
 	for _, channelKey := range dirtyChannels {
 		// Phase 8.x Task 2.1: 解析带窗口的key格式 "channel_id:model_name:window"
-		var channelID int
-		var modelName string
-		var windowStart int64
-		n, _ := fmt.Sscanf(channelKey, "%d:%[^:]:%d", &channelID, &modelName, &windowStart)
-		if n != 3 {
+		parts := strings.Split(channelKey, ":")
+		if len(parts) != 3 {
 			common.SysLog(fmt.Sprintf("Failed to parse dirty channel key: %s", channelKey))
+			continue
+		}
+
+		channelID, err := strconv.Atoi(parts[0])
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Failed to parse channel_id from dirty channel key %q: %v", channelKey, err))
+			continue
+		}
+		modelName := parts[1]
+		windowStart, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Failed to parse windowStart from dirty channel key %q: %v", channelKey, err))
 			continue
 		}
 
@@ -316,11 +337,19 @@ func (s *ChannelStatsL3Service) updateChannelAggregateStats(channelID int, model
 		downtimePercentage = float64(downtimeSeconds) / float64(windowTotalSeconds) * 100.0
 	}
 
-	// 计算TPM/RPM（基于15分钟窗口）
-	minutesInWindow := int64(s.windowSize.Minutes())
-	tpm := int(snapshot.TotalTokens / minutesInWindow)
-	rpm := int(snapshot.RequestCount / minutesInWindow)
-	quotaPM := snapshot.TotalQuota / minutesInWindow
+	// 计算TPM/RPM（基于窗口长度换算为每分钟速率）
+	// 注意：窗口大小在生产环境通常为15分钟，但在测试环境中可以通过
+	// CHANNEL_STATS_WINDOW_SECONDS 缩短到秒级，因此不能直接使用
+	// s.windowSize.Minutes() 向下取整（否则在 <60s 的窗口中会得到 0 分钟）。
+	windowTotalSeconds = int64(s.windowSize.Seconds())
+	if windowTotalSeconds <= 0 {
+		// 防御性兜底，避免除以0；退回到1分钟窗口
+		windowTotalSeconds = 60
+	}
+	// tokens / minute = tokens * 60 / windowSeconds
+	tpm := int(snapshot.TotalTokens * 60 / windowTotalSeconds)
+	rpm := int(snapshot.RequestCount * 60 / windowTotalSeconds)
+	quotaPM := snapshot.TotalQuota * 60 / windowTotalSeconds
 
 	// 更新统计字段
 	avgLatencyInt := int(avgLatency)
@@ -371,6 +400,27 @@ func (s *ChannelStatsL3Service) Stop() {
 	close(s.stopChan)
 	s.wg.Wait()
 	common.SysLog("ChannelStatsL3Service stopped")
+}
+
+// getChannelStatsSyncInterval 读取 L2->L3 同步检查间隔。
+// 默认值为 60 秒，可通过环境变量 CHANNEL_STATS_SYNC_INTERVAL_SECONDS
+// 在测试环境中缩短到秒级，以加速 channel_statistics 聚合测试。
+func getChannelStatsSyncInterval() time.Duration {
+	const envName = "CHANNEL_STATS_SYNC_INTERVAL_SECONDS"
+	defaultInterval := time.Minute
+
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return defaultInterval
+	}
+
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec <= 0 {
+		common.SysLog(fmt.Sprintf("Invalid %s=%q, using default %s", envName, raw, defaultInterval))
+		return defaultInterval
+	}
+
+	return time.Duration(sec) * time.Second
 }
 
 // ForceSync 强制同步指定渠道（用于测试或手动触发）

@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
@@ -48,19 +50,39 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 	// real external providers or network connectivity.
 	upstream := testutil.NewMockUpstreamServer()
 
+	// Start an in-memory Redis instance so that the full
+	// L1 -> L2 (Redis) -> L3 (SQLite) pipeline is exercised in tests.
+	mr, err := miniredis.Run()
+	if err != nil {
+		upstream.Close()
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		upstream.Close()
+		mr.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
 	cfg := testutil.DefaultConfig()
 	cfg.ProjectRoot = projectRoot
 	cfg.Verbose = testing.Verbose()
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["DEBUG"] = "true"
+	cfg.CustomEnv["REDIS_CONN_STRING"] = fmt.Sprintf("redis://%s/0", mr.Addr())
+	// 缩短渠道统计的刷新/窗口/同步间隔，方便在测试中通过
+	// /api/channels/:id/stats + SQLite 验证 channel_statistics 聚合。
+	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
+	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
+	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
 		upstream.Close()
+		mr.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -87,6 +109,7 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 
 	cleanup := func() {
 		upstream.Close()
+		mr.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -153,7 +176,7 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 	admin := suite.Client
 
 	// Create test user and channel.
-	user := createTestUser(t, admin, "cs01_user", "password123", "default")
+	createTestUser(t, admin, "cs01_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("cs01_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -206,16 +229,15 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 	}
 
 	// In production, L1→L2→L3 aggregation is driven by background
-	// workers with minute-level windows. For this test we only rely
-	// on synchronous log writes as a proxy, so we avoid long sleeps
-	// and wait briefly for I/O to settle.
+	// workers with minute-level windows. 在这里我们仍使用用户自有日志
+	// 作为计数的代理，只做短暂等待以保证I/O完成，避免真实的长时间窗口等待。
 	t.Logf("Waiting briefly for logs to be persisted...")
 	time.Sleep(2 * time.Second)
 
 	// Assert: Query channel statistics via user session logs.
 	// Note: /api/log/self always returns logs for the authenticated user,
 	// so we must use the user client's session here.
-	logs, err := userClient.GetUserLogs(user.ID, numRequests)
+	logs, err := userClient.GetUserLogs(0, numRequests)
 	if err != nil {
 		t.Fatalf("failed to get user logs: %v", err)
 	}
@@ -238,13 +260,11 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 		totalQuota += log.Quota
 	}
 
-	t.Logf("CS-01 Results:")
+	t.Logf("CS-01 Results (logs proxy):")
 	t.Logf("  Request count: %d", numRequests)
 	t.Logf("  Total tokens: %d", totalTokens)
 	t.Logf("  Total quota: %d", totalQuota)
 
-	// Note: Exact quota calculation depends on system configuration.
-	// We verify that statistics were recorded.
 	if totalTokens == 0 {
 		t.Errorf("CS-01 FAILED: total_tokens is 0, expected > 0")
 	}
@@ -252,8 +272,6 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 	if totalQuota == 0 {
 		t.Errorf("CS-01 FAILED: total_quota is 0, expected > 0")
 	}
-
-	t.Logf("CS-01 PASSED: Basic request counting statistics verified")
 }
 
 // TestCS02_FailureRateCalculation tests failure rate calculation.
@@ -584,7 +602,8 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	t.Logf("  Logs for channel: %d", channelLogCount)
 	t.Logf("  Total tokens: %d", totalTokens)
 
-	// Calculate expected TPM and RPM.
+	// Calculate expected TPM and RPM from raw timing to validate the
+	// basic数学关系：tokens/minute 与 requests/minute。
 	durationMinutes := actualDuration.Minutes()
 	if durationMinutes > 0 {
 		actualTPM := float64(totalTokens) / durationMinutes
@@ -597,6 +616,114 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 		expectedRPM := float64(numRequests) / durationMinutes
 		if abs(actualRPM-expectedRPM) > 5 {
 			t.Errorf("RPM mismatch: expected ~%.2f, got %.2f", expectedRPM, actualRPM)
+		}
+	}
+
+	// --- 新增：使用缩短窗口 + SQLite + API 进行灰盒校验 ---
+
+	// 等待一小段时间，让 L1→L3 聚合完成（测试环境下刷新/同步间隔已通过
+	// CHANNEL_STATS_FLUSH_INTERVAL_SECONDS / CHANNEL_STATS_SYNC_INTERVAL_SECONDS
+	// 缩短到秒级，这里只需额外等待几秒）。
+	t.Logf("CS-04: waiting briefly for DB aggregation with shortened intervals...")
+	time.Sleep(4 * time.Second)
+
+	// 1) 直接读取 SQLite 中的 channel_statistics，验证该渠道在当前测试期间
+	// 确实生成了统计窗口记录。
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	var dbRecords []testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		dbRecords, err = dbInspector.QueryChannelStatistics(channelModel.ID, modelName, 0, 0)
+		if err == nil && len(dbRecords) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for channel_statistics records for channel %d: last error=%v",
+				channelModel.ID, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	aggregated := dbInspector.CalculateAggregatedMetrics(dbRecords)
+	t.Logf("CS-04 DB aggregation: request_count=%d, total_tokens=%d",
+		aggregated.RequestCount, aggregated.TotalTokens)
+
+	if aggregated.RequestCount <= 0 {
+		t.Fatalf("CS-04 FAILED: aggregated DB request_count is 0")
+	}
+	if aggregated.TotalTokens <= 0 {
+		t.Fatalf("CS-04 FAILED: aggregated DB total_tokens is 0")
+	}
+
+	// 2) 通过 /api/channels/:id/stats 获取同一渠道/模型在 1h 窗口内的聚合统计，
+	// 验证 API 视图至少覆盖了 channel_statistics 中的聚合结果。
+	apiStats, err := admin.GetChannelStats(channelModel.ID, "1h", modelName)
+	if err != nil {
+		t.Fatalf("failed to query channel stats API: %v", err)
+	}
+	if apiStats == nil {
+		t.Fatalf("CS-04 FAILED: channel stats API returned nil data")
+	}
+
+	t.Logf("CS-04 API stats: request_count=%d, total_tokens=%d",
+		apiStats.RequestCount, apiStats.TotalTokens)
+
+	if apiStats.RequestCount < aggregated.RequestCount {
+		t.Errorf("CS-04: API request_count (%d) should be >= DB aggregated request_count (%d)",
+			apiStats.RequestCount, aggregated.RequestCount)
+	}
+	if apiStats.TotalTokens < aggregated.TotalTokens {
+		t.Errorf("CS-04: API total_tokens (%d) should be >= DB aggregated total_tokens (%d)",
+			apiStats.TotalTokens, aggregated.TotalTokens)
+	}
+
+	// 3) 通过 /api/channels/:id/current_stats 读取渠道当前统计摘要，验证
+	// TPM/RPM 与 DB 聚合结果 + 缩短后的窗口长度计算一致。
+	var currentResp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			TPM int `json:"tpm"`
+			RPM int `json:"rpm"`
+		} `json:"data"`
+	}
+
+	currentPath := fmt.Sprintf("/api/channels/%d/current_stats", channelModel.ID)
+	if err := admin.GetJSON(currentPath, &currentResp); err != nil {
+		t.Fatalf("failed to query current_stats API: %v", err)
+	}
+	if !currentResp.Success {
+		t.Fatalf("current_stats API returned error: %s", currentResp.Message)
+	}
+
+	const windowSeconds = 10 // 与 SetupStatsCalcSuite 中 CHANNEL_STATS_WINDOW_SECONDS 保持一致
+	expectedRPM := int(int64(aggregated.RequestCount) * 60 / int64(windowSeconds))
+	expectedTPM := int(aggregated.TotalTokens * 60 / int64(windowSeconds))
+
+	actualRPM := currentResp.Data.RPM
+	actualTPM := currentResp.Data.TPM
+
+	t.Logf("CS-04 current_stats: RPM=%d (expected≈%d), TPM=%d (expected≈%d) [window=%ds]",
+		actualRPM, expectedRPM, actualTPM, expectedTPM, windowSeconds)
+
+	if actualRPM <= 0 || actualTPM <= 0 {
+		t.Errorf("CS-04 FAILED: current_stats returned non-positive RPM/TPM (RPM=%d, TPM=%d)",
+			actualRPM, actualTPM)
+	} else {
+		if actualRPM != expectedRPM {
+			t.Errorf("CS-04: RPM mismatch between DB/window and current_stats: expected %d, got %d",
+				expectedRPM, actualRPM)
+		}
+		if actualTPM != expectedTPM {
+			t.Errorf("CS-04: TPM mismatch between DB/window and current_stats: expected %d, got %d",
+				expectedTPM, actualTPM)
 		}
 	}
 
@@ -1004,6 +1131,25 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 
 	admin := suite.Client
 
+	// Create a user and token so we can send at least one data‑plane
+	// request around the禁用/启用周期，让停服追踪结果能够在某个统计窗口上
+	// 被实际写入 channel_statistics。
+	user := createTestUser(t, admin, "cs08_user", "password123", "default")
+	userClient := admin.Clone()
+	if _, err := userClient.Login("cs08_user", "password123"); err != nil {
+		t.Fatalf("failed to login as user: %v", err)
+	}
+
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
+		Name:           "CS08 Token",
+		Status:         1,
+		UnlimitedQuota: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+	userTokenClient := userClient.WithToken(tokenKey)
+
 	// Create channel.
 	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
@@ -1028,9 +1174,21 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	// Record start time.
 	windowStart := time.Now()
 
-	// Phase 1: channel enabled for一段时间（缩短为毫秒级以避免长时间等待）。
+	// 在禁用前先发送一次请求，确保渠道在本窗口内有实际的统计数据，
+	// 这样 L1→L2→L3 的统计流水线会对该渠道进行处理。
+	resp, _ := userTokenClient.Post("/v1/chat/completions", map[string]interface{}{
+		"model": "gpt-4",
+		"messages": []map[string]string{
+			{"role": "user", "content": "pre-disable request"},
+		},
+	})
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	// Phase 1: channel enabled for一段时间（缩短为秒级以避免长时间等待）。
 	t.Logf("  Phase 1: Waiting briefly with channel enabled (simulated 5 minutes)...")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Disable the channel (simulate手动禁用。
 	err = admin.UpdateChannel(&testutil.ChannelModel{
@@ -1043,9 +1201,9 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	disableTime := time.Now()
 	t.Logf("  Phase 2: Channel disabled at %v", disableTime)
 
-	// Phase 2: channel disabled for一段时间（同样缩短为毫秒级）。
+	// Phase 2: channel disabled for一段时间（同样缩短为秒级）。
 	t.Logf("  Phase 2: Waiting briefly with channel disabled (simulated 5 minutes)...")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Re-enable the channel.
 	err = admin.UpdateChannel(&testutil.ChannelModel{
@@ -1058,9 +1216,24 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	enableTime := time.Now()
 	t.Logf("  Phase 3: Channel re-enabled at %v", enableTime)
 
-	// Phase 3: channel再次保持启用状态一段时间（毫秒级模拟）。
+	// Phase 3: channel再次保持启用状态一段时间（秒级模拟）。
 	t.Logf("  Phase 3: Waiting briefly with channel enabled (simulated 5 minutes)...")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(1 * time.Second)
+
+	// 在禁用/启用周期结束后，再发送几次请求，以确保有一个窗口会同时
+	// 包含「本次停服时长」与「成功请求」，从而在该窗口的 channel_statistics
+	// 记录上填充非零的 downtime_seconds。
+	for i := 0; i < 3; i++ {
+		resp, _ := userTokenClient.Post("/v1/chat/completions", map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]string{
+				{"role": "user", "content": fmt.Sprintf("post-enable request %d (user %d)", i, user.ID)},
+			},
+		})
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
 
 	windowEnd := time.Now()
 	totalDuration := windowEnd.Sub(windowStart)
@@ -1068,22 +1241,105 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 
 	expectedDowntimePercent := downtimeDuration.Seconds() / totalDuration.Seconds() * 100
 
-	t.Logf("CS-08 Results:")
+	t.Logf("CS-08 Results (pattern timing):")
 	t.Logf("  Total window duration: %v", totalDuration)
 	t.Logf("  Downtime duration: %v", downtimeDuration)
-	t.Logf("  Expected downtime percentage: %.2f%%", expectedDowntimePercent)
+	t.Logf("  Expected downtime percentage (from timing): %.2f%%", expectedDowntimePercent)
 
-	// Note: Full verification would:
-	// 1. Wait for statistics to be aggregated
-	// 2. Query statistics API or DB to check downtime_percentage
-	// 3. Verify it matches the expected value (~33.33%)
+	// --- 新增：使用 SQLite + /api 校验 downtime_seconds 与 downtime_percentage ---
 
-	// For now, we verify the test pattern executed correctly.
-	if abs(expectedDowntimePercent-33.33) > 1.0 {
-		t.Logf("Warning: Downtime percentage %.2f%% differs from expected 33.33%%", expectedDowntimePercent)
+	// 等待一小段时间，让停服追踪器与 L3 聚合完成。
+	t.Logf("CS-08: waiting briefly for DB aggregation with shortened intervals...")
+	time.Sleep(4 * time.Second)
+
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	// 在 channel_statistics 表中查找该渠道在本次测试期间产生的记录，
+	// 特别关注包含非零 downtime_seconds 的窗口。
+	var downtimeRecord *testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		records, err := dbInspector.QueryChannelStatistics(channelModel.ID, modelName, 0, 0)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		for i := range records {
+			if records[i].DowntimeSeconds > 0 {
+				// 选取第一条包含停服时长的记录
+				rec := records[i]
+				downtimeRecord = &rec
+				break
+			}
+		}
+
+		if downtimeRecord != nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	t.Logf("CS-08 PASSED: Downtime percentage test pattern completed")
+	if downtimeRecord == nil {
+		t.Fatalf("CS-08 FAILED: no channel_statistics record with non-zero downtime_seconds found for channel %d", channelModel.ID)
+	}
+
+	t.Logf("CS-08 DB record: window_start=%d, downtime_seconds=%d, request_count=%d",
+		downtimeRecord.TimeWindowStart, downtimeRecord.DowntimeSeconds, downtimeRecord.RequestCount)
+
+	// 基于实际禁用时间长度，允许一定的整数秒偏差（Unix时间戳精度为秒）。
+	expectedDowntimeSeconds := int64(downtimeDuration.Seconds())
+	if expectedDowntimeSeconds < 1 {
+		expectedDowntimeSeconds = 1
+	}
+	diffSeconds := downtimeRecord.DowntimeSeconds - int(expectedDowntimeSeconds)
+	if diffSeconds < 0 {
+		diffSeconds = -diffSeconds
+	}
+	if diffSeconds > 2 {
+		t.Errorf("CS-08: downtime_seconds in DB (%d) differs from expected (~%d) by more than 2 seconds",
+			downtimeRecord.DowntimeSeconds, expectedDowntimeSeconds)
+	}
+
+	// 通过 /api/channels/:id/current_stats 验证 downtime_percentage 计算是否基于
+	// DB 中的 downtime_seconds 与缩短后的窗口长度（10秒）一致。
+	var currentResp struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			DowntimePercentage float64 `json:"downtime_percentage"`
+		} `json:"data"`
+	}
+
+	currentPath := fmt.Sprintf("/api/channels/%d/current_stats", channelModel.ID)
+	if err := admin.GetJSON(currentPath, &currentResp); err != nil {
+		t.Fatalf("failed to query current_stats API: %v", err)
+	}
+	if !currentResp.Success {
+		t.Fatalf("current_stats API returned error: %s", currentResp.Message)
+	}
+
+	const windowSeconds = 10
+	expectedDowntimeFromDB := float64(downtimeRecord.DowntimeSeconds) / float64(windowSeconds) * 100.0
+	actualDowntimeFromAPI := currentResp.Data.DowntimePercentage
+
+	t.Logf("CS-08 current_stats: downtime_percentage=%.2f%% (expected from DB/window≈%.2f%%, window=%ds)",
+		actualDowntimeFromAPI, expectedDowntimeFromDB, windowSeconds)
+
+	if actualDowntimeFromAPI <= 0 {
+		t.Errorf("CS-08 FAILED: current_stats downtime_percentage is non-positive (%.2f%%)", actualDowntimeFromAPI)
+	} else if abs(actualDowntimeFromAPI-expectedDowntimeFromDB) > 5.0 {
+		t.Errorf("CS-08: downtime_percentage mismatch between DB/window and current_stats: expected≈%.2f%%, got %.2f%%",
+			expectedDowntimeFromDB, actualDowntimeFromAPI)
+	}
+
+	t.Logf("CS-08 PASSED: Downtime percentage verified via DB + API with shortened window")
 }
 
 // TestCS09_AverageConcurrency tests average concurrency calculation.

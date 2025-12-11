@@ -303,6 +303,19 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
 		}
 
+		// Internal testing/admin APIs (not exposed to end users).
+		internalRoute := apiRouter.Group("/internal")
+		internalRoute.Use(middleware.AdminAuth())
+		{
+			// Channel statistics inspection & creation
+			internalRoute.POST("/channel_statistics", controller.CreateChannelStatisticsInternal)
+			internalRoute.GET("/channel_statistics", controller.GetChannelStatisticsInternal)
+
+			// Manual group aggregation controls
+			internalRoute.POST("/groups/:id/trigger_aggregation", controller.TriggerGroupAggregationInternal)
+			internalRoute.GET("/groups/:id/aggregation_status", controller.GetGroupAggregationStatusInternal)
+		}
+
 		// P2P Group Management Routes
 		// Note: This is for P2P groups, NOT system groups (system groups are under /api/group)
 		p2pGroupsRoute := apiRouter.Group("/groups")
@@ -326,8 +339,18 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsRoute.POST("/leave", controller.LeaveGroup)          // Leave group
 
 			// Group Statistics Routes (Phase 10: P2P Group Statistics)
-			p2pGroupsRoute.GET("/:id/stats", controller.GetP2PGroupStats)              // Get aggregated stats with time range
-			p2pGroupsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest) // Get latest stats snapshot
+			p2pGroupsRoute.GET("/:id/stats", controller.GetP2PGroupStats)                // Get aggregated stats with time range or latest snapshot
+			p2pGroupsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest)   // Get latest stats snapshot
+			p2pGroupsRoute.GET("/:id/stats/history", controller.GetP2PGroupStatsHistory) // Get historical time-series stats
+		}
+
+		// Backward-compatible alias for group statistics under /api/p2p_groups/*
+		p2pGroupsStatsRoute := apiRouter.Group("/p2p_groups")
+		p2pGroupsStatsRoute.Use(middleware.UserAuth())
+		{
+			p2pGroupsStatsRoute.GET("/:id/stats", controller.GetP2PGroupStats)
+			p2pGroupsStatsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest)
+			p2pGroupsStatsRoute.GET("/:id/stats/history", controller.GetP2PGroupStatsHistory)
 		}
 
 		// P2P Group Admin Routes (for querying any user's groups)

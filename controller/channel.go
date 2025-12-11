@@ -1173,7 +1173,18 @@ func UpdateChannel(c *gin.Context) {
 	// Phase 8.4: CS4-2 记录状态变化（用于停服时间追踪）
 	// 在更新前记录原始状态，更新后比较并调用停服追踪器
 	oldStatus := originChannel.Status
+
+	// 说明：
+	// - 常量定义中 ChannelStatusUnknown=0，仅作为默认值使用，实际业务不应长期保留为 0；
+	// - 但在部分调用方（包括监控统计集成测试）中，使用 status=0 来表达“禁用渠道”的意图；
+	// - 由于 GORM 使用 struct 进行 Updates 时会忽略 int 的零值，直接传 0 会导致数据库中的
+	//   status 字段保持为 1（启用），从而在分组聚合等逻辑中仍被视为“启用渠道”。
+	// 为了使这类调用符合业务语义，这里将传入的 0 映射为“手动禁用”状态并显式落盘。
 	newStatus := channel.Status
+	if newStatus == common.ChannelStatusUnknown {
+		newStatus = common.ChannelStatusManuallyDisabled
+		channel.Status = newStatus
+	}
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo

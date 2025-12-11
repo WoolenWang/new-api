@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
@@ -36,19 +38,37 @@ func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 
 	upstream := testutil.NewMockUpstreamServer()
 
+	// Use an in-memory Redis so that distributed locks and sync scheduling
+	// used in concurrent write tests are exercised without external Redis.
+	mr, err := miniredis.Run()
+	if err != nil {
+		upstream.Close()
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		upstream.Close()
+		mr.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
 	cfg := testutil.DefaultConfig()
 	cfg.ProjectRoot = projectRoot
 	cfg.Verbose = testing.Verbose()
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["DEBUG"] = "true"
+	cfg.CustomEnv["REDIS_CONN_STRING"] = fmt.Sprintf("redis://%s/0", mr.Addr())
+	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
+	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
+	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
 		upstream.Close()
+		mr.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -74,6 +94,7 @@ func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 
 	cleanup := func() {
 		upstream.Close()
+		mr.Close()
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}

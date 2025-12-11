@@ -317,7 +317,7 @@ func (s *AggregationSuite) TestGS04_ConcurrencySummation() {
 	s.T().Log("GS-04: Testing concurrency summation (not weighted average)")
 
 	// Arrange: Create channels with different concurrency levels
-	channel1, err := s.fixtures.CreateTestChannel(
+	_, err := s.fixtures.CreateTestChannel(
 		"gs04-channel-1",
 		"gpt-4",
 		"default",
@@ -328,7 +328,7 @@ func (s *AggregationSuite) TestGS04_ConcurrencySummation() {
 	)
 	assert.NoError(s.T(), err, "Channel 1 creation should succeed")
 
-	channel2, err := s.fixtures.CreateTestChannel(
+	_, err = s.fixtures.CreateTestChannel(
 		"gs04-channel-2",
 		"gpt-4",
 		"default",

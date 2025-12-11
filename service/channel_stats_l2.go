@@ -404,3 +404,46 @@ func (s *ChannelStatsL2Service) GetCurrentWindowStats(channelID int, modelName s
 	currentWindow := AlignToWindow(time.Now().Unix())
 	return s.GetStatsFromRedis(channelID, modelName, currentWindow)
 }
+
+// getChannelStatsFlushInterval 读取 L1->L2 刷新间隔。
+// 默认值为 60 秒，可通过环境变量 CHANNEL_STATS_FLUSH_INTERVAL_SECONDS
+// 在测试环境中将间隔缩短到秒级，以加速统计流转测试。
+func getChannelStatsFlushInterval() time.Duration {
+	const envName = "CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"
+	defaultInterval := time.Minute
+
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return defaultInterval
+	}
+
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec <= 0 {
+		common.SysLog(fmt.Sprintf("Invalid %s=%q, using default %s", envName, raw, defaultInterval))
+		return defaultInterval
+	}
+
+	return time.Duration(sec) * time.Second
+}
+
+// getChannelStatsWindowSeconds 读取统计窗口大小（秒）。
+// 默认值为 900 秒（15 分钟），可通过环境变量
+// CHANNEL_STATS_WINDOW_SECONDS 在测试环境中缩短到 5-10 秒，
+// 便于在 CI 中验证窗口对齐与 TTL 行为。
+func getChannelStatsWindowSeconds() int64 {
+	const envName = "CHANNEL_STATS_WINDOW_SECONDS"
+	const defaultSeconds int64 = 900
+
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return defaultSeconds
+	}
+
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec <= 0 {
+		common.SysLog(fmt.Sprintf("Invalid %s=%q, using default %ds", envName, raw, defaultSeconds))
+		return defaultSeconds
+	}
+
+	return int64(sec)
+}

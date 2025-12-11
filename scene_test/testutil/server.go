@@ -527,6 +527,15 @@ func StartTestServer() (*TestServer, error) {
 	// in `go test` output for easier debugging.
 	cfg.Verbose = true
 
+	// 为集成测试放宽部分业务限额，以避免与真实环境的防护配置产生冲突：
+	// - P2P 分组并发控制测试（GC-03）需要为同一用户创建 10 个分组，
+	//   若沿用生产默认的 MAX_P2P_GROUPS_PER_USER=3，将导致测试在第 4 个分组创建时失败。
+	// - 在测试环境下，通过环境变量将该上限调大，不影响生产默认行为。
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["MAX_P2P_GROUPS_PER_USER"] = "100"
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		return nil, fmt.Errorf("failed to find project root for test server: %w", err)

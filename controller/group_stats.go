@@ -29,7 +29,7 @@ func GetP2PGroupStats(c *gin.Context) {
 	}
 
 	// 2. 验证分组是否存在
-	group, err := model.GetGroupById(groupId)
+	_, err = model.GetGroupById(groupId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -59,7 +59,7 @@ func GetP2PGroupStats(c *gin.Context) {
 	modelName := c.Query("model")             // 可选：指定模型
 	period := c.DefaultQuery("period", "24h") // 可选：时间窗口，默认24小时
 
-	// 5. 计算时间范围
+	// 5. 计算时间范围（仅在按整体维度聚合时使用）
 	endTime := time.Now().Unix()
 	startTime, err := calculateStartTime(endTime, period)
 	if err != nil {
@@ -68,72 +68,74 @@ func GetP2PGroupStats(c *gin.Context) {
 	}
 
 	// 6. 查询统计数据
-	// 如果指定了model，查询特定模型的数据；否则查询所有模型
+	// 如果指定了model，返回该模型的最新一个窗口的聚合快照；
+	// 否则返回在指定时间范围内的总体聚合视图。
 	if modelName != "" {
-		// 查询特定模型的统计数据
-		stats, err := model.GetGroupStatistics(groupId, modelName, startTime, endTime)
+		// 返回指定模型的最新统计快照
+		stat, err := model.GetLatestGroupStatistics(groupId, modelName)
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 
-		// 聚合时间范围内的数据
-		aggregated, err := model.AggregateGroupStatisticsByTime(groupId, modelName, startTime, endTime)
-		if err != nil {
-			common.ApiError(c, err)
-			return
+		data := gin.H{
+			"group_id":             stat.GroupId,
+			"model_name":           stat.ModelName,
+			"time_window_start":    stat.TimeWindowStart,
+			"tpm":                  stat.TPM,
+			"rpm":                  stat.RPM,
+			"quota_pm":             stat.QuotaPM,
+			"total_tokens":         stat.TotalTokens,
+			"total_quota":          stat.TotalQuota,
+			"fail_rate":            stat.FailRate,
+			"avg_response_time":    stat.AvgResponseTimeMs,
+			"avg_response_time_ms": stat.AvgResponseTimeMs,
+			"avg_cache_hit_rate":   stat.AvgCacheHitRate,
+			"stream_req_ratio":     stat.StreamReqRatio,
+			"avg_concurrency":      stat.AvgConcurrency,
+			"total_sessions":       stat.TotalSessions,
+			"downtime_percentage":  stat.DowntimePercentage,
+			"unique_users":         stat.UniqueUsers,
+			"updated_at":           stat.UpdatedAt,
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "",
-			"data": gin.H{
-				"group_id":    groupId,
-				"group_name":  group.Name,
-				"model_name":  modelName,
-				"period":      period,
-				"aggregated":  aggregated,
-				"time_series": stats,
-			},
-		})
+		common.ApiSuccess(c, data)
 	} else {
-		// 查询所有模型的统计数据（不聚合，返回原始列表）
-		stats, err := model.GetGroupStatistics(groupId, "", startTime, endTime)
+		// 总体聚合：不带模型过滤，按时间范围聚合所有模型
+		aggregated, err := model.AggregateGroupStatisticsByTime(groupId, "", startTime, endTime)
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 
-		// 按模型分组聚合
-		modelAggregates := make(map[string]*model.AggregatedGroupStats)
-
-		// 获取所有唯一的模型名称
-		uniqueModels := make(map[string]bool)
-		for _, stat := range stats {
-			uniqueModels[stat.ModelName] = true
+		// 为了提供UpdatedAt信息，读取该分组的最新一条记录
+		var latestUpdatedAt int64
+		if latest, err := model.GetLatestGroupStatistics(groupId, ""); err == nil && latest != nil {
+			latestUpdatedAt = latest.UpdatedAt
 		}
 
-		// 对每个模型进行聚合
-		for modelName := range uniqueModels {
-			aggregated, err := model.AggregateGroupStatisticsByTime(groupId, modelName, startTime, endTime)
-			if err != nil {
-				common.SysLog("Error aggregating stats for model %s: %v", modelName, err)
-				continue
-			}
-			modelAggregates[modelName] = aggregated
+		data := gin.H{
+			"group_id":             aggregated.GroupId,
+			"model_name":           aggregated.ModelName,
+			"tpm":                  aggregated.TPM,
+			"rpm":                  aggregated.RPM,
+			"quota_pm":             aggregated.QuotaPM,
+			"total_tokens":         aggregated.TotalTokens,
+			"total_quota":          aggregated.TotalQuota,
+			"fail_rate":            aggregated.FailRate,
+			"avg_response_time":    int(aggregated.AvgResponseTimeMs),
+			"avg_response_time_ms": aggregated.AvgResponseTimeMs,
+			"avg_cache_hit_rate":   aggregated.AvgCacheHitRate,
+			"stream_req_ratio":     aggregated.StreamReqRatio,
+			"avg_concurrency":      aggregated.AvgConcurrency,
+			"total_sessions":       aggregated.TotalSessions,
+			"downtime_percentage":  aggregated.DowntimePercentage,
+			"unique_users":         aggregated.UniqueUsers,
+			"updated_at":           latestUpdatedAt,
+			"period":               period,
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "",
-			"data": gin.H{
-				"group_id":    groupId,
-				"group_name":  group.Name,
-				"period":      period,
-				"models":      modelAggregates,
-				"time_series": stats,
-			},
-		})
+		common.ApiSuccess(c, data)
 	}
 }
 
@@ -154,7 +156,7 @@ func GetP2PGroupStatsLatest(c *gin.Context) {
 	}
 
 	// 2. 验证分组是否存在
-	group, err := model.GetGroupById(groupId)
+	_, err = model.GetGroupById(groupId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -182,22 +184,111 @@ func GetP2PGroupStatsLatest(c *gin.Context) {
 	// 4. 解析查询参数
 	modelName := c.Query("model") // 可选
 
-	// 5. 查询最新统计数据
+	// 5. 查询最新统计数据（与 GetP2PGroupStats 在带 model 参数时保持一致的结构）
 	stat, err := model.GetLatestGroupStatistics(groupId, modelName)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"group_id":   groupId,
-			"group_name": group.Name,
-			"stat":       stat,
-		},
-	})
+	data := gin.H{
+		"group_id":             stat.GroupId,
+		"model_name":           stat.ModelName,
+		"time_window_start":    stat.TimeWindowStart,
+		"tpm":                  stat.TPM,
+		"rpm":                  stat.RPM,
+		"quota_pm":             stat.QuotaPM,
+		"total_tokens":         stat.TotalTokens,
+		"total_quota":          stat.TotalQuota,
+		"fail_rate":            stat.FailRate,
+		"avg_response_time":    stat.AvgResponseTimeMs,
+		"avg_response_time_ms": stat.AvgResponseTimeMs,
+		"avg_cache_hit_rate":   stat.AvgCacheHitRate,
+		"stream_req_ratio":     stat.StreamReqRatio,
+		"avg_concurrency":      stat.AvgConcurrency,
+		"total_sessions":       stat.TotalSessions,
+		"downtime_percentage":  stat.DowntimePercentage,
+		"unique_users":         stat.UniqueUsers,
+		"updated_at":           stat.UpdatedAt,
+	}
+
+	common.ApiSuccess(c, data)
+}
+
+// GetP2PGroupStatsHistory 获取P2P分组的历史统计数据序列
+// GET /api/p2p_groups/:id/stats/history?model=gpt-4&start_time=...&end_time=...
+func GetP2PGroupStatsHistory(c *gin.Context) {
+	// 1. 获取分组ID
+	idStr := c.Param("id")
+	if idStr == "" {
+		common.ApiError(c, errors.New("group id is required"))
+		return
+	}
+
+	groupId, err := strconv.Atoi(idStr)
+	if err != nil {
+		common.ApiError(c, errors.New("invalid group id"))
+		return
+	}
+
+	// 2. 验证分组是否存在
+	_, err = model.GetGroupById(groupId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// 3. 权限检查
+	userId := c.GetInt("id")
+	userRole := c.GetInt("role")
+
+	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
+		isMember, err := isGroupMember(userId, groupId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "您不是该分组的成员，无权查看统计数据",
+			})
+			return
+		}
+	}
+
+	// 4. 解析查询参数
+	modelName := c.Query("model")
+	var startTime, endTime int64
+	if v := c.Query("start_time"); v != "" {
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
+			startTime = ts
+		}
+	}
+	if v := c.Query("end_time"); v != "" {
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
+			endTime = ts
+		}
+	}
+
+	// 5. 查询历史统计序列（按 UpdatedAt 时间范围过滤）
+	var stats []*model.GroupStatistics
+	query := model.DB.Where("group_id = ?", groupId)
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+	if startTime > 0 {
+		query = query.Where("updated_at >= ?", startTime)
+	}
+	if endTime > 0 {
+		query = query.Where("updated_at <= ?", endTime)
+	}
+	if err := query.Order("updated_at DESC").Find(&stats).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, stats)
 }
 
 // ========== 辅助函数 ==========

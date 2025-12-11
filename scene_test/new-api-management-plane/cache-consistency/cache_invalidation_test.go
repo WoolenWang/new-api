@@ -249,24 +249,25 @@ func TestCC14_L2RedisTTLExpiration(t *testing.T) {
 	group := helper.CreateAndVerifyGroup(suite.fixtures.User1Client, "test-group-cc14", suite.fixtures.RegularUser1.ID, 2, 2, "pass123")
 	helper.ApplyToGroupAndVerify(suite.fixtures.User2Client, suite.fixtures.RegularUser2.ID, group.ID, "pass123", 1)
 
-	// Populate L2 cache
-	_, err := suite.fixtures.User2Client.GetSelfJoinedGroups()
-	require.NoError(t, err, "Initial request should succeed")
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify L2 cache exists
+	// Populate caches via data-plane chat so that L3 -> L2 -> L1 are exercised.
+	triggerUserGroupsCache(t, suite, suite.fixtures.User2APIToken)
+	require.NoError(t,
+		inspector.WaitForCacheSync(suite.fixtures.RegularUser2.ID, 5*time.Second),
+		"L2 cache should be populated after initial request",
+	)
 	inspector.AssertCacheContains(suite.fixtures.RegularUser2.ID, group.ID)
 
 	// Note: L2 TTL is 30 minutes, we can't wait that long in a test
 	// Instead, we verify that after manual invalidation, the system can recover
 	t.Log("Simulating L2 TTL expiration by manual invalidation...")
-	err = inspector.InvalidateL2Cache(suite.fixtures.RegularUser2.ID)
-	require.NoError(t, err, "Failed to invalidate L2 cache")
+	if err := inspector.InvalidateL2Cache(suite.fixtures.RegularUser2.ID); err != nil {
+		require.NoError(t, err, "Failed to invalidate L2 cache")
+	}
 
 	// Verify cache is gone
 	inspector.AssertCacheInvalidated(suite.fixtures.RegularUser2.ID)
 
-	// Next request should query DB and backfill L2
+	// Next management-plane request should still succeed by querying DB directly.
 	joinedGroups, err := suite.fixtures.User2Client.GetSelfJoinedGroups()
 	require.NoError(t, err, "Request after L2 expiration should succeed")
 
@@ -279,11 +280,10 @@ func TestCC14_L2RedisTTLExpiration(t *testing.T) {
 	}
 	assert.True(t, groupFound, "User should see the group after L2 expiration and backfill")
 
-	// Wait for backfill
-	time.Sleep(300 * time.Millisecond)
-
-	// Verify L2 cache was backfilled
-	inspector.AssertCacheContains(suite.fixtures.RegularUser2.ID, group.ID)
+	// Next data-plane request should query DB and backfill L2.
+	triggerUserGroupsCache(t, suite, suite.fixtures.User2APIToken)
+	err = inspector.VerifyL2L3Consistency(suite.fixtures.RegularUser2.ID)
+	assert.NoError(t, err, "Cache should be consistent with DB after TTL-style invalidation")
 
 	t.Log("L2 Redis TTL expiration test passed")
 }
@@ -362,12 +362,13 @@ func TestCC16_CacheDBConflictResolution(t *testing.T) {
 	group := helper.CreateAndVerifyGroup(suite.fixtures.User1Client, "test-group-cc16", suite.fixtures.RegularUser1.ID, 2, 2, "pass123")
 	helper.ApplyToGroupAndVerify(suite.fixtures.User2Client, suite.fixtures.RegularUser2.ID, group.ID, "pass123", 1)
 
-	// Populate cache
-	_, err := suite.fixtures.User2Client.GetSelfJoinedGroups()
-	require.NoError(t, err, "Initial request should succeed")
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify L2 cache contains the group
+	// Populate cache via data-plane chat so that L3 -> L2 -> L1 path is exercised,
+	// consistent with other CC-0x tests.
+	triggerUserGroupsCache(t, suite, suite.fixtures.User2APIToken)
+	require.NoError(t,
+		inspector.WaitForCacheSync(suite.fixtures.RegularUser2.ID, 5*time.Second),
+		"L2 cache should be populated after initial request",
+	)
 	inspector.AssertCacheContains(suite.fixtures.RegularUser2.ID, group.ID)
 
 	// Simulate a DB anomaly: directly delete the user_groups record (bypassing cache invalidation)

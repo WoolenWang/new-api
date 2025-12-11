@@ -70,34 +70,24 @@ func AggregateGroupStatsForAllModels(groupId int, timeWindowStart int64) error {
 }
 
 // getGroupChannelIds 获取分组内所有活跃渠道的ID列表
-// 注意：这里需要根据实际的分组-渠道关联关系查询
-// 目前简化实现，实际应该查询abilities表或channels表的group字段
+// 依据 channels 表的 AllowedGroups 字段（P2P group ID 列表）解析，
+// 仅返回当前处于启用状态的渠道。
 func getGroupChannelIds(groupId int) ([]int, error) {
-	// TODO: 实现实际的分组-渠道关联查询逻辑
-	// 示例：查询所有group字段包含"p2p_{groupId}"的渠道
+	var channels []*model.Channel
 
-	// 临时实现：查询abilities表中group为"p2p_{groupId}"的所有渠道
-	var channelIds []int
-	groupName := fmt.Sprintf("p2p_%d", groupId)
-
-	err := model.DB.Model(&model.Ability{}).
-		Select("DISTINCT channel_id").
-		Where("`group` = ?", groupName).
-		Pluck("channel_id", &channelIds).Error
-
-	if err != nil {
+	// 只加载启用状态的渠道，后续在内存中过滤 AllowedGroups。
+	if err := model.DB.Where("status = ?", common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, err
 	}
 
-	// 过滤出启用的渠道
 	var activeChannelIds []int
-	for _, channelId := range channelIds {
-		channel, err := model.GetChannelById(channelId, true)
-		if err != nil || channel == nil {
-			continue
-		}
-		if channel.Status == common.ChannelStatusEnabled {
-			activeChannelIds = append(activeChannelIds, channelId)
+	for _, ch := range channels {
+		allowedGroupIDs := ch.GetAllowedGroupIDs()
+		for _, gid := range allowedGroupIDs {
+			if gid == groupId {
+				activeChannelIds = append(activeChannelIds, ch.Id)
+				break
+			}
 		}
 	}
 
@@ -159,6 +149,9 @@ func aggregateChannelStats(stats []*model.ChannelStatistics) AggregatedChannelSt
 	var weightedDowntime float64 = 0
 	var weightedResponseTime float64 = 0
 
+	// 统计窗口大小（分钟）；与 channel_statistics 使用的窗口保持一致（默认15分钟）
+	windowMinutes := int64(15)
+
 	// 遍历所有渠道统计数据
 	for _, stat := range stats {
 		requestCount := int64(stat.RequestCount)
@@ -168,19 +161,7 @@ func aggregateChannelStats(stats []*model.ChannelStatistics) AggregatedChannelSt
 		result.TotalQuota += stat.TotalQuota
 		result.TotalSessions += 1 // 每个渠道统计记录视为一个session
 
-		// 2. 计算TPM和RPM（取平均值，因为它们已经是"每分钟"的速率）
-		// 或者可以求和，这取决于业务语义。这里我们取平均值。
-		// 根据设计文档，应该是求和（因为多个渠道的TPM可以叠加）
-		// 修正：使用total_tokens和时间窗口计算实际的TPM
-		// 简化实现：这里假设每个统计窗口是15分钟，计算平均TPM
-		windowMinutes := int64(15) // 假设统计窗口为15分钟
-		if windowMinutes > 0 {
-			result.TPM += stat.TotalTokens / windowMinutes
-			result.RPM += int64(stat.RequestCount) / windowMinutes
-			result.QuotaPM += stat.TotalQuota / windowMinutes
-		}
-
-		// 3. 加权平均类指标（以请求数为权重）
+		// 2. 加权平均类指标（以请求数为权重）
 		if requestCount > 0 {
 			totalRequests += requestCount
 
@@ -201,7 +182,7 @@ func aggregateChannelStats(stats []*model.ChannelStatistics) AggregatedChannelSt
 			weightedResponseTime += avgLatency * float64(requestCount)
 		}
 
-		// 4. 停服时间占比（加权平均）
+		// 3. 停服时间占比（加权平均）
 		// downtime_seconds是该渠道在统计窗口内的停服秒数
 		// 假设统计窗口为15分钟 = 900秒
 		windowSeconds := int64(900)
@@ -210,7 +191,7 @@ func aggregateChannelStats(stats []*model.ChannelStatistics) AggregatedChannelSt
 			weightedDowntime += downtimePercent * float64(requestCount)
 		}
 
-		// 5. 平均并发数（直接求和，因为并发能力是叠加的）
+		// 4. 平均并发数（直接求和，因为并发能力是叠加的）
 		// 这里简化计算：假设每个渠道的并发数为 total_sessions
 		// 实际应该从更细粒度的数据计算
 		// 简化实现：使用请求数作为并发的近似
@@ -224,6 +205,15 @@ func aggregateChannelStats(stats []*model.ChannelStatistics) AggregatedChannelSt
 		result.StreamReqRatio = weightedStreamRatio / float64(totalRequests)
 		result.AvgResponseTimeMs = weightedResponseTime / float64(totalRequests)
 		result.DowntimePercentage = weightedDowntime / float64(totalRequests)
+	}
+
+	// 计算TPM / RPM / QuotaPM：
+	// 这里先在渠道层面累积 token / 请求 / quota，再在聚合层统一按窗口大小做一次整除，
+	// 避免逐渠道截断导致的统计误差（GS-01 期望严格满足 ΣTPM 的语义）。
+	if windowMinutes > 0 {
+		result.TPM = result.TotalTokens / windowMinutes
+		result.RPM = totalRequests / windowMinutes
+		result.QuotaPM = result.TotalQuota / windowMinutes
 	}
 
 	// UniqueUsers: 聚合所有渠道的去重用户数

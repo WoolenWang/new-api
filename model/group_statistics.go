@@ -12,13 +12,16 @@ import (
 // 设计文档: docs/01-P2P共享分组与用户创建渠道的状态信息监控统计与展示.md
 // Section: 6.2 group_statistics (分组聚合统计表)
 type GroupStatistics struct {
-	GroupId            int     `json:"group_id" gorm:"primaryKey;not null"`
-	ModelName          string  `json:"model_name" gorm:"type:varchar(255);primaryKey;not null"`
-	TimeWindowStart    int64   `json:"time_window_start" gorm:"primaryKey;not null;comment:统计窗口起始时间戳"`
-	TPM                int     `json:"tpm" gorm:"default:0;comment:每分钟Token数"`
-	RPM                int     `json:"rpm" gorm:"default:0;comment:每分钟请求数"`
-	FailRate           float64 `json:"fail_rate" gorm:"type:double precision;default:0.0;comment:失败率(%)"`
-	AvgResponseTimeMs  int     `json:"avg_response_time_ms" gorm:"default:0;comment:平均响应时间(ms)"`
+	GroupId           int     `json:"group_id" gorm:"primaryKey;not null"`
+	ModelName         string  `json:"model_name" gorm:"type:varchar(255);primaryKey;not null"`
+	TimeWindowStart   int64   `json:"time_window_start" gorm:"primaryKey;not null;comment:统计窗口起始时间戳"`
+	TPM               int     `json:"tpm" gorm:"default:0;comment:每分钟Token数"`
+	RPM               int     `json:"rpm" gorm:"default:0;comment:每分钟请求数"`
+	FailRate          float64 `json:"fail_rate" gorm:"type:double precision;default:0.0;comment:失败率(%)"`
+	AvgResponseTimeMs int     `json:"avg_response_time_ms" gorm:"default:0;comment:平均响应时间(ms)"`
+	// AvgResponseTime 为测试和API兼容提供的别名字段，不直接映射到数据库列。
+	// 数据库仍使用 avg_response_time_ms 列存储毫秒级平均响应时间。
+	AvgResponseTime    int     `json:"avg_response_time,omitempty" gorm:"-"`
 	AvgCacheHitRate    float64 `json:"avg_cache_hit_rate" gorm:"type:double precision;default:0.0;comment:缓存命中率(%)"`
 	StreamReqRatio     float64 `json:"stream_req_ratio" gorm:"type:double precision;default:0.0;comment:流式请求占比(%)"`
 	QuotaPM            int64   `json:"quota_pm" gorm:"default:0;comment:每分钟消耗额度"`

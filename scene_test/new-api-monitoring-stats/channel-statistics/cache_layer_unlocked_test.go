@@ -178,6 +178,60 @@ func TestCL06_L2ToL3StaggeredSync(t *testing.T) {
 	t.Logf("CL-06 Results:")
 	t.Logf("  Channels with logs: %d", len(channelUsageCount))
 
+	// Additional verification: 使用 SQLite 检查在缩短窗口与同步间隔下，
+	// 至少有部分渠道在 channel_statistics 表中产生了聚合记录，证明
+	// L2 → L3 的统计流水线真实运行（其余渠道若因错峰调度尚未同步，
+	// 仅记为告警而不导致用例失败）。
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	remaining := make(map[int]struct{}, len(channels))
+	for _, ch := range channels {
+		remaining[ch.ID] = struct{}{}
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	syncedChannels := 0
+
+	for time.Now().Before(deadline) && len(remaining) > 0 {
+		for chID := range remaining {
+			records, err := dbInspector.QueryChannelStatistics(chID, modelName, 0, 0)
+			if err != nil || len(records) == 0 {
+				continue
+			}
+
+			totalReq := 0
+			for _, r := range records {
+				totalReq += r.RequestCount
+			}
+
+			t.Logf("CL-06: channel %d has %d statistics records (total_request_count=%d)",
+				chID, len(records), totalReq)
+
+			if totalReq > 0 {
+				syncedChannels++
+			} else {
+				t.Logf("CL-06 WARNING: channel %d has statistics records but zero request_count", chID)
+			}
+
+			delete(remaining, chID)
+		}
+
+		if len(remaining) == 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if syncedChannels == 0 {
+		t.Errorf("CL-06 FAILED: no channel_statistics records found for any of the %d channels", numChannels)
+	}
+
 	// Note: Full verification would:
 	// 1. Monitor actual DB sync times for each channel
 	// 2. Verify times are distributed within 15-minute window
@@ -306,6 +360,36 @@ func TestCL07_L3DataAggregationAndDeduplication(t *testing.T) {
 	} else {
 		t.Logf("CL-07 WARNING: Expected 8 logs, got %d", channelLogCount)
 	}
+
+	// Additional verification: 通过 channel_statistics 表验证同一窗口内
+	// 只存在一条聚合记录（UPSERT 去重生效）。
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	var latest *testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		latest, err = dbInspector.GetLatestChannelStatistics(channelModel.ID, modelName)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CL-07: timeout waiting for statistics record: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	t.Logf("CL-07 DB latest record: window_start=%d, request_count=%d",
+		latest.TimeWindowStart, latest.RequestCount)
+
+	if err := dbInspector.VerifyNoDuplicateRecords(channelModel.ID, modelName, latest.TimeWindowStart); err != nil {
+		t.Errorf("CL-07 FAILED: %v", err)
+	}
 }
 
 // TestCL08_ReadPathThreeLevelCache tests read path cache hierarchy.
@@ -411,10 +495,54 @@ func TestCL08_ReadPathThreeLevelCache(t *testing.T) {
 	t.Logf("  Query 2 duration: %v (expected: faster, Redis hit)", query2Duration)
 	t.Logf("  Query 3 duration: %v (expected: fastest, Memory hit)", query3Duration)
 
-	// Verify: Each subsequent query should be faster (cache working).
-	// Note: Actual verification depends on stats API implementation.
+	// Verify: Each subsequent query should be faster (cache working)——这一点
+	// 在不同环境下具有一定波动，因此这里只做日志观察，而不做严格断言。
 
-	t.Logf("CL-08 PASSED: Read path three-level cache test completed")
+	// 额外的灰盒校验：使用 SQLite 校验 /api/channels/:id/stats 返回的聚合结果
+	// 至少覆盖了 channel_statistics 表中的聚合数据（在缩短窗口配置下）。
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	var records []testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		records, err = dbInspector.QueryChannelStatistics(channelModel.ID, modelName, 0, 0)
+		if err == nil && len(records) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CL-08 FAILED: no channel_statistics records found for channel %d: last error=%v",
+				channelModel.ID, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	aggregated := dbInspector.CalculateAggregatedMetrics(records)
+	t.Logf("CL-08 DB aggregate: request_count=%d, total_tokens=%d",
+		aggregated.RequestCount, aggregated.TotalTokens)
+
+	if stats1 == nil {
+		t.Fatalf("CL-08 FAILED: first stats query returned nil")
+	}
+
+	t.Logf("CL-08 API stats1: request_count=%d, total_tokens=%d",
+		stats1.RequestCount, stats1.TotalTokens)
+
+	if stats1.RequestCount < aggregated.RequestCount {
+		t.Errorf("CL-08: API request_count (%d) should be >= DB aggregated request_count (%d)",
+			stats1.RequestCount, aggregated.RequestCount)
+	}
+	if stats1.TotalTokens < aggregated.TotalTokens {
+		t.Errorf("CL-08: API total_tokens (%d) should be >= DB aggregated total_tokens (%d)",
+			stats1.TotalTokens, aggregated.TotalTokens)
+	}
+
+	t.Logf("CL-08 PASSED: Read path three-level cache + DB/API aggregation verified")
 }
 
 // TestCL10_MemoryEvictionMechanism tests memory eviction for cold channels.
@@ -632,5 +760,40 @@ func TestCON03_DBSyncConcurrencyControl(t *testing.T) {
 
 	if channelLogCount > 0 {
 		t.Logf("CON-03 PASSED: DB Sync concurrency control test completed (simplified)")
+	}
+
+	// Additional verification: 使用 SQLite 检查在高并发写入后，
+	// 对于同一窗口 (channel_id, model_name, time_window_start) 仅存在一条
+	// 统计记录，验证分布式锁与 L3 同步逻辑不会产生重复窗口记录。
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+
+	var latest *testutil.ChannelStatisticsRecord
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		latest, err = dbInspector.GetLatestChannelStatistics(channelModel.ID, modelName)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CON-03: timeout waiting for statistics record: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	t.Logf("CON-03 DB latest record: window_start=%d, request_count=%d",
+		latest.TimeWindowStart, latest.RequestCount)
+
+	if latest.RequestCount <= 0 {
+		t.Errorf("CON-03 FAILED: latest channel_statistics record has zero request_count")
+	}
+
+	if err := dbInspector.VerifyNoDuplicateRecords(channelModel.ID, modelName, latest.TimeWindowStart); err != nil {
+		t.Errorf("CON-03 FAILED: %v", err)
 	}
 }
