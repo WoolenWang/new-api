@@ -338,6 +338,9 @@ func TestRouting_R03_P2PBasicSharing(t *testing.T) {
 		Name:           "r03-userB-token",
 		Status:         1,
 		UnlimitedQuota: true,
+		// New semantics: access to P2P-restricted channels requires an explicit
+		// token-level P2P group constraint matching the shared group.
+		P2PGroupID: &p2pGroupID,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create API token for user B: %v", err)

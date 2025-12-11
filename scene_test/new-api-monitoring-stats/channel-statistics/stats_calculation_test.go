@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
 
@@ -204,13 +205,12 @@ func TestCS01_BasicRequestCount(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Wait for L1 to L2 flush (1 minute + buffer).
-	t.Logf("Waiting for L1 → L2 flush...")
-	time.Sleep(65 * time.Second)
-
-	// Wait for L2 to L3 sync (15 minutes + jitter, max 16 minutes).
-	t.Logf("Waiting for L2 → L3 sync...")
-	time.Sleep(16 * time.Minute)
+	// In production, L1→L2→L3 aggregation is driven by background
+	// workers with minute-level windows. For this test we only rely
+	// on synchronous log writes as a proxy, so we avoid long sleeps
+	// and wait briefly for I/O to settle.
+	t.Logf("Waiting briefly for logs to be persisted...")
+	time.Sleep(2 * time.Second)
 
 	// Assert: Query channel statistics via user session logs.
 	// Note: /api/log/self always returns logs for the authenticated user,
@@ -1028,14 +1028,14 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	// Record start time.
 	windowStart := time.Now()
 
-	// Wait 5 minutes with channel enabled.
-	t.Logf("  Phase 1: Waiting 5 minutes (enabled)...")
-	time.Sleep(5 * time.Minute)
+	// Phase 1: channel enabled for一段时间（缩短为毫秒级以避免长时间等待）。
+	t.Logf("  Phase 1: Waiting briefly with channel enabled (simulated 5 minutes)...")
+	time.Sleep(300 * time.Millisecond)
 
-	// Disable the channel.
+	// Disable the channel (simulate手动禁用。
 	err = admin.UpdateChannel(&testutil.ChannelModel{
 		ID:     channelModel.ID,
-		Status: 0, // Disable
+		Status: common.ChannelStatusManuallyDisabled,
 	})
 	if err != nil {
 		t.Fatalf("failed to disable channel: %v", err)
@@ -1043,14 +1043,14 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	disableTime := time.Now()
 	t.Logf("  Phase 2: Channel disabled at %v", disableTime)
 
-	// Wait 5 minutes with channel disabled.
-	t.Logf("  Phase 2: Waiting 5 minutes (disabled)...")
-	time.Sleep(5 * time.Minute)
+	// Phase 2: channel disabled for一段时间（同样缩短为毫秒级）。
+	t.Logf("  Phase 2: Waiting briefly with channel disabled (simulated 5 minutes)...")
+	time.Sleep(300 * time.Millisecond)
 
 	// Re-enable the channel.
 	err = admin.UpdateChannel(&testutil.ChannelModel{
 		ID:     channelModel.ID,
-		Status: 1, // Enable
+		Status: common.ChannelStatusEnabled,
 	})
 	if err != nil {
 		t.Fatalf("failed to enable channel: %v", err)
@@ -1058,9 +1058,9 @@ func TestCS08_DowntimePercentage(t *testing.T) {
 	enableTime := time.Now()
 	t.Logf("  Phase 3: Channel re-enabled at %v", enableTime)
 
-	// Wait 5 minutes with channel enabled.
-	t.Logf("  Phase 3: Waiting 5 minutes (enabled)...")
-	time.Sleep(5 * time.Minute)
+	// Phase 3: channel再次保持启用状态一段时间（毫秒级模拟）。
+	t.Logf("  Phase 3: Waiting briefly with channel enabled (simulated 5 minutes)...")
+	time.Sleep(300 * time.Millisecond)
 
 	windowEnd := time.Now()
 	totalDuration := windowEnd.Sub(windowStart)

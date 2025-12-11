@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -41,10 +43,12 @@ var (
 // GetChannelStatsL2Service 获取L2统计服务单例
 func GetChannelStatsL2Service() *ChannelStatsL2Service {
 	channelStatsL2Once.Do(func() {
+		flushInterval := getChannelStatsFlushInterval()
+
 		channelStatsL2Service = &ChannelStatsL2Service{
 			l1Service:     GetChannelStatsL1Service(),
-			flushInterval: 1 * time.Minute, // 每分钟刷新一次
-			ttl:           24 * time.Hour,  // Redis键24小时过期
+			flushInterval: flushInterval,  // 默认1分钟，可通过ENV缩短
+			ttl:           24 * time.Hour, // Redis键24小时过期
 			stopChan:      make(chan struct{}),
 		}
 
@@ -71,10 +75,11 @@ const (
 
 	// ZSET键: dirty_channels (member=channel:model:window, score=timestamp)
 	redisKeyDirtyChannels = "dirty_channels"
-
-	// 统计窗口大小（秒）
-	statsWindowSeconds = 900 // 15分钟
 )
+
+// 统计窗口大小（秒），默认15分钟。
+// 可通过 CHANNEL_STATS_WINDOW_SECONDS 在测试环境中缩短到秒级。
+var statsWindowSeconds int64 = getChannelStatsWindowSeconds()
 
 // alignToWindow 将时间戳对齐到统计窗口边界
 // Phase 8.x Task 2.2: Window alignment to prevent drift
