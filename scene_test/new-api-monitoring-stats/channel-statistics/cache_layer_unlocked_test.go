@@ -37,13 +37,15 @@ func TestCL05_RedisTTLMechanism(t *testing.T) {
 		t.Fatalf("failed to login: %v", err)
 	}
 
+	baseURL := suite.Upstream.BaseURL
 	channelModel := &testutil.ChannelModel{
-		Name:   "CL05 TTL Channel",
-		Type:   1,
-		Key:    "sk-test-cl05-ttl",
-		Status: 1,
-		Models: "gpt-4",
-		Group:  "default",
+		Name:    "CL05 TTL Channel",
+		Type:    1,
+		Key:     "sk-test-cl05-ttl",
+		Status:  1,
+		Models:  "gpt-4",
+		Group:   "default",
+		BaseURL: &baseURL,
 	}
 	channelID, err := admin.AddChannel(channelModel)
 	if err != nil {

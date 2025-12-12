@@ -113,6 +113,13 @@ func SetupCacheLayerSuite(t *testing.T) (*CacheLayerSuite, func()) {
 	cfg.CustomEnv["GLOBAL_API_RATE_LIMIT_ENABLE"] = "false"
 	cfg.CustomEnv["CRITICAL_RATE_LIMIT_ENABLE"] = "false"
 
+	// Mirror key timing knobs into the current process environment so that
+	// helper utilities (like waitForL1ToL2Flush) can read them via os.Getenv
+	// and keep sleep durations aligned with the accelerated configuration.
+	_ = os.Setenv("CHANNEL_STATS_FLUSH_INTERVAL_SECONDS", "2")
+	_ = os.Setenv("CHANNEL_STATS_WINDOW_SECONDS", "10")
+	_ = os.Setenv("CHANNEL_STATS_SYNC_INTERVAL_SECONDS", "2")
+
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
 		upstream.Close()

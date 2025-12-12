@@ -81,6 +81,10 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 	// Disable L3 sync jitter/delay so multiple dirty windows are flushed quickly in tests.
 	cfg.CustomEnv["CHANNEL_STATS_SYNC_JITTER_SECONDS"] = "0"
 	cfg.CustomEnv["CHANNEL_STATS_NEXT_SYNC_DELAY_SECONDS"] = "0"
+	// Disable global/critical rate limits so stats calculation tests are not
+	// slowed down or made flaky by rate limiting under concurrent load.
+	cfg.CustomEnv["GLOBAL_API_RATE_LIMIT_ENABLE"] = "false"
+	cfg.CustomEnv["CRITICAL_RATE_LIMIT_ENABLE"] = "false"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
@@ -501,8 +505,10 @@ func TestCS03_AverageResponseTime(t *testing.T) {
 //
 // Test Case: CS-04
 // Priority: P0
-// Scenario: Send 60 requests in 1 minute, total 60000 tokens
-// Expected: rpm=60, tpm=60000
+// Scenario: Validate TPM/RPM calculation using a shortened test window.
+// In design docs this场景描述为“1分钟内发起60个请求，总计60000 tokens，rpm=60,tpm=60000”，
+// 为了避免集成测试耗时过长，这里在 CHANNEL_STATS_WINDOW_SECONDS=10 的加速配置下，
+// 只发送较少请求，但通过 DB + /api/current_stats 校验同样的换算公式。
 func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -548,9 +554,10 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 
 	userTokenClient := userClient.WithToken(tokenKey)
 
-	// Act: Send 60 requests evenly distributed over 1 minute.
-	const numRequests = 60
-	const totalDuration = 60 * time.Second
+	// Act: Send requests evenly distributed over a shortened period.
+	// 使用较短的总时长以加快测试速度，但仍保持“固定时间窗口内均匀请求”的特性。
+	const numRequests = 20
+	const totalDuration = 10 * time.Second
 	requestInterval := totalDuration / numRequests
 
 	t.Logf("Sending %d requests over %v (interval: %v)", numRequests, totalDuration, requestInterval)
