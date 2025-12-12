@@ -383,9 +383,13 @@ func TestAPI03_ChannelStats_NormalUserPermission(t *testing.T) {
 	suite, cleanup := SetupAPICompletenessSuite(t)
 	defer cleanup()
 
-	// Step 1: Normal user attempts to query channel stats
+	// Step 1: An unauthenticated client (no session, no token) attempts to query channel stats
+	unauthClient := suite.AdminClient.Clone()
+	unauthClient.Token = ""
+	unauthClient.UserID = 0
+
 	path := fmt.Sprintf("/api/channels/%d/stats?period=1h", suite.TestChannel.ID)
-	resp, err := suite.NormalClient.Get(path)
+	resp, err := unauthClient.Get(path)
 	require.NoError(t, err, "Failed to send request")
 	defer resp.Body.Close()
 

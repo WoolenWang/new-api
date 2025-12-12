@@ -64,6 +64,18 @@ type MonitorPolicyRequest struct {
 	IsEnabled          bool     `json:"is_enabled"`
 }
 
+// MonitorPolicyUpdateRequest 监控策略更新请求结构（支持局部更新）
+type MonitorPolicyUpdateRequest struct {
+	ID                 int      `json:"id"`
+	Name               *string  `json:"name,omitempty"`
+	TargetModels       []string `json:"target_models"`
+	TestTypes          []string `json:"test_types"`
+	EvaluationStandard *string  `json:"evaluation_standard,omitempty"`
+	TargetChannels     []int    `json:"target_channels"`
+	ScheduleCron       *string  `json:"schedule_cron,omitempty"`
+	IsEnabled          *bool    `json:"is_enabled,omitempty"`
+}
+
 // GetMonitorPolicies 获取所有监控策略列表
 // @Summary 获取监控策略列表
 // @Description 获取所有监控策略，支持筛选启用状态
@@ -242,7 +254,7 @@ func UpdateMonitorPolicy(c *gin.Context) {
 		id = parsed
 	}
 
-	var req MonitorPolicyRequest
+	var req MonitorPolicyUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -274,19 +286,42 @@ func UpdateMonitorPolicy(c *gin.Context) {
 	}
 
 	// 验证 Cron 表达式
-	if err := validateCronExpression(req.ScheduleCron); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("无效的Cron表达式: %v", err),
-		})
-		return
+	if req.ScheduleCron != nil {
+		if err := validateCronExpression(*req.ScheduleCron); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("无效的Cron表达式: %v", err),
+			})
+			return
+		}
+	}
+
+	// 验证评价标准（如果有传入）
+	if req.EvaluationStandard != nil {
+		switch *req.EvaluationStandard {
+		case "strict", "standard", "lenient":
+		default:
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无效的评价标准",
+			})
+			return
+		}
 	}
 
 	// 更新字段
-	policy.Name = req.Name
-	policy.EvaluationStandard = req.EvaluationStandard
-	policy.ScheduleCron = req.ScheduleCron
-	policy.IsEnabled = req.IsEnabled
+	if req.Name != nil {
+		policy.Name = *req.Name
+	}
+	if req.EvaluationStandard != nil {
+		policy.EvaluationStandard = *req.EvaluationStandard
+	}
+	if req.ScheduleCron != nil {
+		policy.ScheduleCron = *req.ScheduleCron
+	}
+	if req.IsEnabled != nil {
+		policy.IsEnabled = *req.IsEnabled
+	}
 
 	// 更新 JSON 字段
 	if len(req.TargetModels) > 0 {

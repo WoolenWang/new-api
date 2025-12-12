@@ -260,6 +260,12 @@ func Distribute() func(c *gin.Context) {
 
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+
+		// handle package
+		if service.HandlePackage(c, channel) {
+			return
+		}
+
 		c.Next()
 	}
 }

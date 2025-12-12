@@ -27,11 +27,18 @@ package boundary_exception
 
 import (
 	"fmt"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
@@ -56,10 +63,20 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	// Create mock judge LLM for monitoring tests.
 	judgeLLM := testutil.NewMockJudgeLLM()
 
+	// Use in-memory Redis to speed up L1->L2->L3 flow in boundary tests.
+	mr, err := miniredis.Run()
+	if err != nil {
+		upstream.Close()
+		judgeLLM.Close()
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	redisConnString := fmt.Sprintf("redis://%s/0", mr.Addr())
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		upstream.Close()
 		judgeLLM.Close()
+		mr.Close()
 		t.Fatalf("failed to find project root: %v", err)
 	}
 
@@ -71,14 +88,34 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	if cfg.CustomEnv == nil {
 		cfg.CustomEnv = make(map[string]string)
 	}
+	// Also set env for the test process so helpers can read shortened intervals.
+	t.Setenv("DEBUG", "true")
+	t.Setenv("REDIS_CONN_STRING", redisConnString)
+	t.Setenv("CHANNEL_STATS_FLUSH_INTERVAL_SECONDS", "2")
+	t.Setenv("CHANNEL_STATS_WINDOW_SECONDS", "10")
+	t.Setenv("CHANNEL_STATS_SYNC_INTERVAL_SECONDS", "2")
+	t.Setenv("MONITOR_PROBE_TIMEOUT_SECONDS", "2")
+	t.Setenv("MONITOR_PROBE_MAX_RETRIES", "1")
+	t.Setenv("MONITOR_JUDGE_URL", fmt.Sprintf("%s/v1/chat/completions", judgeLLM.BaseURL))
+	t.Setenv("MONITOR_JUDGE_MODEL", "gpt-4-judge")
+
+	cfg.CustomEnv["DEBUG"] = "true"
+	cfg.CustomEnv["REDIS_CONN_STRING"] = redisConnString
+	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
+	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
+	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
 	cfg.CustomEnv["ENABLE_CHANNEL_STATS"] = "true"
 	cfg.CustomEnv["ENABLE_MODEL_MONITORING"] = "true"
-	cfg.CustomEnv["JUDGE_LLM_URL"] = judgeLLM.BaseURL
+	cfg.CustomEnv["MONITOR_PROBE_TIMEOUT_SECONDS"] = "2"
+	cfg.CustomEnv["MONITOR_PROBE_MAX_RETRIES"] = "1"
+	cfg.CustomEnv["MONITOR_JUDGE_URL"] = fmt.Sprintf("%s/v1/chat/completions", judgeLLM.BaseURL)
+	cfg.CustomEnv["MONITOR_JUDGE_MODEL"] = "gpt-4-judge"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
 		upstream.Close()
 		judgeLLM.Close()
+		mr.Close()
 		t.Fatalf("Failed to start test server: %v", err)
 	}
 
@@ -89,19 +126,42 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	if err != nil {
 		upstream.Close()
 		judgeLLM.Close()
+		mr.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to initialize system: %v", err)
 	}
 	if _, err := client.Login(rootUser, rootPass); err != nil {
 		upstream.Close()
 		judgeLLM.Close()
+		mr.Close()
 		_ = server.Stop()
 		t.Fatalf("failed to login as root: %v", err)
 	}
 
 	// Initialize inspectors
-	redisInspect := testutil.NewRedisStatsInspector(server)
-	dbInspect := testutil.NewDBStatsInspector(server)
+	var redisInspect *testutil.RedisStatsInspector
+	if conn := os.Getenv("REDIS_CONN_STRING"); conn != "" {
+		redisAddr := conn
+		if strings.HasPrefix(conn, "redis://") || strings.HasPrefix(conn, "rediss://") {
+			if parsed, err := url.Parse(conn); err == nil && parsed.Host != "" {
+				redisAddr = parsed.Host
+			}
+		}
+		if ri, err := testutil.NewRedisStatsInspector(redisAddr); err != nil {
+			t.Logf("Redis inspector disabled: failed to connect to Redis at %s: %v", redisAddr, err)
+		} else {
+			redisInspect = ri
+		}
+	} else {
+		t.Log("Redis inspector disabled: REDIS_CONN_STRING not set")
+	}
+
+	var dbInspect *testutil.DBStatsInspector
+	if di, err := testutil.NewDBStatsInspectorFromServer(server); err != nil {
+		t.Logf("DB inspector disabled: failed to open SQLite DB: %v", err)
+	} else {
+		dbInspect = di
+	}
 
 	suite := &TestSuite{
 		Server:       server,
@@ -115,6 +175,13 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	cleanup := func() {
 		upstream.Close()
 		judgeLLM.Close()
+		mr.Close()
+		if redisInspect != nil {
+			_ = redisInspect.Close()
+		}
+		if dbInspect != nil {
+			_ = dbInspect.Close()
+		}
 		if err := server.Stop(); err != nil {
 			t.Errorf("Failed to stop server: %v", err)
 		}
@@ -145,6 +212,10 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 		t.Fatalf("failed to create user %s: %v", username, err)
 	}
 	user.ID = id
+	// CreateUser ignores quota; adjust it explicitly for data-plane tests.
+	if user.Quota > 0 {
+		if err := admin.AdjustUserQuota(id, int(user.Quota)); err != nil {
+			t.Fatalf("failed to adjust quota for user %s: %v", usernam
 
 	return user
 }
@@ -167,6 +238,31 @@ func createTestUserNonFatal(admin *testutil.APIClient, username, password, group
 	user.ID = id
 
 	return user, nil
+ser.Quota > 0 {
+		if err := admin.AdjustUserQuota(id, int(user.Quota)); err != nil {
+			ret
+}
+
+func envInt(name string, defaultValue int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return defaultValue
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return defaultValue
+	}
+	return v
+}
+
+func waitForL1ToL2Flush() {
+	flushSec := envInt("CHANNEL_STATS_FLUSH_INTERVAL_SECONDS", 60)
+	time.Sleep(time.Duration(flushSec+1) * time.Second)
+}
+
+func waitForL2ToL3Sync() {
+	syncSec := envInt("CHANNEL_STATS_SYNC_INTERVAL_SECONDS", 60)
+	time.Sleep(time.Duration(syncSec*3) * time.Second)
 }
 
 // TestED01_EmptyDataQuery tests querying statistics for a channel that has never
@@ -187,7 +283,7 @@ func TestED01_EmptyDataQuery(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user.
-	user := createTestUser(t, admin, "ed01_user", "password123", "default")
+	_ = createTestUser(t, admin, "ed01_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("ed01_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -272,7 +368,7 @@ func TestED02_MassiveConcurrentWrite(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user.
-	user := createTestUser(t, admin, "ed02_user", "password123", "default")
+	_ = createTestUser(t, admin, "ed02_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("ed02_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -296,8 +392,8 @@ func TestED02_MassiveConcurrentWrite(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Create a token for the user.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
+	// Create a token for the user (using user client).
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
 		Name:           "ED02 Concurrent Token",
 		Status:         1,
 		UnlimitedQuota: true,
@@ -308,8 +404,7 @@ func TestED02_MassiveConcurrentWrite(t *testing.T) {
 
 	tokenClient := userClient.WithToken(tokenKey)
 
-	// Configure mock upstream to respond quickly.
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+	// Mock upstream uses default chat completion responses.
 
 	// Launch 10000 concurrent requests.
 	const numRequests = 10000
@@ -372,12 +467,12 @@ func TestED02_MassiveConcurrentWrite(t *testing.T) {
 	t.Logf("  Requests per second: %.2f", float64(numRequests)/elapsedTime.Seconds())
 
 	// Wait for statistics to be flushed from L1 to L2 (Redis).
-	t.Logf("Waiting for statistics flush (65 seconds)...")
-	time.Sleep(65 * time.Second)
+	t.Logf("Waiting for statistics flush...")
+	waitForL1ToL2Flush()
 
 	// Wait for statistics to be synced from L2 to L3 (Database).
-	t.Logf("Waiting for DB sync (16 minutes)...")
-	time.Sleep(16*time.Minute + 30*time.Second)
+	t.Logf("Waiting for DB sync...")
+	waitForL2ToL3Sync()
 
 	// Query final statistics.
 	stats, err := admin.GetChannelStats(channelID, "1h", "gpt-4")
@@ -427,7 +522,7 @@ func TestED03_RedisDowngrade(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user.
-	user := createTestUser(t, admin, "ed03_user", "password123", "default")
+	_ = createTestUser(t, admin, "ed03_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("ed03_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -451,8 +546,8 @@ func TestED03_RedisDowngrade(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Create a token.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
+	// Create a token (using user client).
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
 		Name:           "ED03 Token",
 		Status:         1,
 		UnlimitedQuota: true,
@@ -463,8 +558,7 @@ func TestED03_RedisDowngrade(t *testing.T) {
 
 	tokenClient := userClient.WithToken(tokenKey)
 
-	// Configure mock upstream.
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+	// Mock upstream uses default chat completion responses.
 
 	// Phase 1: Normal operation - send some requests while Redis is available.
 	t.Logf("Phase 1: Sending requests with Redis available...")
@@ -561,7 +655,7 @@ func TestED04_DatabaseWriteFailure(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user and channel.
-	user := createTestUser(t, admin, "ed04_user", "password123", "default")
+	_ = createTestUser(t, admin, "ed04_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("ed04_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -584,8 +678,8 @@ func TestED04_DatabaseWriteFailure(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Create token and send some requests.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
+	// Create token and send some requests (using user client).
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
 		Name:           "ED04 Token",
 		Status:         1,
 		UnlimitedQuota: true,
@@ -595,7 +689,6 @@ func TestED04_DatabaseWriteFailure(t *testing.T) {
 	}
 
 	tokenClient := userClient.WithToken(tokenKey)
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
 
 	// Send some requests to generate statistics.
 	for i := 0; i < 5; i++ {
@@ -612,15 +705,23 @@ func TestED04_DatabaseWriteFailure(t *testing.T) {
 	}
 
 	t.Logf("Sent 5 requests, waiting for L1 to L2 flush...")
-	time.Sleep(65 * time.Second)
+	waitForL1ToL2Flush()
 
 	// Verify data is in Redis.
 	if suite.RedisInspect != nil {
-		redisStats := suite.RedisInspect.GetChannelStats(channelID, "gpt-4")
-		if redisStats != nil && redisStats.RequestCount > 0 {
-			t.Logf("Verified: Redis contains %d requests", redisStats.RequestCount)
+		hash, err := suite.RedisInspect.GetChannelStatsHash(channelID, "gpt-4")
+		if err != nil {
+			t.Logf("Warning: Could not read Redis stats: %v", err)
+		} else if v, ok := hash["request_count"]; ok {
+			var reqCount int64
+			fmt.Sscanf(v, "%d", &reqCount)
+			if reqCount > 0 {
+				t.Logf("Verified: Redis contains %d requests", reqCount)
+			} else {
+				t.Logf("Warning: Redis request_count is 0")
+			}
 		} else {
-			t.Logf("Warning: Could not verify Redis stats")
+			t.Logf("Warning: Redis stats hash missing request_count field")
 		}
 	}
 
@@ -679,9 +780,8 @@ func TestED05_MonitorUpstreamTimeout(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Configure upstream to respond with extreme delay (>30 seconds).
-	suite.Upstream.SetResponseDelay(channelID, "gpt-4", 35*time.Second)
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+	// Configure upstream to respond with delay exceeding MONITOR_PROBE_TIMEOUT_SECONDS.
+	suite.Upstream.SetDelay(3 * time.Second)
 
 	// Create a model baseline for monitoring.
 	baselineReq := &testutil.ModelBaselineModel{
@@ -693,7 +793,7 @@ func TestED05_MonitorUpstreamTimeout(t *testing.T) {
 		BaselineOutput:     "Expected output",
 	}
 
-	baselineID, err := admin.CreateModelBaseline(baselineReq)
+	baselineID, err := admin.CreateBaseline(baselineReq)
 	if err != nil {
 		t.Fatalf("failed to create model baseline: %v", err)
 	}
@@ -701,10 +801,10 @@ func TestED05_MonitorUpstreamTimeout(t *testing.T) {
 	// Create a monitoring policy targeting this channel.
 	policyReq := &testutil.MonitorPolicyModel{
 		Name:               "ED05 Timeout Policy",
-		TargetModels:       `["gpt-4"]`,
-		TestTypes:          `["style"]`,
+		TargetModels:       []string{"gpt-4"},
+		TestTypes:          []string{"style"},
 		EvaluationStandard: "standard",
-		TargetChannels:     fmt.Sprintf(`[%d]`, channelID),
+		TargetChannels:     []int{channelID},
 		ScheduleCron:       "* * * * *", // Every minute (for testing)
 		IsEnabled:          true,
 	}
@@ -716,17 +816,16 @@ func TestED05_MonitorUpstreamTimeout(t *testing.T) {
 
 	t.Logf("Created monitoring policy (ID: %d, baseline: %d) for channel %d", policyID, baselineID, channelID)
 
-	// Manually trigger the monitoring task (or wait for cron).
-	// Note: This requires the monitoring worker to be running.
-	// In the test environment, we might need to invoke it directly.
-	t.Logf("Triggering monitoring probe (this may take >30 seconds due to timeout)...")
-
-	// Wait for the monitoring task to complete (with timeout).
-	// Since the upstream will timeout, the probe should fail quickly (within 30-35s).
-	time.Sleep(40 * time.Second)
+	// Manually trigger the monitoring task to avoid waiting for cron.
+	t.Logf("Triggering monitoring probe...")
+	if err := admin.TriggerMonitorWorker(policyID); err != nil {
+		t.Logf("Warning: failed to trigger monitor worker: %v", err)
+	}
+	// Wait briefly for monitoring to complete with shortened timeouts.
+	time.Sleep(3 * time.Second)
 
 	// Query monitoring results.
-	results, err := admin.GetChannelMonitoringResults(channelID, "gpt-4", 1)
+	results, err := admin.GetChannelMonitoringResults(channelID, "gpt-4", "style", 0, 9999999999)
 	if err != nil {
 		t.Logf("Warning: failed to query monitoring results: %v", err)
 	}
@@ -781,8 +880,7 @@ func TestED06_JudgeLLMInvalidJSON(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Configure mock upstream to return valid responses.
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test output"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+	// Mock upstream uses default chat completion responses.
 
 	// Configure mock judge LLM to return invalid JSON.
 	invalidResponses := []string{
@@ -806,7 +904,7 @@ func TestED06_JudgeLLMInvalidJSON(t *testing.T) {
 		BaselineOutput:     "Expected output",
 	}
 
-	_, err = admin.CreateModelBaseline(baselineReq)
+	_, err = admin.CreateBaseline(baselineReq)
 	if err != nil {
 		t.Fatalf("failed to create model baseline: %v", err)
 	}
@@ -814,10 +912,10 @@ func TestED06_JudgeLLMInvalidJSON(t *testing.T) {
 	// Create monitoring policy.
 	policyReq := &testutil.MonitorPolicyModel{
 		Name:               "ED06 Invalid JSON Policy",
-		TargetModels:       `["gpt-4"]`,
-		TestTypes:          `["style"]`,
+		TargetModels:       []string{"gpt-4"},
+		TestTypes:          []string{"style"},
 		EvaluationStandard: "standard",
-		TargetChannels:     fmt.Sprintf(`[%d]`, channelID),
+		TargetChannels:     []int{channelID},
 		ScheduleCron:       "* * * * *",
 		IsEnabled:          true,
 	}
@@ -829,11 +927,14 @@ func TestED06_JudgeLLMInvalidJSON(t *testing.T) {
 
 	t.Logf("Created monitoring policy (ID: %d) with invalid JSON judge response", policyID)
 
-	// Trigger monitoring and wait for completion.
-	time.Sleep(35 * time.Second)
+	// Trigger monitoring and wait briefly for completion.
+	if err := admin.TriggerMonitorWorker(policyID); err != nil {
+		t.Logf("Warning: failed to trigger monitor worker: %v", err)
+	}
+	time.Sleep(2 * time.Second)
 
 	// Query monitoring results.
-	results, err := admin.GetChannelMonitoringResults(channelID, "gpt-4", 1)
+	results, err := admin.GetChannelMonitoringResults(channelID, "gpt-4", "style", 0, 9999999999)
 	if err != nil {
 		t.Logf("Warning: failed to query monitoring results: %v", err)
 	}
@@ -874,7 +975,7 @@ func TestED07_GroupWithoutChannels(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user as group owner.
-	owner := createTestUser(t, admin, "ed07_owner", "password123", "default")
+	_ = createTestUser(t, admin, "ed07_owner", "password123", "default")
 	ownerClient := admin.Clone()
 	if _, err := ownerClient.Login("ed07_owner", "password123"); err != nil {
 		t.Fatalf("failed to login as owner: %v", err)
@@ -916,8 +1017,8 @@ func TestED07_GroupWithoutChannels(t *testing.T) {
 	if stats.RPM != 0 {
 		t.Errorf("ED-07 FAILED: Expected rpm=0, got %d", stats.RPM)
 	}
-	if stats.TotalRequests != 0 {
-		t.Errorf("ED-07 FAILED: Expected total_requests=0, got %d", stats.TotalRequests)
+	if stats.TotalSessions != 0 {
+		t.Errorf("ED-07 FAILED: Expected total_sessions=0, got %d", stats.TotalSessions)
 	}
 
 	t.Logf("ED-07 PASSED: Empty group returned zero statistics without errors")
@@ -941,7 +1042,7 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 	admin := suite.Client
 
 	// Create a test user and channel.
-	user := createTestUser(t, admin, "ed08_user", "password123", "default")
+	_ = createTestUser(t, admin, "ed08_user", "password123", "default")
 	userClient := admin.Clone()
 	if _, err := userClient.Login("ed08_user", "password123"); err != nil {
 		t.Fatalf("failed to login as user: %v", err)
@@ -964,8 +1065,8 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 	}
 	channel.ID = channelID
 
-	// Create token and send initial requests.
-	tokenKey, _, err := admin.CreateTokenForUser(user.ID, &testutil.TokenModel{
+	// Create token and send initial requests (using user client).
+	tokenKey, err := userClient.CreateTokenFull(&testutil.TokenModel{
 		Name:           "ED08 Token",
 		Status:         1,
 		UnlimitedQuota: true,
@@ -975,7 +1076,6 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 	}
 
 	tokenClient := userClient.WithToken(tokenKey)
-	suite.Upstream.SetDefaultResponse(200, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"test"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
 
 	// Phase 1: Channel enabled, send some requests.
 	t.Logf("Phase 1: Sending requests with channel enabled...")
@@ -996,28 +1096,34 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 
 	t.Logf("Sent 3 requests, now disabling channel...")
 
+	// Keep enabled briefly so the disable period clearly falls within the current stats window.
+	time.Sleep(2 * time.Second)
+
 	// Phase 2: Disable the channel for a known duration.
 	disableStart := time.Now()
-	channel.Status = 0
+	channel.Status = common.ChannelStatusManuallyDisabled
 	if err := admin.UpdateChannel(channel); err != nil {
 		t.Fatalf("failed to disable channel: %v", err)
 	}
 
 	t.Logf("Channel disabled at %v", disableStart)
 
-	// Keep channel disabled for 5 minutes (or shorter for faster testing).
-	disableDuration := 5 * time.Minute
+	// Keep channel disabled briefly to simulate mid-window downtime with shortened window.
+	disableDuration := 5 * time.Second
 	t.Logf("Waiting for %v with channel disabled...", disableDuration)
 	time.Sleep(disableDuration)
 
 	// Phase 3: Re-enable the channel.
 	disableEnd := time.Now()
-	channel.Status = 1
+	channel.Status = common.ChannelStatusEnabled
 	if err := admin.UpdateChannel(channel); err != nil {
 		t.Fatalf("failed to re-enable channel: %v", err)
 	}
 
 	t.Logf("Channel re-enabled at %v", disableEnd)
+
+	// Keep enabled briefly after re-enable.
+	time.Sleep(3 * time.Second)
 
 	// Send more requests after re-enabling.
 	for i := 0; i < 3; i++ {
@@ -1043,8 +1149,8 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 
 	// Wait for statistics to be synced.
 	t.Logf("Waiting for statistics sync...")
-	time.Sleep(65 * time.Second)                // L1 to L2
-	time.Sleep(16*time.Minute + 30*time.Second) // L2 to L3
+	waitForL1ToL2Flush()
+	waitForL2ToL3Sync()
 
 	// Query statistics.
 	stats, err := admin.GetChannelStats(channelID, "1h", "gpt-4")
@@ -1056,15 +1162,15 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 	expectedDowntimePercent := (actualDisableDuration.Seconds() / totalWindowDuration.Seconds()) * 100
 
 	t.Logf("Statistics:")
-	t.Logf("  Downtime percentage: %.2f%%", stats.DowntimePercentage)
+	t.Logf("  Downtime percentage: %.2f%%", stats.DowntimePercent)
 	t.Logf("  Expected downtime: ~%.2f%%", expectedDowntimePercent)
 
 	// Allow some tolerance in the calculation (±5%).
 	tolerance := 5.0
-	if stats.DowntimePercentage < expectedDowntimePercent-tolerance ||
-		stats.DowntimePercentage > expectedDowntimePercent+tolerance {
+	if stats.DowntimePercent < expectedDowntimePercent-tolerance ||
+		stats.DowntimePercent > expectedDowntimePercent+tolerance {
 		t.Errorf("ED-08 WARNING: Downtime percentage mismatch. Expected ~%.2f%%, got %.2f%% (tolerance: ±%.2f%%)",
-			expectedDowntimePercent, stats.DowntimePercentage, tolerance)
+			expectedDowntimePercent, stats.DowntimePercent, tolerance)
 	} else {
 		t.Logf("ED-08 PASSED: Downtime percentage is within tolerance")
 	}

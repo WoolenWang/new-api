@@ -409,5 +409,21 @@ func SetApiRouter(router *gin.Engine) {
 			sessionsRoute.GET("/user/:id", controller.GetUserSessionCount)                // Get specific user's session count
 			sessionsRoute.POST("/cleanup/:channel_id", controller.CleanupChannelSessions) // Clean up sessions for a channel
 		}
+
+		packageRoute := apiRouter.Group("/packages")
+		{
+			packageRoute.GET("/", middleware.UserAuth(), controller.GetPackages)
+			packageRoute.POST("/", middleware.AdminAuth(), controller.CreatePackage)
+			packageRoute.PUT("/:id", middleware.AdminAuth(), controller.UpdatePackage)
+			packageRoute.DELETE("/:id", middleware.AdminAuth(), controller.DeletePackage)
+		}
+
+		subscriptionRoute := apiRouter.Group("/subscriptions")
+		subscriptionRoute.Use(middleware.UserAuth())
+		{
+			subscriptionRoute.GET("/my", controller.GetUserSubscriptions)
+			subscriptionRoute.POST("/subscribe/:id", controller.SubscribePackage)
+			subscriptionRoute.POST("/activate/:id", controller.ActivateSubscription)
+		}
 	}
 }

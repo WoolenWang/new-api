@@ -608,22 +608,37 @@ func (c *APIClient) GetChannel(id int) (*ChannelModel, error) {
 
 // GetAllChannels retrieves all channels.
 func (c *APIClient) GetAllChannels() ([]ChannelModel, error) {
-	var resp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
-		Data    struct {
-			Items []ChannelModel `json:"items"`
-			Total int            `json:"total"`
-		} `json:"data"`
+	pageSize := 100
+	// The backend treats p<1 as page 1, so pages are 1-based.
+	page := 1
+	all := make([]ChannelModel, 0)
+
+	for {
+		var resp struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+			Data    struct {
+				Items []ChannelModel `json:"items"`
+				Total int            `json:"total"`
+			} `json:"data"`
+		}
+
+		err := c.GetJSON(fmt.Sprintf("/api/channel/?p=%d&page_size=%d", page, pageSize), &resp)
+		if err != nil {
+			return nil, err
+		}
+		if !resp.Success {
+			return nil, fmt.Errorf("get channels failed: %s", resp.Message)
+		}
+
+		all = append(all, resp.Data.Items...)
+		if len(all) >= resp.Data.Total || len(resp.Data.Items) == 0 {
+			break
+		}
+		page++
 	}
-	err := c.GetJSON("/api/channel/?p=0&page_size=100", &resp)
-	if err != nil {
-		return nil, err
-	}
-	if !resp.Success {
-		return nil, fmt.Errorf("get channels failed: %s", resp.Message)
-	}
-	return resp.Data.Items, nil
+
+	return all, nil
 }
 
 // DeleteChannel deletes a channel by ID.

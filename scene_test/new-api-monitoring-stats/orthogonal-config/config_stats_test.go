@@ -4,7 +4,7 @@ package orthogonal_config
 import (
 	"testing"
 
-	"new-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -30,11 +30,14 @@ func (s *ConfigStatsSuite) SetupSuite() {
 	require.NoError(s.T(), err, "Failed to find project root")
 
 	// Create and start test server
-	config := testutil.DefaultConfig()
-	s.server, err = testutil.NewTestServer(s.T(), projectRoot, config)
-	require.NoError(s.T(), err, "Failed to create test server")
-
-	err = s.server.Start()
+	cfg := testutil.DefaultConfig()
+	cfg.ProjectRoot = projectRoot
+	cfg.CustomEnv = map[string]string{
+		"GLOBAL_API_RATE_LIMIT_ENABLE": "false",
+		"GLOBAL_WEB_RATE_LIMIT_ENABLE": "false",
+		"CRITICAL_RATE_LIMIT_ENABLE":   "false",
+	}
+	s.server, err = testutil.StartServer(cfg)
 	require.NoError(s.T(), err, "Failed to start test server")
 
 	// Create API client
@@ -44,16 +47,29 @@ func (s *ConfigStatsSuite) SetupSuite() {
 	rootUser, rootPass, err := s.client.InitializeSystem()
 	require.NoError(s.T(), err, "Failed to initialize system")
 
-	err = s.client.Login(rootUser, rootPass)
+	_, err = s.client.Login(rootUser, rootPass)
 	require.NoError(s.T(), err, "Failed to login as admin")
+
+	// Ensure orthogonal billing groups are usable in this test environment.
+	var optionResp testutil.APIResponse
+	err = s.client.PutJSON("/api/option/", map[string]any{
+		"key":   "UserUsableGroups",
+		"value": "{\"default\":\"默认分组\",\"vip\":\"vip分组\",\"svip\":\"svip分组\"}",
+	}, &optionResp)
+	require.NoError(s.T(), err, "Failed to update UserUsableGroups option")
+	require.True(s.T(), optionResp.Success, "Failed to update UserUsableGroups: %s", optionResp.Message)
+
+	// Create mock upstream server once per suite to avoid stale BaseURL in persisted channels.
+	s.upstream = testutil.NewMockUpstreamServer()
 
 	s.T().Log("✓ Test server started and system initialized")
 }
 
 // SetupTest creates fresh fixtures for each test.
 func (s *ConfigStatsSuite) SetupTest() {
-	// Create mock upstream server
-	s.upstream = testutil.NewMockUpstreamServer()
+	if s.upstream != nil {
+		s.upstream.Reset()
+	}
 
 	// Create orthogonal fixtures
 	s.fixtures = testutil.NewOrthogonalFixtures(s.T(), s.client, s.upstream)
@@ -67,14 +83,14 @@ func (s *ConfigStatsSuite) SetupTest() {
 
 // TearDownTest cleans up after each test.
 func (s *ConfigStatsSuite) TearDownTest() {
-	if s.upstream != nil {
-		s.upstream.Close()
-	}
 	s.T().Log("✓ Test cleanup completed")
 }
 
 // TearDownSuite stops the test server.
 func (s *ConfigStatsSuite) TearDownSuite() {
+	if s.upstream != nil {
+		s.upstream.Close()
+	}
 	if s.server != nil {
 		s.server.Stop()
 	}
@@ -86,8 +102,10 @@ func (s *ConfigStatsSuite) TearDownSuite() {
 //
 // Test Case: OS-01
 // Scenario: User-Vip has Token1 and Token2
-//           Token1 makes 10 requests
-//           Token2 makes 5 requests
+//
+//	Token1 makes 10 requests
+//	Token2 makes 5 requests
+//
 // Expected: Channel: request_count=15, unique_users=1
 func (s *ConfigStatsSuite) TestOS01_MultiTokenSameUserStatistics() {
 	// Arrange: Create two tokens for User-Vip
@@ -133,11 +151,14 @@ func (s *ConfigStatsSuite) TestOS01_MultiTokenSameUserStatistics() {
 //
 // Test Case: OS-02
 // Scenario: Ch-X is authorized to [G1, G2]
-//           User-A (in G1) makes 10 requests
-//           User-B (in G2) makes 20 requests
+//
+//	User-A (in G1) makes 10 requests
+//	User-B (in G2) makes 20 requests
+//
 // Expected: Ch-X: request_count=30
-//           G1 stats: includes Ch-X's 10 requests
-//           G2 stats: includes Ch-X's 20 requests
+//
+//	G1 stats: includes Ch-X's 10 requests
+//	G2 stats: includes Ch-X's 20 requests
 func (s *ConfigStatsSuite) TestOS02_MultiGroupChannelStatsAggregation() {
 	// Arrange: Create a channel authorized to G1 and G2
 	chShared, err := s.fixtures.CreateChannel(
@@ -207,11 +228,14 @@ func (s *ConfigStatsSuite) TestOS02_MultiGroupChannelStatsAggregation() {
 //
 // Test Case: OS-03
 // Scenario: Token has billing_groups=["vip"]
-//           Make 10 requests → billed at vip rate
-//           Update token to billing_groups=["default"]
-//           Make 10 more requests → billed at default rate
+//
+//	Make 10 requests → billed at vip rate
+//	Update token to billing_groups=["default"]
+//	Make 10 more requests → billed at default rate
+//
 // Expected: Channel statistics correctly reflect both billing configurations
-//           Total request_count=20
+//
+//	Total request_count=20
 func (s *ConfigStatsSuite) TestOS03_TokenBillingGroupSwitchingStatistics() {
 	// Arrange: Create token with vip billing
 	token, err := s.fixtures.CreateTokenWithConfig(
@@ -258,10 +282,13 @@ func (s *ConfigStatsSuite) TestOS03_TokenBillingGroupSwitchingStatistics() {
 //
 // Test Case: OS-04
 // Scenario: Ch-X supports [gpt-4, gpt-3.5-turbo], authorized to [G1, G2]
-//           G1 users request gpt-4
-//           G2 users request gpt-3.5-turbo
+//
+//	G1 users request gpt-4
+//	G2 users request gpt-3.5-turbo
+//
 // Expected: Channel statistics should have separate records for each model
-//           Group statistics should aggregate by model dimension
+//
+//	Group statistics should aggregate by model dimension
 func (s *ConfigStatsSuite) TestOS04_MultiModelMultiGroupStatistics() {
 	// Arrange: Create a multi-model channel authorized to G1 and G2
 	chMultiModel, err := s.fixtures.CreateChannel(

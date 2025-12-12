@@ -4,6 +4,10 @@ package testutil
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,6 +19,7 @@ import (
 type OrthogonalFixtures struct {
 	t      *testing.T
 	client *APIClient
+	suffix string
 
 	// Users with different system groups
 	UserDefault *UserModel // default group (ratio 1.0)
@@ -54,12 +59,21 @@ type OrthogonalFixtures struct {
 func NewOrthogonalFixtures(t *testing.T, client *APIClient, upstream *MockUpstreamServer) *OrthogonalFixtures {
 	t.Helper()
 
+	suffix := fmt.Sprintf("%d", atomic.AddUint64(&orthogonalFixturesSeq, 1))
 	return &OrthogonalFixtures{
 		t:        t,
 		client:   client,
 		upstream: upstream,
+		suffix:   suffix,
 		Tokens:   make(map[string]string),
 	}
+}
+
+var orthogonalFixturesSeq uint64
+
+func (of *OrthogonalFixtures) uniqueName(base string) string {
+	of.t.Helper()
+	return fmt.Sprintf("%s-%s", base, of.suffix)
 }
 
 // Setup creates all necessary test data for orthogonal tests.
@@ -92,32 +106,35 @@ func (of *OrthogonalFixtures) setupUsers() error {
 	var err error
 
 	// Create default user
-	of.UserDefault, err = of.createUser("ox_user_default", "default")
+	defaultUsername := of.uniqueName("ox_user_default")
+	of.UserDefault, err = of.createUser(defaultUsername, "default")
 	if err != nil {
 		return err
 	}
 	of.UserDefaultClient = of.client.Clone()
-	if _, err = of.UserDefaultClient.Login("ox_user_default", "testpass123"); err != nil {
+	if _, err = of.UserDefaultClient.Login(defaultUsername, "testpass123"); err != nil {
 		return fmt.Errorf("failed to login default user: %w", err)
 	}
 
 	// Create vip user
-	of.UserVip, err = of.createUser("ox_user_vip", "vip")
+	vipUsername := of.uniqueName("ox_user_vip")
+	of.UserVip, err = of.createUser(vipUsername, "vip")
 	if err != nil {
 		return err
 	}
 	of.UserVipClient = of.client.Clone()
-	if _, err = of.UserVipClient.Login("ox_user_vip", "testpass123"); err != nil {
+	if _, err = of.UserVipClient.Login(vipUsername, "testpass123"); err != nil {
 		return fmt.Errorf("failed to login vip user: %w", err)
 	}
 
 	// Create svip user
-	of.UserSvip, err = of.createUser("ox_user_svip", "svip")
+	svipUsername := of.uniqueName("ox_user_svip")
+	of.UserSvip, err = of.createUser(svipUsername, "svip")
 	if err != nil {
 		return err
 	}
 	of.UserSvipClient = of.client.Clone()
-	if _, err = of.UserSvipClient.Login("ox_user_svip", "testpass123"); err != nil {
+	if _, err = of.UserSvipClient.Login(svipUsername, "testpass123"); err != nil {
 		return fmt.Errorf("failed to login svip user: %w", err)
 	}
 
@@ -169,7 +186,7 @@ func (of *OrthogonalFixtures) setupP2PGroups() error {
 
 	// Create G1 (password-protected, owned by UserDefault)
 	of.G1 = &P2PGroupModel{
-		Name:        "ox-g1",
+		Name:        of.uniqueName("ox-g1"),
 		DisplayName: "Orthogonal G1",
 		OwnerId:     of.UserDefault.ID,
 		Type:        2, // Shared
@@ -183,7 +200,7 @@ func (of *OrthogonalFixtures) setupP2PGroups() error {
 
 	// Create G2 (password-protected, owned by UserVip)
 	of.G2 = &P2PGroupModel{
-		Name:        "ox-g2",
+		Name:        of.uniqueName("ox-g2"),
 		DisplayName: "Orthogonal G2",
 		OwnerId:     of.UserVip.ID,
 		Type:        2, // Shared
@@ -197,7 +214,7 @@ func (of *OrthogonalFixtures) setupP2PGroups() error {
 
 	// Create G3 (password-protected, owned by UserSvip)
 	of.G3 = &P2PGroupModel{
-		Name:        "ox-g3",
+		Name:        of.uniqueName("ox-g3"),
 		DisplayName: "Orthogonal G3",
 		OwnerId:     of.UserSvip.ID,
 		Type:        2, // Shared
@@ -224,44 +241,44 @@ func (of *OrthogonalFixtures) setupChannels() error {
 	// Format: {SystemGroup}_{P2PAuth}
 
 	// default group channels
-	of.ChDefaultPublic, err = of.CreateChannel("ox-ch-default-public", model, "default", []int{})
+	of.ChDefaultPublic, err = of.CreateChannel(of.uniqueName("ox-ch-default-public"), model, "default", []int{})
 	if err != nil {
 		return err
 	}
 
-	of.ChDefaultG1, err = of.CreateChannel("ox-ch-default-g1", model, "default", []int{of.G1.ID})
+	of.ChDefaultG1, err = of.CreateChannel(of.uniqueName("ox-ch-default-g1"), model, "default", []int{of.G1.ID})
 	if err != nil {
 		return err
 	}
 
-	of.ChDefaultG1G2, err = of.CreateChannel("ox-ch-default-g1g2", model, "default", []int{of.G1.ID, of.G2.ID})
+	of.ChDefaultG1G2, err = of.CreateChannel(of.uniqueName("ox-ch-default-g1g2"), model, "default", []int{of.G1.ID, of.G2.ID})
 	if err != nil {
 		return err
 	}
 
 	// vip group channels
-	of.ChVipPublic, err = of.CreateChannel("ox-ch-vip-public", model, "vip", []int{})
+	of.ChVipPublic, err = of.CreateChannel(of.uniqueName("ox-ch-vip-public"), model, "vip", []int{})
 	if err != nil {
 		return err
 	}
 
-	of.ChVipG1, err = of.CreateChannel("ox-ch-vip-g1", model, "vip", []int{of.G1.ID})
+	of.ChVipG1, err = of.CreateChannel(of.uniqueName("ox-ch-vip-g1"), model, "vip", []int{of.G1.ID})
 	if err != nil {
 		return err
 	}
 
-	of.ChVipG2, err = of.CreateChannel("ox-ch-vip-g2", model, "vip", []int{of.G2.ID})
+	of.ChVipG2, err = of.CreateChannel(of.uniqueName("ox-ch-vip-g2"), model, "vip", []int{of.G2.ID})
 	if err != nil {
 		return err
 	}
 
 	// svip group channels
-	of.ChSvipPublic, err = of.CreateChannel("ox-ch-svip-public", model, "svip", []int{})
+	of.ChSvipPublic, err = of.CreateChannel(of.uniqueName("ox-ch-svip-public"), model, "svip", []int{})
 	if err != nil {
 		return err
 	}
 
-	of.ChSvipG1G2, err = of.CreateChannel("ox-ch-svip-g1g2", model, "svip", []int{of.G1.ID, of.G2.ID})
+	of.ChSvipG1G2, err = of.CreateChannel(of.uniqueName("ox-ch-svip-g1g2"), model, "svip", []int{of.G1.ID, of.G2.ID})
 	if err != nil {
 		return err
 	}
@@ -435,20 +452,25 @@ func (of *OrthogonalFixtures) VerifyRoutingSuccess(t *testing.T, tokenKey, model
 
 	require.NoError(t, err, "Request should succeed")
 	require.NotNil(t, resp, "Response should not be nil")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		require.Equalf(t, http.StatusOK, resp.StatusCode, "Request should succeed, got status %d body=%s", resp.StatusCode, string(bodyBytes))
+	}
 
 	// Verify billing group by checking the logs
 	// Note: This requires querying the logs table or having a debug field in response
 	t.Logf("Routing succeeded, expected billing group: %s", expectedBillingGroup)
 }
 
-// VerifyRoutingFailure verifies that a request fails with "no available channel" error.
+// VerifyRoutingFailure verifies that a request fails with "无可用渠道" error.
 func (of *OrthogonalFixtures) VerifyRoutingFailure(t *testing.T, tokenKey, model string) {
 	t.Helper()
 
 	client := of.client.WithToken(tokenKey)
 
 	// Make a chat completion request
-	_, err := client.ChatCompletion(ChatCompletionRequest{
+	resp, err := client.ChatCompletion(ChatCompletionRequest{
 		Model: model,
 		Messages: []ChatMessage{
 			{Role: "user", Content: "test routing"},
@@ -456,8 +478,21 @@ func (of *OrthogonalFixtures) VerifyRoutingFailure(t *testing.T, tokenKey, model
 		Stream: false,
 	})
 
-	require.Error(t, err, "Request should fail (no available channel)")
-	require.Contains(t, err.Error(), "no available channel", "Error should indicate no available channel")
+	require.NoError(t, err, "Request should return an HTTP error response")
+	require.NotNil(t, resp, "Response should not be nil")
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyStr := string(bodyBytes)
+	require.GreaterOrEqual(t, resp.StatusCode, 400, "Request should fail, got status %d body=%s", resp.StatusCode, bodyStr)
+	require.Truef(
+		t,
+		strings.Contains(bodyStr, "\"code\":\"model_not_found\"") ||
+			strings.Contains(bodyStr, "无可用渠道") ||
+			strings.Contains(bodyStr, "no satisfied channel"),
+		"Error should indicate no available channel, body=%s",
+		bodyStr,
+	)
 
 	t.Log("Routing failed as expected (no available channel)")
 }
@@ -528,41 +563,30 @@ func (of *OrthogonalFixtures) CreatePrivateChannel(name, model, systemGroup stri
 	}
 
 	channel := &ChannelModel{
-		Name:      name,
-		Type:      ChannelTypeOpenAI,
-		Key:       "sk-test-key-" + name,
-		Models:    model,
-		Group:     systemGroup,
-		BaseURL:   &baseURL,
-		Priority:  &priority,
-		Weight:    &weight,
-		Status:    1,    // Enabled
-		IsPrivate: true, // This is the key difference
+		Name:        name,
+		Type:        ChannelTypeOpenAI,
+		Key:         "sk-test-key-" + name,
+		Models:      model,
+		Group:       systemGroup,
+		OwnerUserId: ownerID,
+		BaseURL:     &baseURL,
+		Priority:    &priority,
+		Weight:      &weight,
+		Status:      1,    // Enabled
+		IsPrivate:   true, // This is the key difference
 	}
 
 	if allowedGroupsPtr != nil {
 		channel.AllowedGroups = allowedGroupsPtr
 	}
 
-	// Use the owner's client to create the channel
-	var ownerClient *APIClient
-	switch ownerID {
-	case of.UserDefault.ID:
-		ownerClient = of.UserDefaultClient
-	case of.UserVip.ID:
-		ownerClient = of.UserVipClient
-	case of.UserSvip.ID:
-		ownerClient = of.UserSvipClient
-	default:
-		return nil, fmt.Errorf("unknown owner ID: %d", ownerID)
-	}
-
-	if _, err := ownerClient.AddChannel(channel); err != nil {
+	// Private channels require admin API to set owner_user_id explicitly.
+	if _, err := of.client.AddChannel(channel); err != nil {
 		return nil, fmt.Errorf("failed to create private channel %s: %w", name, err)
 	}
 
 	// Query back to discover the assigned ID
-	channels, err := ownerClient.GetAllChannels()
+	channels, err := of.client.GetAllChannels()
 	if err != nil {
 		return nil, fmt.Errorf("failed to query channels after creation: %w", err)
 	}

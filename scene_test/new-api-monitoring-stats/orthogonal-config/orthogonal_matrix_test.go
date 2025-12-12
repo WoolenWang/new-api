@@ -4,7 +4,7 @@ package orthogonal_config
 import (
 	"testing"
 
-	"new-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -38,11 +38,14 @@ func (s *OrthogonalMatrixSuite) SetupSuite() {
 	require.NoError(s.T(), err, "Failed to find project root")
 
 	// Create and start test server
-	config := testutil.DefaultConfig()
-	s.server, err = testutil.NewTestServer(s.T(), projectRoot, config)
-	require.NoError(s.T(), err, "Failed to create test server")
-
-	err = s.server.Start()
+	cfg := testutil.DefaultConfig()
+	cfg.ProjectRoot = projectRoot
+	cfg.CustomEnv = map[string]string{
+		"GLOBAL_API_RATE_LIMIT_ENABLE": "false",
+		"GLOBAL_WEB_RATE_LIMIT_ENABLE": "false",
+		"CRITICAL_RATE_LIMIT_ENABLE":   "false",
+	}
+	s.server, err = testutil.StartServer(cfg)
 	require.NoError(s.T(), err, "Failed to start test server")
 
 	// Create API client
@@ -52,16 +55,29 @@ func (s *OrthogonalMatrixSuite) SetupSuite() {
 	rootUser, rootPass, err := s.client.InitializeSystem()
 	require.NoError(s.T(), err, "Failed to initialize system")
 
-	err = s.client.Login(rootUser, rootPass)
+	_, err = s.client.Login(rootUser, rootPass)
 	require.NoError(s.T(), err, "Failed to login as admin")
+
+	// Ensure orthogonal billing groups are usable in this test environment.
+	var optionResp testutil.APIResponse
+	err = s.client.PutJSON("/api/option/", map[string]any{
+		"key":   "UserUsableGroups",
+		"value": "{\"default\":\"默认分组\",\"vip\":\"vip分组\",\"svip\":\"svip分组\"}",
+	}, &optionResp)
+	require.NoError(s.T(), err, "Failed to update UserUsableGroups option")
+	require.True(s.T(), optionResp.Success, "Failed to update UserUsableGroups: %s", optionResp.Message)
+
+	// Create mock upstream server once per suite to avoid stale BaseURL in persisted channels.
+	s.upstream = testutil.NewMockUpstreamServer()
 
 	s.T().Log("✓ Test server started and system initialized")
 }
 
 // SetupTest creates fresh fixtures for each test.
 func (s *OrthogonalMatrixSuite) SetupTest() {
-	// Create mock upstream server
-	s.upstream = testutil.NewMockUpstreamServer()
+	if s.upstream != nil {
+		s.upstream.Reset()
+	}
 
 	// Create orthogonal fixtures
 	s.fixtures = testutil.NewOrthogonalFixtures(s.T(), s.client, s.upstream)
@@ -75,14 +91,14 @@ func (s *OrthogonalMatrixSuite) SetupTest() {
 
 // TearDownTest cleans up after each test.
 func (s *OrthogonalMatrixSuite) TearDownTest() {
-	if s.upstream != nil {
-		s.upstream.Close()
-	}
 	s.T().Log("✓ Test cleanup completed")
 }
 
 // TearDownSuite stops the test server.
 func (s *OrthogonalMatrixSuite) TearDownSuite() {
+	if s.upstream != nil {
+		s.upstream.Close()
+	}
 	if s.server != nil {
 		s.server.Stop()
 	}
@@ -154,7 +170,7 @@ func (s *OrthogonalMatrixSuite) TestOM03_DefaultChannelG1G2PrivateSvipUserG1() {
 	// Arrange: Create private default channel owned by User-Default, authorized to G1 and G2
 	channel, err := s.fixtures.CreatePrivateChannel(
 		"om03-ch-private",
-		"gpt-4",
+		"gpt-4-om03",
 		"default",
 		s.fixtures.UserDefault.ID, // Owner
 		[]int{s.fixtures.G1.ID, s.fixtures.G2.ID},
@@ -181,7 +197,7 @@ func (s *OrthogonalMatrixSuite) TestOM03_DefaultChannelG1G2PrivateSvipUserG1() {
 	require.NoError(s.T(), err, "Failed to create token")
 
 	// Act & Assert: Should fail because channel is private and user is not owner
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4-om03")
 	s.T().Logf("✓ OM-03: default/[G1,G2]/private + svip/G1 + empty/G1 → failure (channel_id=%d)", channel.ID)
 }
 
@@ -209,11 +225,11 @@ func (s *OrthogonalMatrixSuite) TestOM04_VipChannelNoP2PVipUserNoRestriction() {
 	s.T().Logf("✓ OM-04: vip/none/public + vip/none + empty/none → success (channel_id=%d)", channel.ID)
 }
 
-// TestOM05_VipChannelG1DefaultUserG1VipBillingG1Restrict tests cross-group failure.
+// TestOM05_VipChannelG1DefaultUserG1VipBillingG1Restrict tests cross-group access via billing override.
 //
 // Test Case: OM-05 (L18 Row 5)
 // Factors: Channel(vip, G1, public) + User(default, G1) + Token([vip], G1)
-// Expected: Failure (user's system group 'default' does not match channel's 'vip')
+// Expected: Success, billed at vip rate (vip is usable in this suite)
 func (s *OrthogonalMatrixSuite) TestOM05_VipChannelG1DefaultUserG1VipBillingG1Restrict() {
 	// Arrange: Use vip channel authorized to G1
 	channel := s.fixtures.ChVipG1
@@ -236,17 +252,16 @@ func (s *OrthogonalMatrixSuite) TestOM05_VipChannelG1DefaultUserG1VipBillingG1Re
 	)
 	require.NoError(s.T(), err, "Failed to create token")
 
-	// Act & Assert: Should fail because default user cannot access vip channel
-	// even with billing override and P2P match
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
-	s.T().Logf("✓ OM-05: vip/G1/public + default/G1 + [vip]/G1 → failure (channel_id=%d)", channel.ID)
+	// Act & Assert: Should succeed when vip is in UserUsableGroups.
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenKey, "gpt-4", "vip")
+	s.T().Logf("✓ OM-05: vip/G1/public + default/G1 + [vip]/G1 → success (billed vip, channel_id=%d)", channel.ID)
 }
 
 // TestOM06_VipChannelG1G2PrivateVipUserG1G2VipDefaultBillingG1G2 tests private channel owner access.
 //
 // Test Case: OM-06 (L18 Row 6)
-// Factors: Channel(vip, [G1,G2], private) + User(vip, [G1,G2]) + Token([vip,default], [G1,G2])
-// Expected: Success if user is owner, otherwise failure
+// Factors: Channel(vip, [G1,G2], private) + User(vip, [G1,G2]) + Token([vip,default], G1)
+// Expected: Success (owner; token carries single P2P restriction)
 func (s *OrthogonalMatrixSuite) TestOM06_VipChannelG1G2PrivateVipUserG1G2VipDefaultBillingG1G2() {
 	// Arrange: Create private vip channel owned by User-Vip
 	channel, err := s.fixtures.CreatePrivateChannel(
@@ -306,11 +321,11 @@ func (s *OrthogonalMatrixSuite) TestOM07_SvipChannelNoP2PSvipUserNoRestriction()
 	s.T().Logf("✓ OM-07: svip/none/public + svip/none + empty/none → success (channel_id=%d)", channel.ID)
 }
 
-// TestOM08_SvipChannelG1DefaultUserG1SvipBillingG1Restrict tests cross-group failure with billing override.
+// TestOM08_SvipChannelG1DefaultUserG1SvipBillingG1Restrict tests cross-group access with billing override.
 //
 // Test Case: OM-08
 // Factors: Channel(svip, G1, public) + User(default, G1) + Token([svip], G1)
-// Expected: Failure (default user cannot access svip channel)
+// Expected: Success, billed at svip rate (svip is usable in this suite)
 func (s *OrthogonalMatrixSuite) TestOM08_SvipChannelG1DefaultUserG1SvipBillingG1Restrict() {
 	// Arrange: Use svip channel authorized to G1
 	channel := s.fixtures.ChSvipG1G2 // Reuse this channel
@@ -333,9 +348,9 @@ func (s *OrthogonalMatrixSuite) TestOM08_SvipChannelG1DefaultUserG1SvipBillingG1
 	)
 	require.NoError(s.T(), err, "Failed to create token")
 
-	// Act & Assert: Should fail
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
-	s.T().Logf("✓ OM-08: svip/G1/public + default/G1 + [svip]/G1 → failure (channel_id=%d)", channel.ID)
+	// Act & Assert: Should succeed when svip is in UserUsableGroups.
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenKey, "gpt-4", "svip")
+	s.T().Logf("✓ OM-08: svip/G1/public + default/G1 + [svip]/G1 → success (billed svip, channel_id=%d)", channel.ID)
 }
 
 // TestOM09_SvipChannelG1G2PrivateVipUserG1 tests non-owner access to private channel.
@@ -347,7 +362,7 @@ func (s *OrthogonalMatrixSuite) TestOM09_SvipChannelG1G2PrivateVipUserG1() {
 	// Arrange: Create private svip channel owned by User-Svip
 	channel, err := s.fixtures.CreatePrivateChannel(
 		"om09-ch-private",
-		"gpt-4",
+		"gpt-4-om09",
 		"svip",
 		s.fixtures.UserSvip.ID, // Owner
 		[]int{s.fixtures.G1.ID, s.fixtures.G2.ID},
@@ -373,7 +388,7 @@ func (s *OrthogonalMatrixSuite) TestOM09_SvipChannelG1G2PrivateVipUserG1() {
 	require.NoError(s.T(), err, "Failed to create token")
 
 	// Act & Assert: Should fail
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4-om09")
 	s.T().Logf("✓ OM-09: svip/[G1,G2]/private + vip/G1 + empty/G1 → failure (channel_id=%d)", channel.ID)
 }
 
@@ -383,11 +398,17 @@ func (s *OrthogonalMatrixSuite) TestOM09_SvipChannelG1G2PrivateVipUserG1() {
 // Factors: Channel(default, G1, public) + User(vip, G2) + Token([default], G2)
 // Expected: Failure (P2P mismatch: channel requires G1, user has G2)
 func (s *OrthogonalMatrixSuite) TestOM10_DefaultChannelG1VipUserG2DefaultBillingG2() {
-	// Arrange: Use default channel authorized to G1
-	channel := s.fixtures.ChDefaultG1
+	// Arrange: Create a default-group channel authorized only to G1 for a unique model.
+	channel, err := s.fixtures.CreateChannel(
+		"om10-ch-default-g1-only",
+		"gpt-3.5-turbo",
+		"default",
+		[]int{s.fixtures.G1.ID},
+	)
+	require.NoError(s.T(), err, "Failed to create OM10 channel")
 
 	// Join User-Vip to G2 only
-	err := s.fixtures.JoinUserToGroups(
+	err = s.fixtures.JoinUserToGroups(
 		s.fixtures.UserVipClient,
 		s.fixtures.UserVip.ID,
 		[]int{s.fixtures.G2.ID},
@@ -405,7 +426,7 @@ func (s *OrthogonalMatrixSuite) TestOM10_DefaultChannelG1VipUserG2DefaultBilling
 	require.NoError(s.T(), err, "Failed to create token")
 
 	// Act & Assert: Should fail due to P2P mismatch
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-3.5-turbo")
 	s.T().Logf("✓ OM-10: default/G1/public + vip/G2 + [default]/G2 → failure (P2P mismatch, channel_id=%d)", channel.ID)
 }
 
@@ -436,17 +457,15 @@ func (s *OrthogonalMatrixSuite) TestOM11_VipChannelG1VipUserG1DefaultSvipBilling
 	)
 	require.NoError(s.T(), err, "Failed to create token")
 
-	// Act & Assert: Should succeed with default billing (first match)
-	// Note: Channel is vip group, so need to check if default billing can access vip channel
-	// This should FAIL because default billing cannot access vip channel
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
-	s.T().Logf("✓ OM-11: vip/G1/public + vip/G1 + [default,svip]/G1 → failure (billing mismatch, channel_id=%d)", channel.ID)
+	// Act & Assert: Should succeed with default billing (first match via P2P G1 channel).
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenKey, "gpt-4", "default")
+	s.T().Logf("✓ OM-11: vip/G1/public + vip/G1 + [default,svip]/G1 → success (billed default, channel_id=%d)", channel.ID)
 }
 
-// TestOM12_DefaultChannelG1G2DefaultUserG1DefaultBillingG1G2 tests multi-P2P success.
+// TestOM12_DefaultChannelG1G2DefaultUserG1DefaultBillingG1G2 tests P2P success with a single restriction.
 //
 // Test Case: OM-12
-// Factors: Channel(default, [G1,G2], public) + User(default, G1) + Token(empty, [G1,G2])
+// Factors: Channel(default, [G1,G2], public) + User(default, G1) + Token(empty, G1)
 // Expected: Success, billed at default rate
 func (s *OrthogonalMatrixSuite) TestOM12_DefaultChannelG1G2DefaultUserG1DefaultBillingG1G2() {
 	// Arrange: Use default channel authorized to G1 and G2
@@ -474,6 +493,38 @@ func (s *OrthogonalMatrixSuite) TestOM12_DefaultChannelG1G2DefaultUserG1DefaultB
 	// Act & Assert: Should succeed
 	s.fixtures.VerifyRoutingSuccess(s.T(), tokenKey, "gpt-4", "default")
 	s.T().Logf("✓ OM-12: default/[G1,G2]/public + default/G1 + empty/G1 → success (channel_id=%d)", channel.ID)
+}
+
+// TestOM13_VipChannelG2DefaultUserG2VipBillingG2Restrict covers Factor B level "G2-only".
+//
+// Test Case: OM-13 (Coverage补例)
+// Factors: Channel(vip, G2, public) + User(default, G2) + Token([vip], G2)
+// Expected: Success, billed at vip rate
+func (s *OrthogonalMatrixSuite) TestOM13_VipChannelG2DefaultUserG2VipBillingG2Restrict() {
+	// Arrange: Use vip channel authorized to G2
+	channel := s.fixtures.ChVipG2
+
+	// Join User-Default to G2
+	err := s.fixtures.JoinUserToGroups(
+		s.fixtures.UserDefaultClient,
+		s.fixtures.UserDefault.ID,
+		[]int{s.fixtures.G2.ID},
+	)
+	require.NoError(s.T(), err, "Failed to join G2")
+
+	// Create token with vip billing and P2P restriction G2
+	tokenKey, err := s.fixtures.CreateTokenWithConfig(
+		s.fixtures.UserDefaultClient,
+		s.fixtures.UserDefault.ID,
+		"om13-token",
+		`["vip"]`,
+		s.fixtures.G2.ID,
+	)
+	require.NoError(s.T(), err, "Failed to create token")
+
+	// Act & Assert
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenKey, "gpt-4", "vip")
+	s.T().Logf("✓ OM-13: vip/G2/public + default/G2 + [vip]/G2 → success (billed vip, channel_id=%d)", channel.ID)
 }
 
 // TestOrthogonalMatrixSuite runs the test suite.

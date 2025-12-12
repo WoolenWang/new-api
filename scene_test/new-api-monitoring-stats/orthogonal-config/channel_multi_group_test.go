@@ -4,7 +4,7 @@ package orthogonal_config
 import (
 	"testing"
 
-	"new-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -29,11 +29,14 @@ func (s *ChannelMultiGroupSuite) SetupSuite() {
 	require.NoError(s.T(), err, "Failed to find project root")
 
 	// Create and start test server
-	config := testutil.DefaultConfig()
-	s.server, err = testutil.NewTestServer(s.T(), projectRoot, config)
-	require.NoError(s.T(), err, "Failed to create test server")
-
-	err = s.server.Start()
+	cfg := testutil.DefaultConfig()
+	cfg.ProjectRoot = projectRoot
+	cfg.CustomEnv = map[string]string{
+		"GLOBAL_API_RATE_LIMIT_ENABLE": "false",
+		"GLOBAL_WEB_RATE_LIMIT_ENABLE": "false",
+		"CRITICAL_RATE_LIMIT_ENABLE":   "false",
+	}
+	s.server, err = testutil.StartServer(cfg)
 	require.NoError(s.T(), err, "Failed to start test server")
 
 	// Create API client
@@ -43,16 +46,29 @@ func (s *ChannelMultiGroupSuite) SetupSuite() {
 	rootUser, rootPass, err := s.client.InitializeSystem()
 	require.NoError(s.T(), err, "Failed to initialize system")
 
-	err = s.client.Login(rootUser, rootPass)
+	_, err = s.client.Login(rootUser, rootPass)
 	require.NoError(s.T(), err, "Failed to login as admin")
+
+	// Ensure orthogonal billing groups are usable in this test environment.
+	var optionResp testutil.APIResponse
+	err = s.client.PutJSON("/api/option/", map[string]any{
+		"key":   "UserUsableGroups",
+		"value": "{\"default\":\"默认分组\",\"vip\":\"vip分组\",\"svip\":\"svip分组\"}",
+	}, &optionResp)
+	require.NoError(s.T(), err, "Failed to update UserUsableGroups option")
+	require.True(s.T(), optionResp.Success, "Failed to update UserUsableGroups: %s", optionResp.Message)
+
+	// Create mock upstream server once per suite to avoid stale BaseURL in persisted channels.
+	s.upstream = testutil.NewMockUpstreamServer()
 
 	s.T().Log("✓ Test server started and system initialized")
 }
 
 // SetupTest creates fresh fixtures for each test.
 func (s *ChannelMultiGroupSuite) SetupTest() {
-	// Create mock upstream server
-	s.upstream = testutil.NewMockUpstreamServer()
+	if s.upstream != nil {
+		s.upstream.Reset()
+	}
 
 	// Create orthogonal fixtures
 	s.fixtures = testutil.NewOrthogonalFixtures(s.T(), s.client, s.upstream)
@@ -66,14 +82,14 @@ func (s *ChannelMultiGroupSuite) SetupTest() {
 
 // TearDownTest cleans up after each test.
 func (s *ChannelMultiGroupSuite) TearDownTest() {
-	if s.upstream != nil {
-		s.upstream.Close()
-	}
 	s.T().Log("✓ Test cleanup completed")
 }
 
 // TearDownSuite stops the test server.
 func (s *ChannelMultiGroupSuite) TearDownSuite() {
+	if s.upstream != nil {
+		s.upstream.Close()
+	}
 	if s.server != nil {
 		s.server.Stop()
 	}
@@ -84,8 +100,10 @@ func (s *ChannelMultiGroupSuite) TearDownSuite() {
 //
 // Test Case: OC-01
 // Scenario: Ch-X (sys_group=vip) is authorized to [G1, G2]
-//           User-A (sys_group=vip) joins G1
-//           User-A uses a token with no restrictions
+//
+//	User-A (sys_group=vip) joins G1
+//	User-A uses a token with no restrictions
+//
 // Expected: Routing succeeds, billing under vip group
 func (s *ChannelMultiGroupSuite) TestOC01_ChannelMultiGroupAuthorization() {
 	// Arrange: Create a channel authorized to both G1 and G2
@@ -120,8 +138,10 @@ func (s *ChannelMultiGroupSuite) TestOC01_ChannelMultiGroupAuthorization() {
 //
 // Test Case: OC-02
 // Scenario: Ch-X (sys_group=vip) is authorized to [G1, G2, G3]
-//           User-Vip joins G2 only
-//           Request with no token P2P restriction
+//
+//	User-Vip joins G2 only
+//	Request with no token P2P restriction
+//
 // Expected: Routing succeeds (matches G2)
 func (s *ChannelMultiGroupSuite) TestOC02_UserMatchingMultipleAuthGroups() {
 	// Arrange: Create a channel authorized to G1, G2, G3
@@ -156,8 +176,10 @@ func (s *ChannelMultiGroupSuite) TestOC02_UserMatchingMultipleAuthGroups() {
 //
 // Test Case: OC-03
 // Scenario: Ch-X (sys_group=default) is authorized to [G1]
-//           User-Vip (sys_group=vip) joins G1
-//           User-Vip uses token with billing_groups=["default"]
+//
+//	User-Vip (sys_group=vip) joins G1
+//	User-Vip uses token with billing_groups=["default"]
+//
 // Expected: Routing succeeds (system group downgrade + P2P match), billed under default
 func (s *ChannelMultiGroupSuite) TestOC03_CrossSystemGroupWithP2P() {
 	// Arrange: Create a default-group channel authorized to G1
@@ -192,8 +214,10 @@ func (s *ChannelMultiGroupSuite) TestOC03_CrossSystemGroupWithP2P() {
 //
 // Test Case: OC-04
 // Scenario: Ch-X (sys_group=vip) is authorized to [G1], is_private=false
-//           User-Vip joins both G1 and G2
-//           Token has no P2P restriction
+//
+//	User-Vip joins both G1 and G2
+//	Token has no P2P restriction
+//
 // Expected: Routing succeeds (matches G1, ignores G2)
 func (s *ChannelMultiGroupSuite) TestOC04_ChannelAuthorizationConflict() {
 	// Arrange: Create a vip channel authorized to G1 only
@@ -232,45 +256,69 @@ func (s *ChannelMultiGroupSuite) TestOC04_ChannelAuthorizationConflict() {
 //
 // Test Case: OC-05
 // Scenario: Ch-X (sys_group=vip, is_private=true) is authorized to [G1, G2]
-//           User-B (sys_group=vip via token) joins G1
-//           User-B is NOT the channel owner
+//
+//	User-B (sys_group=vip via token) joins G1
+//	User-B is NOT the channel owner
+//
 // Expected: Routing fails (private channels only accessible by owner)
 func (s *ChannelMultiGroupSuite) TestOC05_PrivateChannelMultiGroupInvalid() {
-	// Arrange: Create a private channel owned by User-Vip, authorized to G1 and G2
+	// Arrange: Create a private channel owned by User-Vip, authorized to G1 and G2.
+	// Keep model as gpt-4 to use existing price config, and disable baseline vip/G1
+	// channel so non-owner failure comes from private access control (not masking).
+	model := "gpt-4"
 	chPrivate, err := s.fixtures.CreatePrivateChannel(
 		"oc05-ch-private",
-		"gpt-4",
+		model,
 		"vip",
 		s.fixtures.UserVip.ID, // Owner
 		[]int{s.fixtures.G1.ID, s.fixtures.G2.ID},
 	)
 	require.NoError(s.T(), err, "Failed to create private channel")
 
-	// Create User-Default as vip (via token) and join G1
+	// Disable baseline vip channel authorized to G1 for gpt-4 so it can't satisfy non-owner routing.
+	baselineVipG1 := s.fixtures.ChVipG1
+	baselineVipG1.Status = 2 // Disabled
+	err = s.client.UpdateChannel(baselineVipG1)
+	require.NoError(s.T(), err, "Failed to disable baseline vip/G1 channel")
+
+	// Non-owner user joins G1.
 	err = s.fixtures.JoinUserToGroups(s.fixtures.UserDefaultClient, s.fixtures.UserDefault.ID, []int{s.fixtures.G1.ID})
 	require.NoError(s.T(), err, "Failed to join G1")
 
-	// Create token for User-Default with billing group "vip"
+	// Create token for non-owner with billing group "vip" and P2P restriction G1.
 	tokenKey, err := s.fixtures.CreateTokenWithConfig(
 		s.fixtures.UserDefaultClient,
 		s.fixtures.UserDefault.ID,
 		"oc05-token",
 		`["vip"]`, // Force billing to vip
-		0,
+		s.fixtures.G1.ID,
 	)
 	require.NoError(s.T(), err, "Failed to create token")
 
-	// Act & Assert: Should fail because User-Default is not the owner
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, "gpt-4")
-	s.T().Logf("✓ OC-05: Private channel authorized to [G1, G2], non-owner in G1 → failure (channel_id=%d)", chPrivate.ID)
+	// Owner should succeed for the same unique model.
+	ownerToken, err := s.fixtures.CreateTokenWithConfig(
+		s.fixtures.UserVipClient,
+		s.fixtures.UserVip.ID,
+		"oc05-owner-token",
+		"",
+		0,
+	)
+	require.NoError(s.T(), err, "Failed to create owner token")
+	s.fixtures.VerifyRoutingSuccess(s.T(), ownerToken, model, "vip")
+
+	// Non-owner should fail because the channel is private.
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenKey, model)
+	s.T().Logf("✓ OC-05: Private channel authorized to [G1, G2] → owner success, non-owner in G1 failure (channel_id=%d)", chPrivate.ID)
 }
 
 // TestOC06_ChannelStatsAggregationByGroup tests channel statistics aggregation across groups.
 //
 // Test Case: OC-06
 // Scenario: Ch-X is authorized to [G1, G2]
-//           User-A (in G1) makes 10 requests
-//           User-B (in G2) makes 20 requests
+//
+//	User-A (in G1) makes 10 requests
+//	User-B (in G2) makes 20 requests
+//
 // Expected: Both G1 and G2 statistics should include Ch-X data
 //
 // Note: This test focuses on routing success; actual statistics validation
@@ -327,14 +375,16 @@ func (s *ChannelMultiGroupSuite) TestOC06_ChannelStatsAggregationByGroup() {
 //
 // Test Case: OC-07
 // Scenario: Ch-X is authorized to [G1, G2]
-//           User-A (in G1) and User-B (in G2) can both access Ch-X
-//           Ch-X is disabled
+//
+//	User-A (in G1) and User-B (in G2) can both access Ch-X
+//	Ch-X is disabled
+//
 // Expected: Both users can no longer access Ch-X
 func (s *ChannelMultiGroupSuite) TestOC07_MultiGroupChannelDisable() {
 	// Arrange: Create a multi-group channel
 	chToDisable, err := s.fixtures.CreateChannel(
 		"oc07-ch-to-disable",
-		"gpt-4",
+		"gpt-3.5-turbo",
 		"vip",
 		[]int{s.fixtures.G1.ID, s.fixtures.G2.ID},
 	)
@@ -367,8 +417,8 @@ func (s *ChannelMultiGroupSuite) TestOC07_MultiGroupChannelDisable() {
 	require.NoError(s.T(), err, "Failed to create token for G2")
 
 	// Verify both users can access the channel before disabling
-	s.fixtures.VerifyRoutingSuccess(s.T(), tokenG1, "gpt-4", "vip")
-	s.fixtures.VerifyRoutingSuccess(s.T(), tokenG2, "gpt-4", "vip")
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenG1, "gpt-3.5-turbo", "vip")
+	s.fixtures.VerifyRoutingSuccess(s.T(), tokenG2, "gpt-3.5-turbo", "vip")
 
 	// Act: Disable the channel
 	chToDisable.Status = 2 // 2 = Disabled
@@ -376,8 +426,8 @@ func (s *ChannelMultiGroupSuite) TestOC07_MultiGroupChannelDisable() {
 	require.NoError(s.T(), err, "Failed to disable channel")
 
 	// Assert: Both users should no longer be able to access the channel
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenG1, "gpt-4")
-	s.fixtures.VerifyRoutingFailure(s.T(), tokenG2, "gpt-4")
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenG1, "gpt-3.5-turbo")
+	s.fixtures.VerifyRoutingFailure(s.T(), tokenG2, "gpt-3.5-turbo")
 
 	s.T().Logf("✓ OC-07: Multi-group channel disabled → both G1 and G2 users cannot access (channel_id=%d)", chToDisable.ID)
 }

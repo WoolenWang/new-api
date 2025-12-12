@@ -20,10 +20,13 @@ type MockJudgeLLM struct {
 	mu           sync.Mutex
 
 	// Response configuration
-	ResponseDelay    time.Duration
-	SimilarityScore  float64
-	IsPass           bool
-	Reason           string
+	ResponseDelay   time.Duration
+	SimilarityScore float64
+	IsPass          bool
+	Reason          string
+	// RawContent, when set, is returned directly as the judge message content.
+	// This enables boundary tests for invalid/non-JSON judge outputs.
+	RawContent       *string
 	ShouldFail       bool
 	FailureErrorType string
 	FailureMessage   string
@@ -103,6 +106,11 @@ func (m *MockJudgeLLM) handleRequest(w http.ResponseWriter, r *http.Request) {
 		Reason:          m.Reason,
 	}
 
+	content := toJSONString(response)
+	if m.RawContent != nil {
+		content = *m.RawContent
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -115,7 +123,7 @@ func (m *MockJudgeLLM) handleRequest(w http.ResponseWriter, r *http.Request) {
 				"index": 0,
 				"message": map[string]interface{}{
 					"role":    "assistant",
-					"content": toJSONString(response),
+					"content": content,
 				},
 				"finish_reason": "stop",
 			},
@@ -136,6 +144,16 @@ func (m *MockJudgeLLM) SetEvaluationResult(similarityScore float64, isPass bool,
 	m.SimilarityScore = similarityScore
 	m.IsPass = isPass
 	m.Reason = reason
+	m.RawContent = nil
+	m.ShouldFail = false
+}
+
+// SetResponse configures the judge LLM to return a raw content string.
+// modelName and testType are accepted for compatibility with older tests.
+func (m *MockJudgeLLM) SetResponse(modelName, testType, rawContent string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RawContent = &rawContent
 	m.ShouldFail = false
 }
 
@@ -180,6 +198,7 @@ func (m *MockJudgeLLM) Reset() {
 	m.SimilarityScore = 95.0
 	m.IsPass = true
 	m.Reason = "输出风格与基准高度一致"
+	m.RawContent = nil
 	m.ShouldFail = false
 	m.FailureErrorType = ""
 	m.FailureMessage = ""

@@ -174,6 +174,8 @@ func getChannelStatsWithCache(channelID int, modelName string, startTime, endTim
 
 	// 聚合所有数据源
 	result := aggregateAllSources(l1Data, l2Data, dbStats)
+	// 计算时间范围内的最大停服占比（窗口级），用于边界场景展示。
+	result.DowntimePercent = computeMaxDowntimePercent(dbStats)
 
 	return result, nil
 }
@@ -250,20 +252,45 @@ func aggregateAllSources(l1, l2 *service.ChannelStatsSnapshot, dbStats []*model.
 	return result
 }
 
+// computeMaxDowntimePercent computes the maximum downtime percentage among DB windows.
+// This matches the window-level semantics in the design/tests.
+func computeMaxDowntimePercent(dbStats []*model.ChannelStatistics) float64 {
+	windowSeconds := common.GetEnvOrDefault("CHANNEL_STATS_WINDOW_SECONDS", 900)
+	if windowSeconds <= 0 {
+		windowSeconds = 900
+	}
+	maxPercent := 0.0
+	for _, stat := range dbStats {
+		if stat.DowntimeSeconds <= 0 {
+			continue
+		}
+		percent := float64(stat.DowntimeSeconds) / float64(windowSeconds) * 100.0
+		if percent > maxPercent {
+			maxPercent = percent
+		}
+	}
+	return maxPercent
+}
+
 // ChannelStatsData 聚合后的统计数据
 type ChannelStatsData struct {
-	RequestCount   int64
-	FailCount      int64
-	TotalTokens    int64
-	TotalQuota     int64
-	TotalLatencyMs int64
-	StreamReqCount int64
-	CacheHitCount  int64
-	UniqueUsers    int
+	RequestCount    int64
+	FailCount       int64
+	TotalTokens     int64
+	TotalQuota      int64
+	TotalLatencyMs  int64
+	StreamReqCount  int64
+	CacheHitCount   int64
+	UniqueUsers     int
+	DowntimePercent float64
 }
 
 // buildStatsResponse 构建响应数据
 func buildStatsResponse(channel *model.Channel, data *ChannelStatsData, period, modelName string) *ChannelStatsSummaryResponse {
+	downtimePercent := data.DowntimePercent
+	if downtimePercent == 0 {
+		downtimePercent = channel.DowntimePercentage
+	}
 	// 计算派生指标
 	avgLatency := 0.0
 	if data.RequestCount > 0 {
@@ -324,6 +351,7 @@ func buildStatsResponse(channel *model.Channel, data *ChannelStatsData, period, 
 		TPM:             tpm,
 		RPM:             rpm,
 		UniqueUsers:     data.UniqueUsers,
+		DowntimePercent: downtimePercent,
 		QueryTime:       time.Now().Unix(),
 	}
 
@@ -338,17 +366,18 @@ type ChannelStatsSummaryResponse struct {
 	Period          string  `json:"period"`
 	RequestCount    int64   `json:"request_count"`
 	FailCount       int64   `json:"fail_count"`
-	FailRate        float64 `json:"fail_rate"`         // %
-	TotalTokens     int64   `json:"total_tokens"`      // 总 tokens
-	TotalQuota      int64   `json:"total_quota"`       // 总额度
-	AvgLatencyMs    float64 `json:"avg_latency_ms"`    // ms
-	AvgResponseTime float64 `json:"avg_response_time"` // ms, 为兼容测试的别名
-	CacheHitRate    float64 `json:"cache_hit_rate"`    // %
-	StreamReqRatio  float64 `json:"stream_req_ratio"`  // %
-	TPM             int64   `json:"tpm"`               // Tokens per minute
-	RPM             int64   `json:"rpm"`               // Requests per minute
-	UniqueUsers     int     `json:"unique_users"`      // 去重用户数
-	QueryTime       int64   `json:"query_time"`        // Unix timestamp
+	FailRate        float64 `json:"fail_rate"`           // %
+	TotalTokens     int64   `json:"total_tokens"`        // 总 tokens
+	TotalQuota      int64   `json:"total_quota"`         // 总额度
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`      // ms
+	AvgResponseTime float64 `json:"avg_response_time"`   // ms, 为兼容测试的别名
+	CacheHitRate    float64 `json:"cache_hit_rate"`      // %
+	StreamReqRatio  float64 `json:"stream_req_ratio"`    // %
+	TPM             int64   `json:"tpm"`                 // Tokens per minute
+	RPM             int64   `json:"rpm"`                 // Requests per minute
+	UniqueUsers     int     `json:"unique_users"`        // 去重用户数
+	DowntimePercent float64 `json:"downtime_percentage"` // %
+	QueryTime       int64   `json:"query_time"`          // Unix timestamp
 }
 
 // GetChannelCurrentStats 获取渠道当前实时统计（从channels表）
