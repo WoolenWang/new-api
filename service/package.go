@@ -14,7 +14,17 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+// HandlePackage 处理套餐相关逻辑（旧实现，使用固定自然时间窗口）
+// 注意：此函数为历史遗留逻辑，采用固定整点对齐窗口（非滑动窗口）
+// 当 PackageEnabled=true 时，应使用 PreConsumeQuota 中的新实现（滑动窗口 + Lua 脚本）
+// 计划在优化版套餐系统完全稳定后下线此函数
+// 相关设计文档：docs/NewAPI-支持多种包月套餐-优化版.md
 func HandlePackage(c *gin.Context, channel *model.Channel) bool {
+	// 【关键】当新的套餐系统启用时，跳过旧逻辑，由 PreConsumeQuota 统一处理
+	if common.PackageEnabled {
+		return false // 返回 false 表示不拦截，继续走后续的 PreConsumeQuota 流程
+	}
+
 	userId := c.GetInt("id")
 	var p2pGroupId *int
 	// 从上下文中解析 Token 限制的 P2P 分组（当前实现仅支持单一 p2p_group_id）

@@ -14,7 +14,14 @@ import (
 // Query params:
 //   - p2p_group_id: P2P分组ID (可选, 0=全局套餐, >0=指定分组, -1=所有)
 //   - status: 状态过滤 (可选, 0=全部, 1=可用, 2=下架)
+//
+// 权限规则：
+//   - 管理员：可以查看所有套餐（全局 + 所有P2P分组）
+//   - 普通用户：只能查看全局套餐 + 自己有权访问的P2P分组套餐
 func GetPackages(c *gin.Context) {
+	userId := c.GetInt("id")
+	userRole := c.GetInt("role")
+
 	// 解析 p2p_group_id (默认 -1 表示不过滤)
 	p2pGroupId := -1
 	if groupIdStr := c.Query("p2p_group_id"); groupIdStr != "" {
@@ -31,7 +38,45 @@ func GetPackages(c *gin.Context) {
 		}
 	}
 
-	packages, err := model.GetPackages(p2pGroupId, status)
+	// 【P1-3 改动】权限过滤：非管理员只能查看自己有权访问的套餐
+	var packages []*model.Package
+	var err error
+
+	if userRole == common.RoleRootUser {
+		// 管理员：查看所有套餐
+		packages, err = model.GetPackages(p2pGroupId, status)
+	} else {
+		// 普通用户：只能查看全局套餐 + 自己的P2P分组套餐
+		// 获取用户的所有活跃P2P分组
+		userP2PGroupIds, _ := model.GetUserActiveP2PGroupIds(userId)
+
+		if p2pGroupId == 0 {
+			// 只查询全局套餐
+			packages, err = model.GetPackages(0, status)
+		} else if p2pGroupId > 0 {
+			// 查询指定分组套餐 - 需要验证权限
+			// 检查用户是否有权访问该分组
+			hasAccess := false
+			for _, gid := range userP2PGroupIds {
+				if gid == p2pGroupId {
+					hasAccess = true
+					break
+				}
+			}
+
+			if !hasAccess {
+				common.ApiError(c, common.NewError("permission denied: you don't have access to this P2P group"))
+				return
+			}
+
+			packages, err = model.GetPackages(p2pGroupId, status)
+		} else {
+			// p2pGroupId == -1：查询所有可访问的套餐
+			// 包括全局套餐 + 用户的P2P分组套餐
+			packages, err = model.GetPackagesForUser(userId, userP2PGroupIds, status)
+		}
+	}
+
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -59,8 +104,8 @@ func GetPackageById(c *gin.Context) {
 // CreatePackage 创建套餐模板
 // Request body: dto.PackageCreateRequest
 // Permissions:
-//   - Admin: 可以创建任意优先级(1-21)的套餐
-//   - P2P Owner: 可以创建优先级1-10的套餐（仅限自己的分组）
+//   - Admin: 可以创建全局套餐（p2p_group_id=0），优先级 1-21
+//   - P2P Owner: 可以创建分组套餐（p2p_group_id>0），优先级**强制为 11**
 func CreatePackage(c *gin.Context) {
 	var req dto.PackageCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -223,4 +268,25 @@ func DeletePackage(c *gin.Context) {
 	}
 
 	common.ApiSuccess(c, gin.H{"message": "套餐已成功删除"})
+}
+
+// GetPackageCacheStats 获取套餐缓存统计信息（管理员接口）
+// 用于监控三级缓存的性能
+func GetPackageCacheStats(c *gin.Context) {
+	cache := model.GetPackageCache()
+	stats := cache.GetCacheStats()
+
+	response := gin.H{
+		"l1_hits":       stats["l1_hits"],
+		"l1_misses":     stats["l1_misses"],
+		"l1_hit_rate":   fmt.Sprintf("%.2f%%", cache.GetL1HitRate()*100),
+		"l2_hits":       stats["l2_hits"],
+		"l2_misses":     stats["l2_misses"],
+		"l2_hit_rate":   fmt.Sprintf("%.2f%%", cache.GetL2HitRate()*100),
+		"db_hits":       stats["db_hits"],
+		"total_queries": stats["l1_hits"] + stats["l1_misses"],
+		"cache_enabled": common.RedisEnabled,
+	}
+
+	common.ApiSuccess(c, response)
 }

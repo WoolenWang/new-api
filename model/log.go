@@ -38,6 +38,12 @@ type Log struct {
 	Group            string `json:"group" gorm:"index"`
 	Ip               string `json:"ip" gorm:"index;default:''"`
 	Other            string `json:"other"`
+
+	// 【新增】套餐相关字段（用于区分计费来源）
+	// 相关设计：docs/NewAPI-支持多种包月套餐-优化版.md 第 11.2 节
+	BillingType    string `json:"billing_type" gorm:"default:'balance';index"` // 计费类型: "balance"（余额） | "package"（套餐）
+	PackageId      int    `json:"package_id" gorm:"default:0;index"`           // 使用的套餐模板 ID（0 = 使用余额）
+	SubscriptionId int    `json:"subscription_id" gorm:"default:0;index"`      // 使用的订阅 ID（0 = 使用余额）
 }
 
 // don't use iota, avoid change log type value
@@ -157,6 +163,11 @@ type RecordConsumeLogParams struct {
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
 	Other            map[string]interface{} `json:"other"`
+
+	// 【新增】套餐相关参数
+	BillingType    string `json:"billing_type"`    // "balance" | "package"
+	PackageId      int    `json:"package_id"`      // 套餐模板 ID
+	SubscriptionId int    `json:"subscription_id"` // 订阅 ID
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -198,6 +209,11 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			return ""
 		}(),
 		Other: otherStr,
+
+		// 【新增】套餐相关字段
+		BillingType:    params.BillingType,
+		PackageId:      params.PackageId,
+		SubscriptionId: params.SubscriptionId,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

@@ -42,19 +42,42 @@ func (s *Subscription) BeforeCreate(tx *gorm.DB) (err error) {
 }
 
 func CreateSubscription(sub *Subscription) error {
-	return DB.Create(sub).Error
+	err := DB.Create(sub).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】创建成功后，预填充缓存
+	cache := GetPackageCache()
+	cache.setSubscriptionToL1(sub.Id, sub)
+	if common.RedisEnabled {
+		cache.setSubscriptionToL2(sub.Id, sub)
+	}
+
+	return nil
 }
 
-// GetSubscriptionById retrieves a subscription by its ID
+// GetSubscriptionById retrieves a subscription by its ID (使用三级缓存)
 func GetSubscriptionById(id int) (*Subscription, error) {
-	var sub Subscription
-	err := DB.First(&sub, id).Error
-	return &sub, err
+	// 使用三级缓存（L1 内存 + L2 Redis + L3 DB）
+	return GetPackageCache().GetSubscriptionByIDCached(id, false)
+}
+
+// GetSubscriptionByIdFromDB 强制从 DB 读取并刷新缓存
+func GetSubscriptionByIdFromDB(id int) (*Subscription, error) {
+	return GetPackageCache().GetSubscriptionByIDCached(id, true)
 }
 
 // UpdateSubscriptionStatus updates the status of a subscription
 func UpdateSubscriptionStatus(id int, status string) error {
-	return DB.Model(&Subscription{}).Where("id = ?", id).Update("status", status).Error
+	err := DB.Model(&Subscription{}).Where("id = ?", id).Update("status", status).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】更新成功后，使缓存失效
+	GetPackageCache().InvalidateSubscription(id)
+	return nil
 }
 
 // GetUserSubscriptions retrieves all subscriptions for a user, ordered by end_time DESC
@@ -74,8 +97,18 @@ func GetUserSubscriptions(userId int, status string) ([]*Subscription, error) {
 // IncrementSubscriptionConsumed atomically increments the total_consumed field
 // This is the same as UpdateConsumedQuota, provided for API consistency
 func IncrementSubscriptionConsumed(id int, quota int64) error {
-	return DB.Model(&Subscription{}).Where("id = ?", id).
+	err := DB.Model(&Subscription{}).Where("id = ?", id).
 		Update("total_consumed", gorm.Expr("total_consumed + ?", quota)).Error
+
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】更新消耗量后，使缓存失效
+	// 注意：由于 total_consumed 会频繁更新，缓存失效可能导致缓存频繁穿透
+	// 但为保证数据一致性，仍需失效缓存
+	GetPackageCache().InvalidateSubscription(id)
+	return nil
 }
 
 // GetUserActiveSubscriptions retrieves active subscriptions for a user
@@ -119,12 +152,26 @@ func (s *Subscription) Activate() error {
 	s.EndTime = &endTime
 	s.Status = SubscriptionStatusActive
 
-	return DB.Save(s).Error
+	err = DB.Save(s).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】激活后使缓存失效
+	GetPackageCache().InvalidateSubscription(s.Id)
+	return nil
 }
 
 // UpdateConsumedQuota atomically increments the total_consumed field
 func (s *Subscription) UpdateConsumedQuota(amount int64) error {
-	return DB.Model(s).Update("total_consumed", gorm.Expr("total_consumed + ?", amount)).Error
+	err := DB.Model(s).Update("total_consumed", gorm.Expr("total_consumed + ?", amount)).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】更新消耗量后，使缓存失效
+	GetPackageCache().InvalidateSubscription(s.Id)
+	return nil
 }
 
 // CountActiveSubscriptions counts the number of active subscriptions for a specific package

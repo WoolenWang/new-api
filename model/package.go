@@ -57,21 +57,53 @@ func (p *Package) BeforeUpdate(tx *gorm.DB) (err error) {
 }
 
 func GetPackageByID(id int) (*Package, error) {
-	var pkg Package
-	err := DB.First(&pkg, id).Error
-	return &pkg, err
+	// 使用三级缓存（L1 内存 + L2 Redis + L3 DB）
+	// forceDB=false：优先从缓存读取
+	return GetPackageCache().GetPackageByIDCached(id, false)
+}
+
+// GetPackageByIDFromDB 强制从 DB 读取并刷新缓存
+// 用于需要最新数据的场景（如更新后的验证）
+func GetPackageByIDFromDB(id int) (*Package, error) {
+	return GetPackageCache().GetPackageByIDCached(id, true)
 }
 
 func CreatePackage(pkg *Package) error {
-	return DB.Create(pkg).Error
+	err := DB.Create(pkg).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】创建成功后，预填充缓存
+	cache := GetPackageCache()
+	cache.setPackageToL1(pkg.Id, pkg)
+	if common.RedisEnabled {
+		cache.setPackageToL2(pkg.Id, pkg)
+	}
+
+	return nil
 }
 
 func (p *Package) Update() error {
-	return DB.Save(p).Error
+	err := DB.Save(p).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】更新成功后，使缓存失效
+	GetPackageCache().InvalidatePackage(p.Id)
+	return nil
 }
 
 func DeletePackage(id int) error {
-	return DB.Delete(&Package{}, id).Error
+	err := DB.Delete(&Package{}, id).Error
+	if err != nil {
+		return err
+	}
+
+	// 【缓存一致性】删除成功后，使缓存失效
+	GetPackageCache().InvalidatePackage(id)
+	return nil
 }
 
 // GetPackages retrieves packages filtered by p2pGroupId and status
@@ -164,4 +196,35 @@ func CalculateEndTime(startTime int64, pkg *Package) (int64, error) {
 	}
 
 	return endTime.Unix(), nil
+}
+
+// GetUserActiveP2PGroupIds 获取用户的活跃P2P分组ID列表
+// 这是对 GetUserActiveGroupIds 的封装，用于套餐权限过滤
+func GetUserActiveP2PGroupIds(userId int) ([]int, error) {
+	return GetUserActiveGroupIds(userId)
+}
+
+// GetPackagesForUser 获取用户可访问的所有套餐
+// 包括全局套餐（p2p_group_id=0）+ 用户加入的P2P分组套餐
+// 用于普通用户查询可见套餐列表
+func GetPackagesForUser(userId int, userP2PGroupIds []int, status int) ([]*Package, error) {
+	var packages []*Package
+	query := DB.Model(&Package{})
+
+	// 过滤状态
+	if status > 0 {
+		query = query.Where("status = ?", status)
+	}
+
+	// 权限过滤：全局套餐 OR 用户的P2P分组套餐
+	if len(userP2PGroupIds) > 0 {
+		// 用户有P2P分组：返回全局套餐 + 这些分组的套餐
+		query = query.Where("p2p_group_id = 0 OR p2p_group_id IN (?)", userP2PGroupIds)
+	} else {
+		// 用户没有P2P分组：只返回全局套餐
+		query = query.Where("p2p_group_id = 0")
+	}
+
+	err := query.Order("priority DESC, id ASC").Find(&packages).Error
+	return packages, err
 }

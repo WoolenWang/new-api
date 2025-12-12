@@ -288,7 +288,7 @@ func (h *OrthogonalPackageHelper) SimulateChatRequest(
 	h.t.Helper()
 
 	// 获取套餐配置
-	pkg, err := model.GetPackageById(packageID)
+	pkg, err := model.GetPackageByID(packageID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get package: %w", err)
 	}
@@ -446,7 +446,7 @@ func (h *OrthogonalPackageHelper) CleanupOrthogonalData(
 			periods := []string{"rpm", "hourly", "4hourly", "daily", "weekly"}
 			for _, period := range periods {
 				key := GetWindowKey(subID, period)
-				h.redisMock.Delete(key)
+				h.redisMock.Server.Del(key)
 			}
 		}
 	}

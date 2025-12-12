@@ -80,6 +80,8 @@ func teardownTest(rm *testutil.RedisMock) {
 //   - end_time=now+3600
 //   - consumed=estimatedQuota
 //   - Lua返回status=1
+//
+// =========================================================================
 // ============================================================================
 func TestSW01_FirstRequest_CreatesWindow(t *testing.T) {
 	t.Log("SW-01: Testing first request creates sliding window")
@@ -124,6 +126,7 @@ func TestSW01_FirstRequest_CreatesWindow(t *testing.T) {
 // 预期结果:
 //   - consumed=5.5M (2.5M + 3M)
 //   - 窗口时间不变
+==============
 //   - 两次请求都成功
 // ============================================================================
 func TestSW02_WithinWindow_Accumulates(t *testing.T) {
@@ -170,6 +173,8 @@ func TestSW02_WithinWindow_Accumulates(t *testing.T) {
 // 预期结果:
 //   - consumed=8M (第一次请求后)
 //   - 第二次请求前consumed不变
+=====================
+func
 //   - 第二次请求返回status=0 (失败)
 // ============================================================================
 func TestSW03_Exceeded_Rejects(t *testing.T) {
@@ -211,6 +216,7 @@ func TestSW03_Exceeded_Rejects(t *testing.T) {
 // 预期结果:
 //   - 旧窗口被DEL
 //   - 创建新窗口
+======================
 //   - 新start_time=now
 //   - 新consumed=quota (重新开始计数)
 // ============================================================================
@@ -262,6 +268,7 @@ func TestSW04_Expired_Rebuilds(t *testing.T) {
 // 优先级: P1
 // 测试场景: 窗口TTL过期后，Key被Redis自动删除
 // 预期结果:
+_TTL_AutoCleanup(t *
 //   - Key被Redis自动删除
 //   - 下次请求创建新窗口
 // ============================================================================
@@ -306,6 +313,8 @@ func TestSW05_TTL_AutoCleanup(t *testing.T) {
 // 优先级: P0
 // 测试场景: RPM限制按请求数计数，而非quota
 // 预期结果:
+SpecialHandling(t *testing.T) {
+
 //   - RPM窗口consumed=请求数（非quota）
 //   - 第61次请求返回超限
 // ============================================================================
@@ -350,6 +359,7 @@ func TestSW06_RPM_SpecialHandling(t *testing.T) {
 // 优先级: P0
 // 测试场景: 同时配置多个时间维度的限额，各窗口独立创建和滑动
 // 预期结果:
+ng(t *testing.T
 //   - 三个窗口独立创建
 //   - start_time各不相同
 //   - 每个窗口独立滑动
@@ -374,8 +384,8 @@ func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 		},
 	}
 
-	// 记录第一次请求的时间
-	time1 := time.Now().Unix()
+	// 记录第一次请求的时间（用于验证窗口时间范围）
+	_ = time.Now().Unix() // 忽略未使用的变量
 
 	// Act: 第一次请求，创建所有窗口
 	quota1 := int64(5000000)
@@ -426,6 +436,8 @@ func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 // SW-08: 4小时窗口跨度
 // 测试ID: SW-08
 // 优先级: P1
+g.T) {
+	t.Log("SW-08:
 // 测试场景: 验证窗口可以跨越日期边界
 // 预期结果:
 //   - 窗口时间正确（22:00 ~ 次日02:00）
@@ -479,6 +491,8 @@ func TestSW08_FourHourly_CrossesMidnight(t *testing.T) {
 // SW-09: 无请求不创建Key
 // 测试ID: SW-09
 // 优先级: P1
+.T) {
+	t.Log("SW-09: Testing no Redis keys
 // 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
 // 预期结果:
 //   - 无任何窗口Key存在
@@ -511,6 +525,7 @@ func TestSW09_NoRequest_NoKeyCreated(t *testing.T) {
 // SW-10: Lua脚本原子性（并发测试）
 // 测试ID: SW-10
 // 优先级: P0
+ing Lua script atomicity under co
 // 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
 // 预期结果:
 //   - consumed精确=成功请求数×0.2M

@@ -8,10 +8,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
-
-	"scene_test/testutil"
 )
 
 // ============ 测试套件定义 ============
@@ -28,7 +27,7 @@ func (s *OrthogonalMatrixSuite) SetupSuite() {
 	s.T().Log("========== 正交矩阵测试套件开始 ==========")
 
 	// 启动测试服务器
-	cfg := testutil.DefaultServerConfig()
+	cfg := testutil.DefaultConfig()
 	cfg.Verbose = true // 启用详细日志
 
 	server, err := testutil.StartServer(cfg)
@@ -40,7 +39,7 @@ func (s *OrthogonalMatrixSuite) SetupSuite() {
 	s.T().Logf("测试服务器已启动: %s", s.server.BaseURL)
 
 	// 初始化Redis Mock（如果需要）
-	// s.redisMock = testutil.NewRedisMock(s.T())
+	// s.redisMock = testutil.StartRedisMock(s.T())
 }
 
 // TearDownSuite 在整个测试套件结束后执行一次
@@ -533,13 +532,6 @@ func (s *OrthogonalMatrixSuite) executePackageRequest(tc OrthogonalTestCase, ctx
 	t.Helper()
 	t.Logf("  [Execute] 发起API请求...")
 
-	// 构造请求额度
-	requestQuota := int64(2500000) // 默认请求2.5M quota
-	if tc.WindowState == "active_exceeded" {
-		// 超限场景：请求额度超过剩余限额
-		requestQuota = 2000000 // 请求2M，但窗口只剩1M，会超限
-	}
-
 	// 构建请求参数
 	chatRequest := testutil.ChatCompletionRequest{
 		Model: "gpt-4",
@@ -550,7 +542,7 @@ func (s *OrthogonalMatrixSuite) executePackageRequest(tc OrthogonalTestCase, ctx
 	}
 
 	// 发起HTTP请求
-	client := testutil.NewAPIClient(ctx.Server.BaseURL, ctx.TokenKey)
+	client := testutil.NewAPIClientWithToken(ctx.Server.BaseURL, ctx.TokenKey)
 	resp, err := client.ChatCompletion(chatRequest)
 
 	// 注意：这里简化处理，实际测试中需要检查err
@@ -682,12 +674,12 @@ func (s *OrthogonalMatrixSuite) cleanupOrthogonalTestCase(tc OrthogonalTestCase,
 		periods := []string{"rpm", "hourly", "4hourly", "daily", "weekly"}
 		for _, period := range periods {
 			key := testutil.GetWindowKey(ctx.SubscriptionID, period)
-			ctx.RedisMock.Delete(key)
+			ctx.RedisMock.Server.Del(key)
 		}
 		if ctx.SecondSubID > 0 {
 			for _, period := range periods {
 				key := testutil.GetWindowKey(ctx.SecondSubID, period)
-				ctx.RedisMock.Delete(key)
+				ctx.RedisMock.Server.Del(key)
 			}
 		}
 	}

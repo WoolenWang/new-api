@@ -45,8 +45,8 @@ func SimulateWindowInRedis(mr *miniredis.Miniredis, subscriptionId int, period s
 // GetWindowConsumedFromRedis 从Redis获取窗口consumed值
 func GetWindowConsumedFromRedis(t *testing.T, mr *miniredis.Miniredis, subscriptionId int, period string) int64 {
 	key := FormatWindowKey(subscriptionId, period)
-	consumedStr, err := mr.HGet(key, "consumed")
-	if err != nil {
+	consumedStr := mr.HGet(key, "consumed")
+	if consumedStr == "" {
 		return 0
 	}
 	consumed, _ := strconv.ParseInt(consumedStr, 10, 64)
@@ -56,8 +56,8 @@ func GetWindowConsumedFromRedis(t *testing.T, mr *miniredis.Miniredis, subscript
 // GetWindowLimitFromRedis 从Redis获取窗口limit值
 func GetWindowLimitFromRedis(t *testing.T, mr *miniredis.Miniredis, subscriptionId int, period string) int64 {
 	key := FormatWindowKey(subscriptionId, period)
-	limitStr, err := mr.HGet(key, "limit")
-	if err != nil {
+	limitStr := mr.HGet(key, "limit")
+	if limitStr == "" {
 		return 0
 	}
 	limit, _ := strconv.ParseInt(limitStr, 10, 64)
@@ -68,13 +68,13 @@ func GetWindowLimitFromRedis(t *testing.T, mr *miniredis.Miniredis, subscription
 func GetWindowTimeFromRedis(t *testing.T, mr *miniredis.Miniredis, subscriptionId int, period string) (startTime, endTime int64) {
 	key := FormatWindowKey(subscriptionId, period)
 
-	startTimeStr, err := mr.HGet(key, "start_time")
-	if err == nil {
+	startTimeStr := mr.HGet(key, "start_time")
+	if startTimeStr != "" {
 		startTime, _ = strconv.ParseInt(startTimeStr, 10, 64)
 	}
 
-	endTimeStr, err := mr.HGet(key, "end_time")
-	if err == nil {
+	endTimeStr := mr.HGet(key, "end_time")
+	if endTimeStr != "" {
 		endTime, _ = strconv.ParseInt(endTimeStr, 10, 64)
 	}
 
@@ -146,7 +146,7 @@ func AssertRemainingQuota(t *testing.T, subscriptionId int, expectedRemaining in
 	sub, err := model.GetSubscriptionById(subscriptionId)
 	assert.Nil(t, err, "Failed to get subscription")
 
-	pkg, err := model.GetPackageById(sub.PackageId)
+	pkg, err := model.GetPackageByID(sub.PackageId)
 	assert.Nil(t, err, "Failed to get package")
 
 	actualRemaining := CalculateRemainingQuota(pkg.Quota, sub.TotalConsumed)

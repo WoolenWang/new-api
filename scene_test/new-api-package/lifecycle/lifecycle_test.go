@@ -2,23 +2,33 @@ package lifecycle_test
 
 import (
 	"fmt"
-	"one-api/common"
-	"one-api/model"
-	"one-api/scene_test/testutil"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
+var testServer *testutil.TestServer
+
 // TestMain 测试入口
 func TestMain(m *testing.M) {
-	// TODO: 初始化测试服务器
-	// server, _ := testutil.StartTestServer()
-	// defer server.Stop()
+	// 初始化测试服务器
+	var err error
+	testServer, err = testutil.StartTestServer()
+	if err != nil {
+		fmt.Printf("Failed to start test server: %v\n", err)
+		return
+	}
+	defer testServer.Stop()
 
 	// 运行测试
-	m.Run()
+	exitCode := m.Run()
+
+	// 退出
+	fmt.Printf("Test completed with exit code: %d\n", exitCode)
 }
 
 // setupTest 每个测试用例的准备工作
@@ -209,11 +219,12 @@ func TestLC03_PackageCreation_NonOwnerRejected(t *testing.T) {
 // Test ID: LC-04
 // Priority: P0
 // Test Scenario:
-//   1. 用户A订阅全局套餐
-//   2. 用户A订阅未加入的P2P分组套餐
+//  1. 用户A订阅全局套餐
+//  2. 用户A订阅未加入的P2P分组套餐
+//
 // Expected Result:
-//   1. 成功
-//   2. 返回403
+//  1. 成功
+//  2. 返回403
 func TestLC04_Subscription_PermissionValidation(t *testing.T) {
 	setupTest(t)
 	defer teardownTest(t)

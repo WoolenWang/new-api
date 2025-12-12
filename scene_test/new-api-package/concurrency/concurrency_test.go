@@ -2,12 +2,14 @@ package concurrency_test
 
 import (
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -23,46 +25,44 @@ import (
 // 4. 验证DB状态转换和quota累加的原子性
 type ConcurrencyTestSuite struct {
 	suite.Suite
-	// server     *testutil.TestServer
-	// testUser   *model.User
-	// testToken  string
+	server *testutil.TestServer
 }
 
 // SetupSuite 在整个测试套件开始前执行一次
 func (s *ConcurrencyTestSuite) SetupSuite() {
 	s.T().Log("Setting up ConcurrencyTestSuite...")
 
-	// TODO: 启动测试服务器
-	// var err error
-	// s.server, err = testutil.StartTestServer()
-	// if err != nil {
-	// 	s.T().Fatalf("Failed to start test server: %v", err)
-	// }
-
-	// TODO: 创建测试用户
-	// s.testUser = testutil.CreateTestUser("concurrency_test_user", "default", 100000000)
-	// s.testToken = testutil.CreateTestToken(s.testUser.Id, "", 0)
+	// 启动测试服务器
+	var err error
+	s.server, err = testutil.StartTestServer()
+	if err != nil {
+		s.T().Fatalf("Failed to start test server: %v", err)
+	}
+	s.T().Logf("Test server started: %s", s.server.BaseURL)
 }
 
 // TearDownSuite 在整个测试套件结束后执行一次
 func (s *ConcurrencyTestSuite) TearDownSuite() {
 	s.T().Log("Tearing down ConcurrencyTestSuite...")
 
-	// TODO: 停止测试服务器
-	// if s.server != nil {
-	// 	s.server.Stop()
-	// }
+	if s.server != nil {
+		s.server.Stop()
+	}
 }
 
 // SetupTest 在每个测试用例开始前执行
 func (s *ConcurrencyTestSuite) SetupTest() {
-	// 每个测试用例前清理Redis
-	// TODO: s.server.MiniRedis.FlushAll()
+	// 每个测试用例前清理数据
+	testutil.CleanupPackageTestData(s.T())
+	if s.server != nil && s.server.MiniRedis != nil {
+		s.server.MiniRedis.FlushAll()
+	}
 }
 
 // TearDownTest 在每个测试用例结束后执行
 func (s *ConcurrencyTestSuite) TearDownTest() {
 	// 清理测试数据
+	testutil.CleanupPackageTestData(s.T())
 }
 
 // TestConcurrencyTestSuite 运行测试套件
@@ -132,8 +132,7 @@ func (s *ConcurrencyTestSuite) assertAtomicIncrement(
 func (s *ConcurrencyTestSuite) TestCR01_LuaScriptAtomicity_ConcurrentDeduction() {
 	s.T().Log("CR-01: Testing Lua script atomicity with concurrent deductions")
 
-	// --- Arrange ---
-	// 测试配置
+	// Arrange: 测试配置
 	const (
 		goroutineCount = 100      // 并发数
 		requestQuota   = 150000   // 0.15M per request
@@ -149,46 +148,59 @@ func (s *ConcurrencyTestSuite) TestCR01_LuaScriptAtomicity_ConcurrentDeduction()
 	s.T().Logf("Expected: max_successful_requests=%d, max_consumed=%d",
 		maxSuccessfulRequests, expectedMaxConsumed)
 
-	// TODO: 创建测试套餐和订阅
-	// pkg := testutil.CreateTestPackage("CR-01套餐", 15, 0, 500000000, hourlyLimit)
-	// sub := testutil.CreateAndActivateSubscription(s.testUser.Id, pkg.Id)
+	// Arrange: 创建测试套餐和订阅
+	pkg := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
+		Name:         "CR-01套餐",
+		Priority:     15,
+		P2PGroupId:   0,
+		Quota:        500000000,
+		HourlyLimit:  int64(hourlyLimit),
+		DurationType: "month",
+		Duration:     1,
+		Status:       1,
+	})
 
-	// TODO: 创建滑动窗口配置
-	// config := service.SlidingWindowConfig{
-	// 	Period:   "hourly",
-	// 	Duration: 3600,
-	// 	Limit:    hourlyLimit,
-	// 	TTL:      4200,
-	// }
+	user := testutil.CreateTestUser(s.T(), testutil.UserTestData{
+		Username: "cr01-user",
+		Group:    "default",
+		Quota:    100000000,
+	})
 
-	// --- Act ---
-	// 并发执行请求
+	sub := testutil.CreateAndActivateSubscription(s.T(), user.Id, pkg.Id)
+	s.T().Logf("Created subscription: ID=%d, HourlyLimit=%d", sub.Id, hourlyLimit)
+
+	// Arrange: 创建滑动窗口配置
+	config := service.SlidingWindowConfig{
+		Period:   "hourly",
+		Duration: 3600,
+		Limit:    int64(hourlyLimit),
+		TTL:      4200,
+	}
+
+	// Act: 并发执行请求
 	var successCount int32
 	var failureCount int32
 	var totalConsumedAtomic int64
 
 	errors := s.runConcurrent(goroutineCount, func(i int) error {
-		// TODO: 调用滑动窗口检查
-		// result, err := service.CheckAndConsumeSlidingWindow(sub.Id, config, requestQuota)
-		// if err != nil {
-		// 	atomic.AddInt32(&failureCount, 1)
-		// 	return err
-		// }
-		//
-		// if result.Success {
-		// 	atomic.AddInt32(&successCount, 1)
-		// 	atomic.AddInt64(&totalConsumedAtomic, requestQuota)
-		// 	return nil
-		// } else {
-		// 	atomic.AddInt32(&failureCount, 1)
-		// 	return fmt.Errorf("window limit exceeded")
-		// }
+		// 调用滑动窗口检查（真实service层调用）
+		result, err := service.CheckAndConsumeSlidingWindow(sub.Id, config, int64(requestQuota))
+		if err != nil {
+			atomic.AddInt32(&failureCount, 1)
+			return err
+		}
 
-		// Placeholder implementation
-		return nil
+		if result.Success {
+			atomic.AddInt32(&successCount, 1)
+			atomic.AddInt64(&totalConsumedAtomic, requestQuota)
+			return nil
+		} else {
+			atomic.AddInt32(&failureCount, 1)
+			return fmt.Errorf("window limit exceeded")
+		}
 	})
 
-	// --- Assert ---
+	// Assert: 验证结果
 	finalSuccessCount := atomic.LoadInt32(&successCount)
 	finalFailureCount := atomic.LoadInt32(&failureCount)
 	totalConsumed := atomic.LoadInt64(&totalConsumedAtomic)
@@ -210,16 +222,15 @@ func (s *ConcurrencyTestSuite) TestCR01_LuaScriptAtomicity_ConcurrentDeduction()
 		"Total consumed should equal success_count × request_quota (atomicity)")
 
 	// 4. 验证Redis中的实际consumed值
-	// TODO: 从Redis读取实际consumed
-	// windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
-	// redisConsumed, err := windowHelper.GetWindowConsumed(sub.Id, "hourly")
-	// assert.NoError(s.T(), err)
-	// assert.Equal(s.T(), totalConsumed, redisConsumed,
-	// 	"Redis consumed should match calculated consumed")
+	windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	redisConsumed, err := windowHelper.GetWindowConsumed(sub.Id, "hourly")
+	assert.NoError(s.T(), err)
+	assert.Equal(s.T(), totalConsumed, redisConsumed,
+		"Redis consumed should match calculated consumed")
 
 	// 5. 验证严格不超限
-	// assert.LessOrEqual(s.T(), redisConsumed, int64(hourlyLimit),
-	// 	"Consumed should never exceed hourly limit (strict enforcement)")
+	assert.LessOrEqual(s.T(), redisConsumed, int64(hourlyLimit),
+		"Consumed should never exceed hourly limit (strict enforcement)")
 
 	// 6. 验证无TOCTOU竞态（消耗值精确匹配）
 	tolerance := int64(0) // 原子操作不允许任何误差

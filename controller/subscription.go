@@ -97,17 +97,19 @@ func SubscribePackage(c *gin.Context) {
 		return
 	}
 
-	// 检查用户活跃订阅数限制
-	activeCount, err := model.CountUserActiveSubscriptions(userId)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	// Maximum 10 active subscriptions per user
-	const maxActiveSubscriptions = 10
-	if activeCount >= int64(maxActiveSubscriptions) {
-		common.ApiErrorMsg(c, fmt.Sprintf("您已达到活跃订阅数量上限：%d", maxActiveSubscriptions))
-		return
+	// 【P2-1 改动】检查用户活跃订阅数限制（使用全局配置）
+	// 如果 MaxActiveSubscriptionsPerUser == 0，表示无限制
+	if common.MaxActiveSubscriptionsPerUser > 0 {
+		activeCount, err := model.CountUserActiveSubscriptions(userId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		if activeCount >= int64(common.MaxActiveSubscriptionsPerUser) {
+			common.ApiErrorMsg(c, fmt.Sprintf("您已达到活跃订阅数量上限：%d", common.MaxActiveSubscriptionsPerUser))
+			return
+		}
 	}
 
 	// 创建订阅记录（状态为 inventory）

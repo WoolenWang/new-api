@@ -261,10 +261,16 @@ func Distribute() func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 
-		// handle package
+		// ============ 【旧套餐逻辑，计划下线】 ============
+		// 注意：此处调用的 HandlePackage 为历史遗留实现（固定整点窗口）
+		// 当 PackageEnabled=true 时，该函数内部会直接返回 false，跳过旧逻辑
+		// 新的套餐系统通过 PreConsumeQuota（滑动窗口 + Lua 脚本）统一处理
+		// 待优化版套餐系统完全稳定后，此调用将被移除
+		// 相关设计文档：docs/NewAPI-支持多种包月套餐-优化版.md
 		if service.HandlePackage(c, channel) {
-			return
+			return // 旧逻辑处理完毕，提前返回（不再执行后续控制器）
 		}
+		// ===============================================
 
 		c.Next()
 	}
