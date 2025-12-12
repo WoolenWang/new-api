@@ -103,7 +103,11 @@ func UpsertChannelStatistics(stat *ChannelStatistics) error {
 		// 记录存在，执行更新
 		stat.Id = existing.Id               // 保留原有ID
 		stat.CreatedAt = existing.CreatedAt // 保留创建时间
-		stat.UpdatedAt = existing.UpdatedAt // 传递旧值供hook做单调递增
+		now := common.GetTimestamp()
+		if now <= existing.UpdatedAt {
+			now = existing.UpdatedAt + 1
+		}
+		stat.UpdatedAt = now
 		return DB.Save(stat).Error
 	}
 
@@ -121,7 +125,11 @@ func UpsertChannelStatistics(stat *ChannelStatistics) error {
 
 	stat.Id = existing.Id
 	stat.CreatedAt = existing.CreatedAt
-	stat.UpdatedAt = existing.UpdatedAt
+	now := common.GetTimestamp()
+	if now <= existing.UpdatedAt {
+		now = existing.UpdatedAt + 1
+	}
+	stat.UpdatedAt = now
 	return DB.Save(stat).Error
 }
 

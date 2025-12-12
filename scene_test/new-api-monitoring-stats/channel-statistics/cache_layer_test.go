@@ -70,6 +70,9 @@ func SetupCacheLayerSuite(t *testing.T) (*CacheLayerSuite, func()) {
 	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
 	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
 	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
+	// Disable global/critical rate limits to avoid client-side throttling in concurrency tests.
+	cfg.CustomEnv["GLOBAL_API_RATE_LIMIT_ENABLE"] = "false"
+	cfg.CustomEnv["CRITICAL_RATE_LIMIT_ENABLE"] = "false"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {

@@ -118,12 +118,21 @@ func UpsertModelBaseline(baseline *ModelBaseline) error {
 	// 记录存在，执行更新
 	baseline.Id = existing.Id               // 保留原有ID
 	baseline.CreatedAt = existing.CreatedAt // 保留创建时间
-	baseline.UpdatedAt = existing.UpdatedAt // 传递旧值供hook做单调递增
+	now := common.GetTimestamp()
+	if now <= existing.UpdatedAt {
+		now = existing.UpdatedAt + 1
+	}
+	baseline.UpdatedAt = now
 	return DB.Save(baseline).Error
 }
 
 // UpdateModelBaseline 更新模型基准
 func (mb *ModelBaseline) Update() error {
+	now := common.GetTimestamp()
+	if now <= mb.UpdatedAt {
+		now = mb.UpdatedAt + 1
+	}
+	mb.UpdatedAt = now
 	return DB.Save(mb).Error
 }
 

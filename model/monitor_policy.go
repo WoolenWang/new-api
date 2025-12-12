@@ -215,6 +215,11 @@ func GetEnabledMonitorPolicies() ([]*MonitorPolicy, error) {
 
 // UpdateMonitorPolicy 更新监控策略
 func (mp *MonitorPolicy) Update() error {
+	now := common.GetTimestamp()
+	if now <= mp.UpdatedAt {
+		now = mp.UpdatedAt + 1
+	}
+	mp.UpdatedAt = now
 	return DB.Save(mp).Error
 }
 

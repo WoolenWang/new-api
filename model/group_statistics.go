@@ -102,6 +102,11 @@ func UpsertGroupStatistics(stat *GroupStatistics) error {
 	}
 
 	stat.UpdatedAt = existing.UpdatedAt
+	now := common.GetTimestamp()
+	if now <= existing.UpdatedAt {
+		now = existing.UpdatedAt + 1
+	}
+	stat.UpdatedAt = now
 	return DB.Save(stat).Error
 }
 

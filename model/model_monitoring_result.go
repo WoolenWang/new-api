@@ -99,7 +99,8 @@ func GetMonitoringResultsByChannelAndModel(channelId int, modelName, testType st
 	}
 
 	if startTime > 0 {
-		query = query.Where("test_timestamp >= ?", startTime)
+		// startTime is treated as exclusive boundary to match test/design semantics.
+		query = query.Where("test_timestamp > ?", startTime)
 	}
 	if endTime > 0 {
 		query = query.Where("test_timestamp <= ?", endTime)

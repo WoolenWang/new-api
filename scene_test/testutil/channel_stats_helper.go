@@ -326,14 +326,14 @@ func WaitForDBSync(client *APIClient, channelID int, model string, maxWait time.
 	})
 }
 
-// CalculateExpectedQuota calculates expected quota based on tokens and rate.
+// CalculateExpectedQuotaFromTokens calculates expected quota based on tokens and rate.
 //
 // Parameters:
 //   - tokens: Total tokens (prompt + completion)
 //   - rate: Billing rate multiplier
 //
 // Returns expected quota value.
-func CalculateExpectedQuota(tokens int, rate float64) int {
+func CalculateExpectedQuotaFromTokens(tokens int, rate float64) int {
 	// Note: Actual calculation depends on system configuration.
 	// This is a simplified version.
 	return int(float64(tokens) * rate)

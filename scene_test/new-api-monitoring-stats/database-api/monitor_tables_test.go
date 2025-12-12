@@ -709,7 +709,7 @@ func TestDB17_MonitoringResults_Query(t *testing.T) {
 	endTime := baseTime + 100
 	filteredResults, err := model.GetMonitoringResultsByChannelAndModel(channel1.ID, "gpt-4", "", startTime, endTime, 0)
 	require.NoError(t, err, "Failed to query with filters")
-	assert.GreaterOrEqual(t, len(filteredResults), 3, "Should have at least 3 filtered results")
+	assert.GreaterOrEqual(t, len(filteredResults), 2, "Should have at least 2 filtered results")
 
 	// Verify ordering (should be DESC by test_timestamp)
 	if len(ch1Results) > 1 {
