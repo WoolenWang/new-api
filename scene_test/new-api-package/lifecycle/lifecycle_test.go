@@ -2,6 +2,7 @@ package lifecycle_test
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -15,12 +16,27 @@ var testServer *testutil.TestServer
 
 // TestMain 测试入口
 func TestMain(m *testing.M) {
-	// 初始化测试服务器
+	// 使用内存 SQLite，保持与设计文档一致的测试隔离环境
+	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+	common.InitEnv()
+	// 初始化 Redis 客户端；在未配置 REDIS_CONN_STRING 的测试环境下，
+	// 该调用会将 RedisEnabled 置为 false，避免误用未初始化的 RDB。
+	if err := common.InitRedisClient(); err != nil {
+		fmt.Printf("Failed to init Redis client for tests: %v\n", err)
+		os.Exit(1)
+	}
+	if err := model.InitDB(); err != nil {
+		fmt.Printf("Failed to init test DB: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 初始化测试服务器（独立进程，用于后续需要的 HTTP 场景）
 	var err error
 	testServer, err = testutil.StartTestServer()
 	if err != nil {
 		fmt.Printf("Failed to start test server: %v\n", err)
-		return
+		os.Exit(1)
 	}
 	defer testServer.Stop()
 
@@ -29,6 +45,7 @@ func TestMain(m *testing.M) {
 
 	// 退出
 	fmt.Printf("Test completed with exit code: %d\n", exitCode)
+	os.Exit(exitCode)
 }
 
 // setupTest 每个测试用例的准备工作
@@ -397,7 +414,6 @@ func TestLC05_Activation_InventoryToActive(t *testing.T) {
 
 	// Assert: 验证时长计算正确（月份应该是大约30天）
 	duration := *activatedSub.EndTime - *activatedSub.StartTime
-	expectedDuration := int64(30 * 24 * 3600) // 约30天
 	// 允许一定误差（28-31天）
 	assert.GreaterOrEqual(t, duration, int64(28*24*3600), "Duration should be at least 28 days")
 	assert.LessOrEqual(t, duration, int64(31*24*3600), "Duration should be at most 31 days")
@@ -507,22 +523,19 @@ func TestLC07_Expiration_ScheduledTaskMarking(t *testing.T) {
 	t.Log("  Waiting 2 seconds for subscription to expire...")
 	time.Sleep(2 * time.Second)
 
-	// Act: 模拟定时任务执行，标记过期套餐
-	// 这里直接调用业务逻辑，相当于定时任务的核心逻辑
-	currentTime := common.GetTimestamp()
-	result := model.DB.Model(&model.Subscription{}).
-		Where("status = ? AND end_time < ?", model.SubscriptionStatusActive, currentTime).
-		Update("status", model.SubscriptionStatusExpired)
+	// Act: 调用定时任务核心业务逻辑 MarkExpiredSubscriptions
+	// 该函数内部会批量更新状态并失效缓存，等价于定时任务实际执行效果
+	markedCount, err := service.MarkExpiredSubscriptions()
 
 	// Assert: 验证定时任务执行成功
-	assert.Nil(t, result.Error, "Failed to mark expired subscriptions")
-	assert.Greater(t, result.RowsAffected, int64(0), "At least one subscription should be marked as expired")
+	assert.NoError(t, err, "Failed to mark expired subscriptions")
+	assert.Greater(t, markedCount, 0, "At least one subscription should be marked as expired")
 
 	// Assert: 验证订阅状态已变为expired
 	testutil.AssertSubscriptionExpired(t, sub.Id)
 
 	t.Logf("LC-07: Test completed - Subscription marked as expired by scheduled task")
-	t.Logf("  Marked %d subscriptions as expired", result.RowsAffected)
+	t.Logf("  Marked %d subscriptions as expired", markedCount)
 }
 
 // TestLC08_DurationCalculation_MonthLeapYear 测试时长计算-月份闰年
@@ -594,6 +607,10 @@ func TestLC08_DurationCalculation_MonthLeapYear(t *testing.T) {
 		"End time from Feb 29 should be March 29")
 
 	t.Logf("LC-08: Test completed - Month duration calculation handles leap year correctly")
+
+	// 防止编译器unused警告，明确表示这些准备数据仅用于场景完整性
+	_ = user
+	_ = pkg
 }
 
 // TestLC09_DurationCalculation_QuarterYear 测试时长计算-季度年度
@@ -705,4 +722,5 @@ func TestLC09_DurationCalculation_QuarterYear(t *testing.T) {
 	// 保留变量引用以避免unused警告
 	_ = quarterPkg
 	_ = yearPkg
+	_ = user
 }

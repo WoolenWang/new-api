@@ -9,18 +9,35 @@
 package billing_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"one-api/model"
-	"scene_test/testutil"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
+
+// TestMain 为 billing_test 套件初始化测试环境（内存 SQLite DB 等）
+func TestMain(m *testing.M) {
+	// 使用内存 SQLite，确保测试环境隔离且与设计文档一致
+	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+	common.InitEnv()
+	if err := model.InitDB(); err != nil {
+		panic(fmt.Sprintf("failed to init test DB for billing tests: %v", err))
+	}
+
+	// 运行测试
+	code := m.Run()
+	os.Exit(code)
+}
 
 // BillingAccuracyTestSuite 计费准确性测试套件
 type BillingAccuracyTestSuite struct {
@@ -320,7 +337,7 @@ func (s *BillingAccuracyTestSuite) TestBA04_CachedTokenBilling() {
 	s.T().Log("BA-04: Testing cached token billing")
 
 	// Arrange: 创建套餐和订阅
-	pkg := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
+	_ = testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
 		Name:              "ba04-test-package",
 		Priority:          15,
 		Quota:             500000000,
@@ -328,9 +345,6 @@ func (s *BillingAccuracyTestSuite) TestBA04_CachedTokenBilling() {
 		FallbackToBalance: true,
 		Status:            1,
 	})
-
-	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
 
 	// 配置Mock LLM响应（带缓存Token）
 	// 注意：需要在响应中包含cache usage信息

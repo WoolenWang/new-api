@@ -521,6 +521,20 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 	other := GenerateAudioOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+
+	// 【套餐监控】确定计费类型和套餐信息
+	billingType := "balance"
+	packageId := 0
+	subscriptionId := 0
+
+	if relayInfo.UsingPackageId > 0 {
+		billingType = "package"
+		subscriptionId = relayInfo.UsingPackageId
+		if sub, err := model.GetSubscriptionById(subscriptionId); err == nil {
+			packageId = sub.PackageId
+		}
+	}
+
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,
@@ -534,6 +548,11 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
+
+		// 【新增】套餐相关字段
+		BillingType:    billingType,
+		PackageId:      packageId,
+		SubscriptionId: subscriptionId,
 	})
 }
 

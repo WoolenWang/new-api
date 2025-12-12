@@ -81,6 +81,8 @@ func PreConsumeQuota(c *gin.Context, preConsumedQuota int, relayInfo *relaycommo
 		}
 
 		// 3c. subscriptionId == 0 且 err == nil：无套餐或允许 fallback，继续执行原有逻辑
+		// 【监控】记录使用余额的请求
+		IncrementBalanceRequest()
 	}
 	// ==================== 套餐检查结束 ====================
 

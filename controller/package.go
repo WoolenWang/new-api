@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -65,7 +67,8 @@ func GetPackages(c *gin.Context) {
 			}
 
 			if !hasAccess {
-				common.ApiError(c, common.NewError("permission denied: you don't have access to this P2P group"))
+				// 对无权访问的分组直接返回权限错误
+				common.ApiError(c, errors.New("permission denied: you don't have access to this P2P group"))
 				return
 			}
 

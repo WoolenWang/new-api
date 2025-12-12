@@ -183,12 +183,18 @@ func CreateTestUser(t *testing.T, data UserTestData) *model.User {
 		data.Role = common.RoleCommonUser
 	}
 
+	// 为测试用户生成唯一 external_id / aff_code，避免违反唯一约束
+	externalID := fmt.Sprintf("test-ext-%d", time.Now().UnixNano())
+	affCode := fmt.Sprintf("test-aff-%d", time.Now().UnixNano())
+
 	user := &model.User{
-		Username: data.Username,
-		Group:    data.Group,
-		Quota:    data.Quota,
-		Role:     data.Role,
-		Status:   data.Status,
+		Username:   data.Username,
+		Group:      data.Group,
+		Quota:      data.Quota,
+		Role:       data.Role,
+		Status:     data.Status,
+		ExternalId: externalID,
+		AffCode:    affCode,
 	}
 
 	err := model.DB.Create(user).Error
@@ -280,7 +286,9 @@ func AssertPackagePriority(t *testing.T, packageId int, expectedPriority int) {
 
 // AssertSubscriptionStatus 断言订阅状态
 func AssertSubscriptionStatus(t *testing.T, subscriptionId int, expectedStatus string) {
-	sub, err := model.GetSubscriptionById(subscriptionId)
+	// 使用强制从 DB 读取的接口以避免三级缓存带来的陈旧数据影响断言，
+	// 特别是在测试定时任务或后台批量更新场景时。
+	sub, err := model.GetSubscriptionByIdFromDB(subscriptionId)
 	assert.Nil(t, err, "Subscription should exist")
 	assert.Equal(t, expectedStatus, sub.Status,
 		fmt.Sprintf("Subscription status should be %s", expectedStatus))
@@ -288,7 +296,7 @@ func AssertSubscriptionStatus(t *testing.T, subscriptionId int, expectedStatus s
 
 // AssertSubscriptionActive 断言订阅已激活
 func AssertSubscriptionActive(t *testing.T, subscriptionId int) *model.Subscription {
-	sub, err := model.GetSubscriptionById(subscriptionId)
+	sub, err := model.GetSubscriptionByIdFromDB(subscriptionId)
 	assert.Nil(t, err, "Subscription should exist")
 	assert.Equal(t, model.SubscriptionStatusActive, sub.Status, "Subscription should be active")
 	assert.NotNil(t, sub.StartTime, "Start time should be set")
@@ -299,7 +307,7 @@ func AssertSubscriptionActive(t *testing.T, subscriptionId int) *model.Subscript
 
 // AssertSubscriptionExpired 断言订阅已过期
 func AssertSubscriptionExpired(t *testing.T, subscriptionId int) {
-	sub, err := model.GetSubscriptionById(subscriptionId)
+	sub, err := model.GetSubscriptionByIdFromDB(subscriptionId)
 	assert.Nil(t, err, "Subscription should exist")
 	assert.Equal(t, model.SubscriptionStatusExpired, sub.Status, "Subscription should be expired")
 }

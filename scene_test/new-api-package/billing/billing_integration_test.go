@@ -9,10 +9,11 @@ package billing_test
 import (
 	"fmt"
 	"net/http"
-	"one-api/model"
-	"scene_test/testutil"
 	"testing"
 	"time"
+
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
@@ -194,7 +195,7 @@ func (s *BillingIntegrationTestSuite) TestE2E_PackageBilling_CompleteFlow() {
 		UserGroup:    "vip",
 	}
 	quota3 := calc3.Calculate()
-	s.T().Logf("Request 3 quota calculation: %s", calc3.Format())
+	s.T().Logf("Request 3 quota calculation: %s (quota=%d)", calc3.Format(), quota3)
 
 	// 验证：套餐未继续扣减（因为小时限额超限），余额扣减
 	// 注意：这取决于系统实现

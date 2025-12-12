@@ -188,10 +188,10 @@ func (s *PriorityFallbackTestSuite) TestPF01_SinglePackage_NotExceeded() {
 	// 7. 验证滑动窗口状态（可选，如果Redis可用）
 	if s.server.MiniRedis != nil {
 		windowKey := testutil.FormatWindowKey(sub.Id, "hourly")
-		consumed, err := s.server.MiniRedis.HGet(windowKey, "consumed")
-		if err == nil {
+		consumed := s.server.MiniRedis.HGet(windowKey, "consumed")
+		if consumed != "" {
 			t.Logf("✓ Redis hourly window consumed: %s", consumed)
-			assert.Equal(t, string(expectedQuota), consumed, "Window consumed should match")
+			assert.Equal(t, fmt.Sprintf("%d", expectedQuota), consumed, "Window consumed should match")
 		}
 	}
 
@@ -363,7 +363,9 @@ func (s *PriorityFallbackTestSuite) TestPF03_SinglePackage_Exceeded_NoFallback()
 // Test ID: PF-04
 // Priority: P0
 // Test Scenario: 用户有2个套餐（高优先级15限额5M，低优先级5限额20M），
-//                 第一次请求3M（使用高优先级），第二次请求4M（高优先级超限，降级到低优先级）
+//
+//	第一次请求3M（使用高优先级），第二次请求4M（高优先级超限，降级到低优先级）
+//
 // Expected Result: 第一次使用套餐A，第二次降级到套餐B，用户余额不变
 func (s *PriorityFallbackTestSuite) TestPF04_MultiPackage_PriorityDegradation() {
 	t := s.T()
@@ -886,7 +888,7 @@ func (s *PriorityFallbackTestSuite) TestPF09_MultiWindow_AnyExceeded_Fails() {
 		s.server.MiniRedis.HSet(hourlyKey, "end_time", fmt.Sprintf("%d", now+3600))
 		s.server.MiniRedis.HSet(hourlyKey, "consumed", "9000000") // 9M
 		s.server.MiniRedis.HSet(hourlyKey, "limit", "10000000")   // 10M
-		s.server.MiniRedis.Expire(hourlyKey, 4200*time.Second)
+		s.server.MiniRedis.SetTTL(hourlyKey, 4200*time.Second)
 		t.Logf("Pre-set hourly window: consumed=9M, limit=10M")
 
 		// 日窗口：已消耗15M（未接近20M限额）
@@ -895,7 +897,7 @@ func (s *PriorityFallbackTestSuite) TestPF09_MultiWindow_AnyExceeded_Fails() {
 		s.server.MiniRedis.HSet(dailyKey, "end_time", fmt.Sprintf("%d", now+86400))
 		s.server.MiniRedis.HSet(dailyKey, "consumed", "15000000") // 15M
 		s.server.MiniRedis.HSet(dailyKey, "limit", "20000000")    // 20M
-		s.server.MiniRedis.Expire(dailyKey, 93600*time.Second)
+		s.server.MiniRedis.SetTTL(dailyKey, 93600*time.Second)
 		t.Logf("Pre-set daily window: consumed=15M, limit=20M")
 	}
 
@@ -945,7 +947,7 @@ func (s *PriorityFallbackTestSuite) TestPF09_MultiWindow_AnyExceeded_Fails() {
 	// 4. 验证小时窗口未更新（因为被拒绝）
 	if s.server.MiniRedis != nil {
 		hourlyKey := testutil.FormatWindowKey(sub.Id, "hourly")
-		consumed, _ := s.server.MiniRedis.HGet(hourlyKey, "consumed")
+		consumed := s.server.MiniRedis.HGet(hourlyKey, "consumed")
 		assert.Equal(t, "9000000", consumed, "Hourly window should remain at 9M")
 		t.Logf("✓ Hourly window unchanged: consumed=%s", consumed)
 	}

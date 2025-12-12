@@ -17,6 +17,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/alicebob/miniredis/v2"
 )
 
 // TestServer represents a running instance of the NewAPI server for testing.
@@ -35,6 +39,9 @@ type TestServer struct {
 
 	// AdminUserID is the root user's ID, used for New-Api-User header.
 	AdminUserID int
+
+	// MiniRedis is the in-memory Redis instance used by package-related scene tests.
+	MiniRedis *miniredis.Miniredis
 
 	cmd      *exec.Cmd
 	cancelFn context.CancelFunc
@@ -185,6 +192,9 @@ func StartServer(cfg ServerConfig) (*TestServer, error) {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	// SQLite DB path shared between the test server process and the test process.
+	dbPath := filepath.Join(dataDir, "one-api.db") + "?_busy_timeout=30000"
+
 	// Create a cancellable context
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -215,6 +225,8 @@ func StartServer(cfg ServerConfig) (*TestServer, error) {
 		"GIN_MODE":       "release",
 		"SESSION_SECRET": "test-session-secret-12345",
 		"CRYPTO_SECRET":  "test-crypto-secret-12345",
+		// Ensure the server uses a SQLite file inside the temporary data directory.
+		"SQLITE_PATH": dbPath,
 	}
 
 	// Configure database
@@ -297,6 +309,14 @@ func StartServer(cfg ServerConfig) (*TestServer, error) {
 		// a clear message instead of cascading 401 responses.
 		server.Stop()
 		return nil, fmt.Errorf("failed to bootstrap test admin: %w", err)
+	}
+
+	// Initialize the model.DB in the test process to point at the same SQLite
+	// database file that the test server is using. This allows helpers such as
+	// CreateTestUser / CreateTestPackage to see the same data as the HTTP server.
+	if err := initSharedTestDB(dbPath); err != nil {
+		server.Stop()
+		return nil, fmt.Errorf("failed to init shared test DB: %w", err)
 	}
 
 	return server, nil
@@ -384,6 +404,12 @@ func (s *TestServer) Stop() error {
 	// Clean up temporary data directory
 	if s.DataDir != "" {
 		os.RemoveAll(s.DataDir)
+	}
+
+	// Clean up MiniRedis if it was started via StartTestServer.
+	if s.MiniRedis != nil {
+		s.MiniRedis.Close()
+		s.MiniRedis = nil
 	}
 
 	return nil
@@ -527,20 +553,61 @@ func StartTestServer() (*TestServer, error) {
 	// in `go test` output for easier debugging.
 	cfg.Verbose = true
 
+	// Start an in-memory Redis instance for package tests and point the
+	// server at it via REDIS_CONN_STRING. Tests can access the same
+	// instance through TestServer.MiniRedis to inspect sliding windows.
+	mr, err := miniredis.Run()
+	if err != nil {
+		return nil, fmt.Errorf("failed to start miniredis for test server: %w", err)
+	}
+
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["REDIS_CONN_STRING"] = fmt.Sprintf("redis://%s/0", mr.Addr())
+	// Enable the package system for scene tests that depend on it.
+	cfg.CustomEnv["PACKAGE_ENABLED"] = "true"
+
 	// 为集成测试放宽部分业务限额，以避免与真实环境的防护配置产生冲突：
 	// - P2P 分组并发控制测试（GC-03）需要为同一用户创建 10 个分组，
 	//   若沿用生产默认的 MAX_P2P_GROUPS_PER_USER=3，将导致测试在第 4 个分组创建时失败。
 	// - 在测试环境下，通过环境变量将该上限调大，不影响生产默认行为。
-	if cfg.CustomEnv == nil {
-		cfg.CustomEnv = make(map[string]string)
-	}
 	cfg.CustomEnv["MAX_P2P_GROUPS_PER_USER"] = "100"
 
 	projectRoot, err := findProjectRoot()
 	if err != nil {
+		mr.Close()
 		return nil, fmt.Errorf("failed to find project root for test server: %w", err)
 	}
 	cfg.ProjectRoot = projectRoot
 
-	return StartServer(cfg)
+	server, err := StartServer(cfg)
+	if err != nil {
+		mr.Close()
+		return nil, err
+	}
+
+	server.MiniRedis = mr
+	return server, nil
+}
+
+// initSharedTestDB initializes model.DB in the test process so that it uses
+// the same SQLite database file as the external test server process.
+func initSharedTestDB(sqlitePath string) error {
+	if sqlitePath == "" {
+		return fmt.Errorf("empty SQLite path for test DB")
+	}
+
+	// Always force SQLite for integration tests regardless of host SQL_DSN.
+	_ = os.Unsetenv("SQL_DSN")
+	common.SQLitePath = sqlitePath
+
+	// Close any existing connection before reinitializing to the new file.
+	if model.DB != nil {
+		if err := model.CloseDB(); err != nil {
+			common.SysLog(fmt.Sprintf("failed to close previous test DB: %v", err))
+		}
+	}
+
+	return model.InitDB()
 }

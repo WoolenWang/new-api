@@ -114,19 +114,39 @@ func CancelSubscription(subscriptionId int, userId int, isAdmin bool) error {
 func MarkExpiredSubscriptions() (int, error) {
 	now := common.GetTimestamp()
 
-	// Find and update expired subscriptions in a single query
-	result := model.DB.Model(&model.Subscription{}).
+	// Step 1: 找出所有已过期且仍为 active 的订阅 ID
+	var expiredIds []int
+	if err := model.DB.Model(&model.Subscription{}).
 		Where("status = ?", model.SubscriptionStatusActive).
 		Where("end_time IS NOT NULL").
 		Where("end_time < ?", now).
-		Update("status", model.SubscriptionStatusExpired)
+		Pluck("id", &expiredIds).Error; err != nil {
+		common.SysError(fmt.Sprintf("Failed to query expired subscriptions: %v", err))
+		return 0, err
+	}
 
+	if len(expiredIds) == 0 {
+		// 没有需要更新的订阅，直接返回
+		return 0, nil
+	}
+
+	// Step 2: 批量更新状态为 expired
+	result := model.DB.Model(&model.Subscription{}).
+		Where("id IN ?", expiredIds).
+		Update("status", model.SubscriptionStatusExpired)
 	if result.Error != nil {
 		common.SysError(fmt.Sprintf("Failed to mark expired subscriptions: %v", result.Error))
 		return 0, result.Error
 	}
 
 	affected := int(result.RowsAffected)
+
+	// Step 3: 失效对应订阅的缓存（L1/L2），确保后续读取到最新状态
+	cache := model.GetPackageCache()
+	for _, id := range expiredIds {
+		cache.InvalidateSubscription(id)
+	}
+
 	if affected > 0 {
 		common.SysLog(fmt.Sprintf("Marked %d expired subscriptions", affected))
 	}

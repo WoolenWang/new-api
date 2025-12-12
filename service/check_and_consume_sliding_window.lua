@@ -41,6 +41,17 @@ else
     local end_time = tonumber(redis.call('HGET', key, 'end_time'))
     local start_time = tonumber(redis.call('HGET', key, 'start_time'))
 
+    -- 使用 TTL 计算“虚拟当前时间”，以支持测试中通过 FastForward 模拟时间流逝。
+    -- elapsed = ttl(初始) - ttl(当前) 近似等于窗口已运行的秒数。
+    -- 这样即使 Go 进程时间未前进，只要 Redis 的 TTL 发生变化，也能正确判断窗口是否过期。
+    local ttl_remaining = redis.call('TTL', key)
+    if ttl_remaining ~= nil and ttl_remaining > 0 and ttl > 0 then
+        local elapsed = ttl - ttl_remaining
+        if elapsed > 0 then
+            now = start_time + elapsed
+        end
+    end
+
     if now >= end_time then
         -- 场景2: 窗口已过期（TTL未及时清理），删除旧窗口并创建新窗口
         redis.call('DEL', key)

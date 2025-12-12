@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -153,7 +154,8 @@ func CheckAndConsumeSlidingWindow(
 		return &WindowResult{Success: true}, nil
 	}
 
-	now := time.Now().Unix()
+	// 使用 Redis 服务器时间作为“当前时间”，以便在测试中通过 FastForward 精确模拟窗口过期
+	now := getRedisNowUnix(ctx)
 	key := fmt.Sprintf("subscription:%d:%s:window", subscriptionId, config.Period)
 
 	// 执行Lua脚本
@@ -169,15 +171,43 @@ func CheckAndConsumeSlidingWindow(
 	).Result()
 
 	if err != nil {
-		common.SysError(fmt.Sprintf("Lua script execution failed for %s window: %v", config.Period, err))
-		// 降级：执行失败，允许通过
-		return &WindowResult{Success: true}, nil
+		// 兼容 Redis 实例重启或 SCRIPT FLUSH 导致的 NOSCRIPT 错误：
+		// 尝试重新加载 Lua 脚本并重试一次，避免直接降级为“无限制”。
+		if strings.Contains(err.Error(), "NOSCRIPT") {
+			// 清空本地缓存的 SHA，强制重新加载脚本
+			scriptSHA = ""
+			if loadErr := ensureScriptLoaded(ctx); loadErr == nil {
+				// 重新执行脚本
+				result, err = common.RDB.EvalSha(
+					ctx,
+					scriptSHA,
+					[]string{key},
+					now,
+					config.Duration,
+					config.Limit,
+					quota,
+					config.TTL,
+				).Result()
+			} else {
+				common.SysError(fmt.Sprintf("Failed to reload sliding window Lua script after NOSCRIPT: %v", loadErr))
+			}
+		}
+
+		if err != nil {
+			common.SysError(fmt.Sprintf("Lua script execution failed for %s window: %v", config.Period, err))
+			// 【监控】记录 Lua 脚本失败
+			IncrementLuaScriptFailure()
+			// 降级：执行失败，允许通过
+			return &WindowResult{Success: true}, nil
+		}
 	}
 
 	// 解析返回值
 	resultArray, ok := result.([]interface{})
 	if !ok || len(resultArray) != 4 {
 		common.SysError(fmt.Sprintf("Lua script returned invalid result for %s window", config.Period))
+		// 【监控】记录 Lua 脚本失败
+		IncrementLuaScriptFailure()
 		return &WindowResult{Success: true}, nil // 降级
 	}
 
@@ -186,6 +216,28 @@ func CheckAndConsumeSlidingWindow(
 	startTime, _ := resultArray[2].(int64)
 	endTime, _ := resultArray[3].(int64)
 
+	// 【监控】记录窗口创建（consumed==quota 表示是新创建的窗口）
+	if status == 1 && consumed == quota {
+		IncrementWindowCreation()
+
+		// 输出结构化日志（JSON格式）
+		if common.DataPlaneLogEnabled {
+			logEvent := map[string]interface{}{
+				"event":           "sliding_window_created",
+				"subscription_id": subscriptionId,
+				"period":          config.Period,
+				"start_time":      startTime,
+				"end_time":        endTime,
+				"start_time_str":  time.Unix(startTime, 0).Format("2006-01-02 15:04:05"),
+				"end_time_str":    time.Unix(endTime, 0).Format("2006-01-02 15:04:05"),
+				"consumed":        consumed,
+				"limit":           config.Limit,
+				"duration":        config.Duration,
+			}
+			common.SysLog(fmt.Sprintf("[PackageWindow] %s", common.GetJsonString(logEvent)))
+		}
+	}
+
 	return &WindowResult{
 		Success:   status == 1,
 		Consumed:  consumed,
@@ -193,6 +245,22 @@ func CheckAndConsumeSlidingWindow(
 		EndTime:   endTime,
 		TimeLeft:  endTime - now,
 	}, nil
+}
+
+// getRedisNowUnix 返回 Redis 服务器当前时间（Unix 秒）。
+// 如果 Redis 不支持 TIME 命令或发生错误，则回退到本地时间。
+func getRedisNowUnix(ctx context.Context) int64 {
+	if common.RDB == nil {
+		return time.Now().Unix()
+	}
+
+	serverTime, err := common.RDB.Time(ctx).Result()
+	if err != nil {
+		common.SysError(fmt.Sprintf("Failed to get Redis TIME: %v", err))
+		return time.Now().Unix()
+	}
+
+	return serverTime.Unix()
 }
 
 // CheckAllSlidingWindows 检查所有滑动窗口限制
@@ -219,6 +287,26 @@ func CheckAllSlidingWindows(
 
 		if !result.Success {
 			// 超限，返回详细错误信息
+			// 【监控】记录窗口超限
+			IncrementWindowExceeded()
+
+			// 输出结构化日志（JSON格式）
+			if common.DataPlaneLogEnabled {
+				logEvent := map[string]interface{}{
+					"event":           "package_window_exceeded",
+					"subscription_id": subscription.Id,
+					"package_id":      pkg.Id,
+					"priority":        pkg.Priority,
+					"period":          config.Period,
+					"consumed":        result.Consumed,
+					"limit":           config.Limit,
+					"attempted":       quota,
+					"window":          fmt.Sprintf("%s ~ %s", time.Unix(result.StartTime, 0).Format("15:04:05"), time.Unix(result.EndTime, 0).Format("15:04:05")),
+					"time_left":       result.TimeLeft,
+				}
+				common.SysLog(fmt.Sprintf("[PackageWindow] %s", common.GetJsonString(logEvent)))
+			}
+
 			return fmt.Errorf(
 				"subscription %d exceeded %s limit: consumed=%d, limit=%d, window=%s~%s, time_left=%ds",
 				subscription.Id,

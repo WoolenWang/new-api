@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/logger"
+	// use common.SysLog / common.SysError for logging to keep
+	// package cache aligned with the rest of the system logging.
 )
 
 // ============================================
@@ -101,8 +102,8 @@ func (pc *PackageCache) GetPackageByIDCached(id int, forceDB bool) (*Package, er
 	}
 	pc.recordL1Miss()
 
-	// L2 Redis 缓存查询
-	if common.RedisEnabled {
+	// L2 Redis 缓存查询（仅在 Redis 已正确初始化时启用）
+	if common.RedisEnabled && common.RDB != nil {
 		if pkg, err := pc.getPackageFromL2(id); err == nil && pkg != nil {
 			pc.recordL2Hit()
 			pc.setPackageToL1(id, pkg) // 回填 L1
@@ -121,7 +122,7 @@ func (pc *PackageCache) GetPackageByIDCached(id int, forceDB bool) (*Package, er
 
 	// 回填缓存
 	pc.setPackageToL1(id, pkg)
-	if common.RedisEnabled {
+	if common.RedisEnabled && common.RDB != nil {
 		pc.setPackageToL2(id, pkg)
 	}
 
@@ -163,7 +164,7 @@ func (pc *PackageCache) getPackageFromL2(id int) (*Package, error) {
 
 	var pkg Package
 	if err := json.Unmarshal([]byte(data), &pkg); err != nil {
-		logger.SysError(fmt.Sprintf("failed to unmarshal package from redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to unmarshal package from redis: %v", err))
 		return nil, err
 	}
 
@@ -177,12 +178,12 @@ func (pc *PackageCache) setPackageToL2(id int, pkg *Package) {
 
 	data, err := json.Marshal(pkg)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("failed to marshal package for redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to marshal package for redis: %v", err))
 		return
 	}
 
 	if err := common.RDB.Set(ctx, key, data, pc.config.L2TTL).Err(); err != nil {
-		logger.SysError(fmt.Sprintf("failed to set package to redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to set package to redis: %v", err))
 	}
 }
 
@@ -199,8 +200,8 @@ func (pc *PackageCache) InvalidatePackage(id int) {
 	// 删除 L1
 	pc.l1Packages.Delete(id)
 
-	// 删除 L2
-	if common.RedisEnabled {
+	// 删除 L2（仅在 Redis 已初始化时触发）
+	if common.RedisEnabled && common.RDB != nil {
 		ctx := context.Background()
 		key := fmt.Sprintf("package:%d", id)
 		common.RDB.Del(ctx, key)
@@ -230,8 +231,8 @@ func (pc *PackageCache) GetSubscriptionByIDCached(id int, forceDB bool) (*Subscr
 	}
 	pc.recordL1Miss()
 
-	// L2 Redis 缓存查询
-	if common.RedisEnabled {
+	// L2 Redis 缓存查询（仅在 Redis 已正确初始化时启用）
+	if common.RedisEnabled && common.RDB != nil {
 		if sub, err := pc.getSubscriptionFromL2(id); err == nil && sub != nil {
 			pc.recordL2Hit()
 			pc.setSubscriptionToL1(id, sub)
@@ -250,7 +251,7 @@ func (pc *PackageCache) GetSubscriptionByIDCached(id int, forceDB bool) (*Subscr
 
 	// 回填缓存
 	pc.setSubscriptionToL1(id, sub)
-	if common.RedisEnabled {
+	if common.RedisEnabled && common.RDB != nil {
 		pc.setSubscriptionToL2(id, sub)
 	}
 
@@ -290,7 +291,7 @@ func (pc *PackageCache) getSubscriptionFromL2(id int) (*Subscription, error) {
 
 	var sub Subscription
 	if err := json.Unmarshal([]byte(data), &sub); err != nil {
-		logger.SysError(fmt.Sprintf("failed to unmarshal subscription from redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to unmarshal subscription from redis: %v", err))
 		return nil, err
 	}
 
@@ -304,12 +305,12 @@ func (pc *PackageCache) setSubscriptionToL2(id int, sub *Subscription) {
 
 	data, err := json.Marshal(sub)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("failed to marshal subscription for redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to marshal subscription for redis: %v", err))
 		return
 	}
 
 	if err := common.RDB.Set(ctx, key, data, pc.config.L2TTL).Err(); err != nil {
-		logger.SysError(fmt.Sprintf("failed to set subscription to redis: %v", err))
+		common.SysError(fmt.Sprintf("failed to set subscription to redis: %v", err))
 	}
 }
 
@@ -365,7 +366,7 @@ func (pc *PackageCache) startEvictionLoop() {
 		})
 
 		if evicted > 0 {
-			logger.SysLog(fmt.Sprintf("[PackageCache] Evicted %d expired L1 entries", evicted))
+			common.SysLog(fmt.Sprintf("[PackageCache] Evicted %d expired L1 entries", evicted))
 		}
 	}
 }

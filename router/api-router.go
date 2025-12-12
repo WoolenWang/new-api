@@ -412,9 +412,18 @@ func SetApiRouter(router *gin.Engine) {
 
 		packageRoute := apiRouter.Group("/packages")
 		{
-			packageRoute.GET("/", middleware.UserAuth(), controller.GetPackages)                      // List packages
-			packageRoute.GET("/cache/stats", middleware.AdminAuth(), controller.GetPackageCacheStats) // Cache stats (admin only)
-			packageRoute.GET("/:id", middleware.UserAuth(), controller.GetPackageById)                // Get package details
+			// 查询接口
+			packageRoute.GET("/", middleware.UserAuth(), controller.GetPackages)       // List packages
+			packageRoute.GET("/:id", middleware.UserAuth(), controller.GetPackageById) // Get package details
+
+			// 监控接口（仅管理员）
+			packageRoute.GET("/monitor/cache", middleware.AdminAuth(), controller.GetPackageCacheStats)         // Cache stats
+			packageRoute.GET("/monitor/metrics", middleware.AdminAuth(), controller.GetPackageMetrics)          // Real-time metrics
+			packageRoute.GET("/monitor/utilization", middleware.AdminAuth(), controller.GetPackageUtilization)  // Utilization stats
+			packageRoute.GET("/monitor/billing", middleware.AdminAuth(), controller.GetBillingTypeDistribution) // Billing distribution
+			packageRoute.GET("/monitor/top", middleware.AdminAuth(), controller.GetTopPackages)                 // Top packages
+
+			// 管理接口
 			// 【P1-1 改动】允许登录用户创建套餐，权限在控制器内部细粒度判断
 			// - 全局套餐（p2p_group_id=0）：需要管理员权限
 			// - P2P分组套餐（p2p_group_id>0）：需要该分组 Owner 权限

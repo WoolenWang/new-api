@@ -13,10 +13,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"one-api/model"
-	"scene_test/testutil"
 	"testing"
 	"time"
+
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
@@ -104,7 +105,6 @@ func (s *BillingExceptionTestSuite) TestBA06_EmptyUsage_UsesEstimation() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
 
 	// 配置Mock LLM响应：无usage字段（模拟异常）
 	customMockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +299,6 @@ func (s *BillingExceptionTestSuite) TestBA08_StreamingInterrupted_PartialCharge(
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
 
 	// 配置自定义Mock服务器：模拟流式中断
 	customMockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

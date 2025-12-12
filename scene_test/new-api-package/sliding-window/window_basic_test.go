@@ -3,9 +3,12 @@ package sliding_window_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -20,11 +23,20 @@ func TestMain(m *testing.M) {
 	// 初始化context
 	ctx = context.Background()
 
+	// 使用内存 SQLite，确保测试环境隔离且符合设计文档要求
+	// 注意：这里不启动 HTTP Server，只做最小化的 DB 初始化，供 model 层使用
+	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+	common.InitEnv()
+	if err := model.InitDB(); err != nil {
+		panic(fmt.Sprintf("failed to init test DB: %v", err))
+	}
+
 	// 运行测试
 	exitCode := m.Run()
 
 	// 退出
-	panic(exitCode)
+	os.Exit(exitCode)
 }
 
 // setupTest 每个测试前的准备工作
@@ -37,9 +49,9 @@ func setupTest(t *testing.T) (*testutil.RedisMock, int) {
 
 	// 创建测试用户
 	user := testutil.CreateTestUser(t, testutil.UserTestData{
-		Username: "test-user-sliding-window",
-		Group:    "default",
-		Quota:    10000000,
+		// 不指定用户名以避免唯一约束冲突，由辅助函数生成唯一用户名
+		Group: "default",
+		Quota: 10000000,
 	})
 
 	// 创建测试套餐
@@ -126,8 +138,9 @@ func TestSW01_FirstRequest_CreatesWindow(t *testing.T) {
 // 预期结果:
 //   - consumed=5.5M (2.5M + 3M)
 //   - 窗口时间不变
-==============
 //   - 两次请求都成功
+//
+// =========================================================================
 // ============================================================================
 func TestSW02_WithinWindow_Accumulates(t *testing.T) {
 	t.Log("SW-02: Testing consumption accumulation within window")
@@ -173,8 +186,7 @@ func TestSW02_WithinWindow_Accumulates(t *testing.T) {
 // 预期结果:
 //   - consumed=8M (第一次请求后)
 //   - 第二次请求前consumed不变
-=====================
-func
+===========================
 //   - 第二次请求返回status=0 (失败)
 // ============================================================================
 func TestSW03_Exceeded_Rejects(t *testing.T) {
@@ -216,8 +228,9 @@ func TestSW03_Exceeded_Rejects(t *testing.T) {
 // 预期结果:
 //   - 旧窗口被DEL
 //   - 创建新窗口
-======================
 //   - 新start_time=now
+============
+func TestSW04_Expi
 //   - 新consumed=quota (重新开始计数)
 // ============================================================================
 func TestSW04_Expired_Rebuilds(t *testing.T) {
@@ -268,7 +281,7 @@ func TestSW04_Expired_Rebuilds(t *testing.T) {
 // 优先级: P1
 // 测试场景: 窗口TTL过期后，Key被Redis自动删除
 // 预期结果:
-_TTL_AutoCleanup(t *
+W05_TTL_AutoCleanup(
 //   - Key被Redis自动删除
 //   - 下次请求创建新窗口
 // ============================================================================
@@ -313,8 +326,7 @@ func TestSW05_TTL_AutoCleanup(t *testing.T) {
 // 优先级: P0
 // 测试场景: RPM限制按请求数计数，而非quota
 // 预期结果:
-SpecialHandling(t *testing.T) {
-
+PM_SpecialHandling(t *testing.T)
 //   - RPM窗口consumed=请求数（非quota）
 //   - 第61次请求返回超限
 // ============================================================================
@@ -359,8 +371,9 @@ func TestSW06_RPM_SpecialHandling(t *testing.T) {
 // 优先级: P0
 // 测试场景: 同时配置多个时间维度的限额，各窗口独立创建和滑动
 // 预期结果:
-ng(t *testing.T
 //   - 三个窗口独立创建
+.T) {
+	t.Log("SW-07: 
 //   - start_time各不相同
 //   - 每个窗口独立滑动
 // ============================================================================
@@ -436,8 +449,8 @@ func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 // SW-08: 4小时窗口跨度
 // 测试ID: SW-08
 // 优先级: P1
-g.T) {
-	t.Log("SW-08:
+) {
+	t.Log("SW-08: Te
 // 测试场景: 验证窗口可以跨越日期边界
 // 预期结果:
 //   - 窗口时间正确（22:00 ~ 次日02:00）
@@ -491,8 +504,8 @@ func TestSW08_FourHourly_CrossesMidnight(t *testing.T) {
 // SW-09: 无请求不创建Key
 // 测试ID: SW-09
 // 优先级: P1
-.T) {
-	t.Log("SW-09: Testing no Redis keys
+ {
+	t.Log("SW-09: Testing no Redis keys cr
 // 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
 // 预期结果:
 //   - 无任何窗口Key存在
@@ -525,7 +538,7 @@ func TestSW09_NoRequest_NoKeyCreated(t *testing.T) {
 // SW-10: Lua脚本原子性（并发测试）
 // 测试ID: SW-10
 // 优先级: P0
-ing Lua script atomicity under co
+ Lua script atomicity under concu
 // 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
 // 预期结果:
 //   - consumed精确=成功请求数×0.2M

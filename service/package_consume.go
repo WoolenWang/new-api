@@ -13,6 +13,7 @@ import (
 //   - userId: 用户ID
 //   - p2pGroupId: P2P分组ID (可选)，用于过滤套餐权限
 //   - estimatedQuota: 预估消耗额度
+//
 // 返回值:
 //   - subscriptionId: 使用的套餐订阅ID (0表示未使用套餐)
 //   - preConsumedQuota: 预扣的额度
@@ -41,6 +42,9 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 
 	if subscription != nil {
 		// 成功找到可用套餐
+		// 【监控】记录使用套餐的请求
+		IncrementPackageRequest()
+
 		if common.DataPlaneLogEnabled {
 			common.SysLog(fmt.Sprintf(
 				"[Package] User %d using subscription %d (package %d, priority %d), pre-consumed %d quota",
@@ -55,6 +59,10 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 		// 有错误（说明尝试过至少一个套餐但都失败了）
 		if pkg != nil && pkg.FallbackToBalance {
 			// 最后尝试的套餐允许 fallback 到用户余额
+			// 【监控】记录 Fallback 到余额
+			IncrementFallbackRequest()
+			IncrementBalanceRequest()
+
 			if common.DataPlaneLogEnabled {
 				common.SysLog(fmt.Sprintf(
 					"[Package] All subscriptions exceeded for user %d, fallback to user balance (last package: %d)",
@@ -69,6 +77,9 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 
 	// 理论上不应该走到这里（subscriptions非空但selection无结果且无error）
 	// 作为兜底，降级到用户余额
+	// 【监控】记录使用余额
+	IncrementBalanceRequest()
+
 	return 0, 0, nil
 }
 
@@ -77,6 +88,7 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 // 参数:
 //   - subscriptions: 已排序的订阅列表 (按 priority DESC)
 //   - estimatedQuota: 预估消耗额度
+//
 // 返回值:
 //   - subscription: 选中的订阅实例 (nil表示所有套餐都超限)
 //   - pkg: 最后尝试的套餐配置 (用于判断 fallback 配置)
@@ -121,10 +133,12 @@ func SelectAvailablePackage(subscriptions []*model.Subscription, estimatedQuota 
 // 执行两层检查：
 //  1. 数据库层：检查月度总限额 (total_consumed < quota)
 //  2. Redis层：检查所有滑动窗口限额 (RPM, 小时, 4小时, 日, 周)
+//
 // 参数:
 //   - sub: 订阅实例
 //   - pkg: 套餐配置
 //   - estimatedQuota: 预估消耗额度
+//
 // 返回值:
 //   - error: 超限错误（包含详细的窗口信息）
 func CheckAndReservePackageQuota(sub *model.Subscription, pkg *model.Package, estimatedQuota int64) error {
