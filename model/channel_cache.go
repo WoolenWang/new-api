@@ -283,46 +283,61 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 	// Check allowed groups whitelist (supports both system groups and P2P group IDs)
 	p2pGroupMatched := false
 	if channel.AllowedGroups != nil && *channel.AllowedGroups != "" {
-		hasWhitelist = true
-		// Try to parse as JSON array (P2P group IDs)
-		allowedGroupIDs := channel.GetAllowedGroupIDs()
-		if len(allowedGroupIDs) > 0 {
-			// P2P group ID mode: check if user's routingGroups contains any allowed P2P group
-			for _, groupID := range allowedGroupIDs {
-				p2pGroupName := fmt.Sprintf("p2p_%d", groupID)
-				for _, routingGroup := range routingGroups {
-					if routingGroup == p2pGroupName {
-						p2pGroupMatched = true
-						whitelistMatched = true
+		trimmedAllowed := strings.TrimSpace(*channel.AllowedGroups)
+
+		// Special case: explicit JSON empty array "[]"
+		// Design expectation (ED-04): allowed_groups = [] means
+		//   - the channel is NOT attached to any P2P group;
+		//   - it should still be accessible via system groups when there is no
+		//     Token-level P2P constraint;
+		//   - but P2P-constrained requests must NOT be able to use it.
+		//
+		// The P2P constraint branch above already rejects this case because
+		// GetAllowedGroupIDs() returns an empty slice, so here we treat "[]"
+		// as "no whitelist" for the generic (non-P2P) path by NOT setting
+		// hasWhitelist.
+		if trimmedAllowed != "[]" {
+			hasWhitelist = true
+			// Try to parse as JSON array (P2P group IDs)
+			allowedGroupIDs := channel.GetAllowedGroupIDs()
+			if len(allowedGroupIDs) > 0 {
+				// P2P group ID mode: check if user's routingGroups contains any allowed P2P group
+				for _, groupID := range allowedGroupIDs {
+					p2pGroupName := fmt.Sprintf("p2p_%d", groupID)
+					for _, routingGroup := range routingGroups {
+						if routingGroup == p2pGroupName {
+							p2pGroupMatched = true
+							whitelistMatched = true
+							break
+						}
+					}
+					if p2pGroupMatched {
 						break
 					}
 				}
-				if p2pGroupMatched {
-					break
-				}
-			}
-		} else {
-			// Fallback: treat as comma-separated system group names (legacy mode, system-group whitelisting)
-			allowedGroups := strings.Split(*channel.AllowedGroups, ",")
-			for _, allowedGroup := range allowedGroups {
-				trimmedGroup := strings.TrimSpace(allowedGroup)
-				if trimmedGroup == "" {
-					continue
-				}
-				// Check against user's system group
-				if trimmedGroup == userGroup {
-					whitelistMatched = true
-					break
-				}
-				// Also check against routingGroups (for flexibility)
-				for _, routingGroup := range routingGroups {
-					if routingGroup == trimmedGroup {
+			} else {
+				// Fallback: treat as comma-separated system group names (legacy mode, system-group whitelisting)
+				allowedGroups := strings.Split(trimmedAllowed, ",")
+				for _, allowedGroup := range allowedGroups {
+					trimmedGroup := strings.TrimSpace(allowedGroup)
+					if trimmedGroup == "" {
+						continue
+					}
+					// Check against user's system group
+					if trimmedGroup == userGroup {
 						whitelistMatched = true
 						break
 					}
-				}
-				if whitelistMatched {
-					break
+					// Also check against routingGroups (for flexibility)
+					for _, routingGroup := range routingGroups {
+						if routingGroup == trimmedGroup {
+							whitelistMatched = true
+							break
+						}
+					}
+					if whitelistMatched {
+						break
+					}
 				}
 			}
 		}

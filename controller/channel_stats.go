@@ -177,6 +177,30 @@ func getChannelStatsWithCache(channelID int, modelName string, startTime, endTim
 	// 计算时间范围内的最大停服占比（窗口级），用于边界场景展示。
 	result.DowntimePercent = computeMaxDowntimePercent(dbStats)
 
+	// 在调试模式下输出一次聚合前后关键指标，便于排查三级缓存读路径
+	// 与数据库窗口对齐问题（对应 CL-08 / CS-xx 场景）。
+	if common.DebugEnabled {
+		var l1Req, l2Req int64
+		if l1Data != nil {
+			l1Req = l1Data.RequestCount
+		}
+		if l2Data != nil {
+			l2Req = l2Data.RequestCount
+		}
+		common.SysLog(fmt.Sprintf(
+			"[GetChannelStatsDebug] channel_id=%d model=%s range=[%d,%d] db_windows=%d l1_req=%d l2_req=%d total_req=%d total_tokens=%d",
+			channelID,
+			modelName,
+			startTime,
+			endTime,
+			len(dbStats),
+			l1Req,
+			l2Req,
+			result.RequestCount,
+			result.TotalTokens,
+		))
+	}
+
 	return result, nil
 }
 
@@ -413,6 +437,19 @@ func GetChannelCurrentStats(c *gin.Context) {
 
 	// 获取统计摘要
 	summary := channel.GetStatisticsSummary()
+
+	// 在调试/监控场景下输出一次关键统计，用于排查停服占比等字段是否已由 L3 聚合正确回填到 channels 表。
+	if common.DebugEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[GetChannelCurrentStats] channel_id=%d tpm=%d rpm=%d downtime_percentage=%.2f fail_rate=%.2f cache_hit_rate=%.2f",
+			summary.ChannelId,
+			summary.TPM,
+			summary.RPM,
+			summary.DowntimePercentage,
+			summary.FailRate,
+			summary.AvgCacheHitRate,
+		))
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

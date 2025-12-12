@@ -734,8 +734,10 @@ func ComputeRoutingGroups(c *gin.Context, usingGroup string) []string {
 	}
 
 	// Step 2: 获取用户的 Active P2P 分组 ID
+	// 说明：此处强制从 DB 读取（fromDB=true），避免在多进程/多连接场景下命中可能已失效的
+	// Redis/L1 缓存导致 P2P 成员关系滞后，从而在刚加入分组后短时间内仍然被判定为无有效 P2P 分组。
 	var userP2PGroupIDs []int
-	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, false)
+	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, true)
 	if err != nil {
 		// P2P 分组获取失败不阻塞请求，仅记录日志
 		common.SysLog(fmt.Sprintf("failed to get user P2P groups for user %d in distributor: %v", userId, err))
@@ -765,7 +767,8 @@ func ComputeRoutingGroupsForBillingGroup(c *gin.Context, billingGroup string) []
 
 	// 获取用户的 Active P2P 分组 ID
 	var userP2PGroupIDs []int
-	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, false)
+	// 同 ComputeRoutingGroups，一律强制从 DB 读取以保证 P2P 成员关系的强一致性。
+	userP2PGroupIDs, err := model.GetUserActiveGroups(userId, true)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to get user P2P groups for user %d in distributor: %v", userId, err))
 		userP2PGroupIDs = []int{}
@@ -828,8 +831,20 @@ func computeEffectiveP2PGroupIDs(c *gin.Context, userP2PGroupIDs []int, userId i
 	// 标记为「有 P2P 限制但无有效分组」，后续路由阶段将直接视为无可用渠道，
 	// 而不是退回到纯系统分组渠道。
 	if len(effectiveP2PGroupIDs) == 0 {
+		if common.DebugEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[P2PDebug] user_id=%d token_allowed=%v user_groups=%v -> NO effective P2P groups",
+				userId, tokenP2PList, userP2PGroupIDs,
+			))
+		}
 		c.Set(ctxKeyTokenP2PConstraintNoEffective, true)
 	} else {
+		if common.DebugEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[P2PDebug] user_id=%d token_allowed=%v user_groups=%v -> effective=%v",
+				userId, tokenP2PList, userP2PGroupIDs, effectiveP2PGroupIDs,
+			))
+		}
 		c.Set(ctxKeyTokenP2PConstraintNoEffective, false)
 	}
 

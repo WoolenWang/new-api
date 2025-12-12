@@ -185,7 +185,22 @@ func CheckAndReservePackageQuota(sub *model.Subscription, pkg *model.Package, es
 	if pkg.Quota > 0 {
 		// 计算预扣后的消耗量
 		projectedConsumed := sub.TotalConsumed + estimatedQuota
+
+		// 在 DEBUG 模式下输出月度总限额检查的详细信息，便于排查「应当超限却未超限」等问题。
+		if common.DebugEnabled && common.DataPlaneLogEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[PackageMonthlyDebug] subscription_id=%d package_id=%d total_consumed=%d estimated_quota=%d projected=%d monthly_quota=%d",
+				sub.Id, pkg.Id, sub.TotalConsumed, estimatedQuota, projectedConsumed, pkg.Quota,
+			))
+		}
+
 		if projectedConsumed > pkg.Quota {
+			if common.DataPlaneLogEnabled {
+				common.SysLog(fmt.Sprintf(
+					"[PackageMonthlyExceeded] subscription_id=%d package_id=%d total_consumed=%d estimated_quota=%d projected=%d monthly_quota=%d",
+					sub.Id, pkg.Id, sub.TotalConsumed, estimatedQuota, projectedConsumed, pkg.Quota,
+				))
+			}
 			return fmt.Errorf(
 				"monthly quota exceeded: consumed=%d, estimated=%d, limit=%d",
 				sub.TotalConsumed, estimatedQuota, pkg.Quota,

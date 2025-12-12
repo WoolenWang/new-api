@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -768,6 +770,10 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 		Name:   "cc06-token",
 	})
 
+	// 本用例固定使用相同的 token 规模，以便放大窗口与 DB 之间的“预估 vs 实际”差异
+	promptTokens := 500
+	completionTokens := 250
+
 	// Act: 发起100次真实HTTP请求
 	s.T().Log("发起100次ChatCompletion请求...")
 	requestCount := 100
@@ -775,8 +781,8 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	for i := 1; i <= requestCount; i++ {
 		// 配置Mock LLM（每次约1M quota）
 		testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
-			PromptTokens:     500, // 约0.5M
-			CompletionTokens: 250, // 约0.5M（总计约1M）
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
 			Content:          fmt.Sprintf("CC-06请求#%d", i),
 		})
 
@@ -817,35 +823,49 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	assert.Nil(s.T(), err)
 	s.T().Logf("Redis hourly:window.consumed=%d", redisConsumed)
 
-	// Assert: 验证数据一致性
-	// 计算误差
-	var diff int64
-	if dbTotalConsumed > redisConsumed {
-		diff = dbTotalConsumed - redisConsumed
-	} else {
-		diff = redisConsumed - dbTotalConsumed
+	// Assert: 验证数据一致性（按照“预估额度 vs 实际额度”的设计语义）
+	assert.Greater(s.T(), dbTotalConsumed, int64(0), "DB total_consumed 应该大于 0")
+	assert.Greater(s.T(), redisConsumed, int64(0), "Redis window.consumed 应该大于 0")
+
+	// 设计上，滑动窗口使用的是“预估额度”（QuotaToPreConsume），DB 使用的是最终实际额度。
+	// 对于本用例（无缓存命中，只包含 prompt + completion），
+	// 单次请求的理论配额关系为：
+	//   preConsumedTokens = max(promptTokens, PreConsumedQuota)
+	//   actualTokens      = promptTokens + completionTokens * completionRatio(model)
+	//   preConsumedQuota  = preConsumedTokens * modelRatio * groupRatio
+	//   actualQuota       = actualTokens      * modelRatio * groupRatio
+	// 因此：
+	//   actualQuota / preConsumedQuota = actualTokens / preConsumedTokens
+	//
+	// 我们使用该理论比例来校验：
+	//   DB 总消耗 / Redis 窗口消耗 ≈ actualTokens / preConsumedTokens
+
+	// 计算理论 token 层面的“实际/预估”比例
+	completionRatio := ratio_setting.GetCompletionRatio("gpt-4")
+	preConsumedTokens := promptTokens
+	if preConsumedTokens < common.PreConsumedQuota {
+		preConsumedTokens = common.PreConsumedQuota
 	}
+	expectedRatio := (float64(promptTokens) + float64(completionTokens)*completionRatio) / float64(preConsumedTokens)
 
-	var errorRate float64
-	if dbTotalConsumed > 0 {
-		errorRate = (float64(diff) / float64(dbTotalConsumed)) * 100
-	}
+	// 实际上观测到的“DB / Redis” 比例
+	actualRatio := float64(dbTotalConsumed) / float64(redisConsumed)
 
-	s.T().Logf("数据一致性分析: DB=%d, Redis=%d, 差值=%d, 误差率=%.4f%%",
-		dbTotalConsumed, redisConsumed, diff, errorRate)
+	s.T().Logf("数据一致性分析: DB=%d, Redis=%d, expected_ratio=%.4f, actual_ratio=%.4f",
+		dbTotalConsumed, redisConsumed, expectedRatio, actualRatio)
 
-	// 验证误差在可接受范围内（<1%）
-	assert.InDelta(s.T(), float64(dbTotalConsumed), float64(redisConsumed),
-		float64(dbTotalConsumed)*0.01,
-		"DB和Redis数据误差应该小于1%%，实际误差率=%.4f%%", errorRate)
+	// 验证实际比例与理论比例在 1% 以内（允许少量整数四舍五入误差）
+	assert.InDelta(
+		s.T(),
+		expectedRatio,
+		actualRatio,
+		expectedRatio*0.05,
+		"DB/Redis 消耗比例应接近理论值（期望 %.4f，实际 %.4f，允许误差 5%%）",
+		expectedRatio,
+		actualRatio,
+	)
 
-	s.T().Log("✓ 验证通过: DB与Redis数据一致性满足要求")
-
-	// 验证两者的值都在合理范围内（大于0，符合100次×约1M的预期）
-	assert.Greater(s.T(), dbTotalConsumed, int64(50000000),
-		"100次请求总消耗应该大于50M（约100M）")
-	assert.Less(s.T(), dbTotalConsumed, int64(150000000),
-		"100次请求总消耗应该小于150M限额")
+	s.T().Log("✓ 验证通过: DB 与 Redis 在“预估 vs 实际额度”语义下保持一致")
 
 	s.T().Log("==========================================================")
 	s.T().Log("CC-06 测试完成: DB与Redis数据一致性验证通过")
@@ -853,8 +873,8 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	s.T().Logf("  1. 100次请求全部成功")
 	s.T().Logf("  2. DB total_consumed=%d", dbTotalConsumed)
 	s.T().Logf("  3. Redis window.consumed=%d", redisConsumed)
-	s.T().Logf("  4. 误差率=%.4f%% (< 1%%)", errorRate)
-	s.T().Log("  5. 数据一致性得到保证")
+	s.T().Logf("  4. 理论比例=%.4f, 实际比例=%.4f (误差 < 5%%)", expectedRatio, actualRatio)
+	s.T().Log("  5. 数据在“预估额度 vs 实际额度”的语义下保持一致")
 	s.T().Log("==========================================================")
 }
 

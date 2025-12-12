@@ -56,6 +56,10 @@ func GetUserActiveGroups(userId int, fromDB bool) ([]int, error) {
 		return nil, err
 	}
 
+	if common.DebugEnabled {
+		common.SysLog(fmt.Sprintf("[P2PDebug] DB active groups for user_id=%d: %v", userId, groupIds))
+	}
+
 	// 异步回填缓存
 	if common.RedisEnabled {
 		gopool.Go(func() {

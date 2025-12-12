@@ -133,7 +133,17 @@ func (mb *ModelBaseline) Update() error {
 		now = mb.UpdatedAt + 1
 	}
 	mb.UpdatedAt = now
-	return DB.Save(mb).Error
+
+	updates := map[string]interface{}{
+		"baseline_channel_id": mb.BaselineChannelId,
+		"prompt":              mb.Prompt,
+		"baseline_output":     mb.BaselineOutput,
+		"updated_at":          now,
+	}
+
+	return DB.Model(&ModelBaseline{}).
+		Where("id = ?", mb.Id).
+		Updates(updates).Error
 }
 
 // UpdateModelBaseline is a convenience wrapper used by integration tests

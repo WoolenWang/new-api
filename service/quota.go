@@ -584,11 +584,36 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 
 	// ============ TS4: 套餐消耗更新分支 ============
 	if relayInfo.UsingPackageId > 0 {
-		// 使用了套餐，更新套餐的 total_consumed
-		// 注意：滑动窗口已在 PreConsumeQuota 时通过 Lua 脚本原子性更新
-		// 这里仅更新数据库的月度总消耗统计
-
 		if quota > 0 {
+			// 在实际消耗额度已知的情况下，再次基于 DB 中最新的 total_consumed
+			// 与套餐的月度总限额做一次保护性校验，防止「预估额度过小」导致
+			// PreConsumeQuota 未能及时发现月度超限，从而出现包月额度被透支的情况。
+			if sub, subErr := model.GetSubscriptionByIdFromDB(relayInfo.UsingPackageId); subErr == nil {
+				if pkg, pkgErr := model.GetPackageByIDFromDB(sub.PackageId); pkgErr == nil && pkg.Quota > 0 {
+					projected := sub.TotalConsumed + int64(quota)
+					if projected > pkg.Quota {
+						// 月度总限额实际已超出：本次请求应视为「套餐额度已用尽后的 Fallback 到用户余额」。
+						// 为了与 TS4/PF-08 等场景保持一致，我们：
+						//   1. 不再递增套餐的 total_consumed（保持在配额内，例如 95M）
+						//   2. 将本次消耗完全计入用户余额和 Token 余额
+						if common.DataPlaneLogEnabled {
+							common.SysLog(fmt.Sprintf(
+								"[PackageMonthlyExceededPost] subscription_id=%d package_id=%d total_consumed=%d quota=%d projected=%d, fallback to user balance",
+								sub.Id, pkg.Id, sub.TotalConsumed, pkg.Quota, projected,
+							))
+						}
+
+						// 将 UsingPackageId 置 0，复用后续的用户余额更新分支逻辑。
+						relayInfo.UsingPackageId = 0
+						return PostConsumeQuota(relayInfo, quota, preConsumedQuota, sendEmail)
+					}
+				}
+			}
+
+			// 使用了套餐，更新套餐的 total_consumed
+			// 注意：滑动窗口已在 PreConsumeQuota 时通过 Lua 脚本原子性更新
+			// 这里仅更新数据库的月度总消耗统计
+
 			// 异步更新套餐消耗（提升性能）
 			gopool.Go(func() {
 				err := model.IncrementSubscriptionConsumed(relayInfo.UsingPackageId, int64(quota))

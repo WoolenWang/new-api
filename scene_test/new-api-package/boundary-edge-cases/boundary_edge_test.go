@@ -500,10 +500,17 @@ func TestEC09_TwentyPackages_Performance(t *testing.T) {
 		Quota: 100000000,
 	})
 
-	// 创建20个不同优先级的套餐
+	// 创建20个不同优先级的套餐：
+	// - 系统管理员可用优先级为 1-10, 12-21，共 20 个级别（11 预留给 P2P 套餐）
+	// - 这里覆盖所有可用级别以验证排序与性能
+	priorities := []int{
+		21, 20, 19, 18, 17, 16, 15, 14, 13, 12,
+		10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
+	}
+
 	subscriptions := make([]*model.Subscription, 20)
 	for i := 0; i < 20; i++ {
-		priority := 21 - i // 优先级从20降到1
+		priority := priorities[i]
 		pkg := testutil.CreateTestPackage(t, testutil.PackageTestData{
 			Name:        fmt.Sprintf("test-package-%d", i),
 			Priority:    priority,
@@ -536,9 +543,9 @@ func TestEC09_TwentyPackages_Performance(t *testing.T) {
 	// Assert: 应返回20个套餐
 	assert.Equal(t, 20, len(packages), "Should return all 20 packages")
 
-	// Assert: 套餐应按优先级降序排列（20, 19, 18, ..., 1）
+	// Assert: 套餐应按优先级降序排列，且覆盖所有可用级别（21, 20, ..., 12, 10, ..., 1）
 	for i := 0; i < len(packages); i++ {
-		expectedPriority := 20 - i
+		expectedPriority := priorities[i]
 		pkg, err := model.GetPackageByID(packages[i].PackageId)
 		assert.NoError(t, err)
 		assert.Equal(t, expectedPriority, pkg.Priority,

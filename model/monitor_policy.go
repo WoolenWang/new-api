@@ -220,7 +220,33 @@ func (mp *MonitorPolicy) Update() error {
 		now = mp.UpdatedAt + 1
 	}
 	mp.UpdatedAt = now
-	return DB.Save(mp).Error
+
+	updates := map[string]interface{}{
+		"name":                mp.Name,
+		"target_models":       mp.TargetModels,
+		"test_types":          mp.TestTypes,
+		"evaluation_standard": mp.EvaluationStandard,
+		"target_channels":     mp.TargetChannels,
+		"threshold_overrides": mp.ThresholdOverrides,
+		"schedule_cron":       mp.ScheduleCron,
+		"is_enabled":          mp.IsEnabled,
+		"updated_at":          now,
+	}
+
+	return DB.Model(&MonitorPolicy{}).
+		Where("id = ?", mp.Id).
+		Updates(updates).Error
+}
+
+// UpdateMonitorPolicy is a convenience wrapper used by integration tests
+// to update an existing monitor policy via pointer.
+func UpdateMonitorPolicy(policy *MonitorPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	// For debugging and to ensure UpdatedAt is visible to callers, rely on the
+	// method receiver to mutate the struct in-place.
+	return policy.Update()
 }
 
 // DeleteMonitorPolicy 删除监控策略

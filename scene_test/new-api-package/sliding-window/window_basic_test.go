@@ -325,10 +325,9 @@ func TestSW05_TTL_AutoCleanup(t *testing.T) {
 // 测试ID: SW-06
 // 测试场景: RPM限制按请求数计数，而非quota
 // 预期结果:
-	// 预期结果:
 //   - RPM窗口consumed=请求数（非quota）
-=================
 //   - 第61次请求返回超限
+//
 // ============================================================================
 func TestSW06_RPM_SpecialHandling(t *testing.T) {
 	t.Log("SW-06: Testing RPM window counts requests not quota")
@@ -371,11 +370,10 @@ func TestSW06_RPM_SpecialHandling(t *testing.T) {
 // 测试场景: 同时配置多个时间维度的限额，各窗口独立创建和滑动
 // 预期结果:
 //   - 三个窗口独立创建
-	//   - 三个窗口独立创建
 //   - start_time各不相同
-=
-func TestSW07
 //   - 每个窗口独立滑动
+//   - 每个窗口独立滑动
+//
 // ============================================================================
 func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 	t.Log("SW-07: Testing multi-dimension independent sliding windows")
@@ -448,11 +446,9 @@ func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 // 测试ID: SW-08
 // 优先级: P1
 // 测试场景: 验证窗口可以跨越日期边界
-	// 优先级: P1
-	// 测试场景: 验证窗口可以跨越日期边界
-========
 // 预期结果:
 //   - 窗口时间正确（22:00 ~ 次日02:00）
+//
 // ============================================================================
 func TestSW08_FourHourly_CrossesMidnight(t *testing.T) {
 	t.Log("SW-08: Testing 4-hourly window can cross date boundary")
@@ -502,13 +498,10 @@ func TestSW08_FourHourly_CrossesMidnight(t *testing.T) {
 // 测试ID: SW-09
 // 优先级: P1
 // 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
-	// 优先级: P1
-	// 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
 // 预期结果:
-何窗口Key存在
-//   - 资
 //   - 无任何窗口Key存在
 //   - 资源节省验证
+//
 // ============================================================================
 func TestSW09_NoRequest_NoKeyCreated(t *testing.T) {
 	t.Log("SW-09: Testing no Redis keys created without requests")
@@ -532,19 +525,15 @@ func TestSW09_NoRequest_NoKeyCreated(t *testing.T) {
 
 	t.Log("SW-09: Test completed - No keys created without requests, resource saved")
 }
+
 // 测试ID: SW-10
 // 优先级: P0
-// 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
-	// 测试ID: SW-10
-	// 优先级: P0
-	// 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
+// 测试场景: 100个并发请求同一套餐，验证无 TOCTOU 竞态
 // 预期结果:
-无TOCTOU竞态
-// 预期结果:
-//   - co
-//   - consumed精确=成功请求数×0.2M
+//   - consumed 精确 = 成功请求数 × 0.2M
 //   - 无超限超额
 //   - 数据一致性保证
+//
 // ============================================================================
 func TestSW10_LuaAtomic_Concurrency(t *testing.T) {
 	t.Log("SW-10: Testing Lua script atomicity under concurrent requests")

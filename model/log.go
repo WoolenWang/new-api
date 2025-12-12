@@ -389,9 +389,11 @@ type Stat struct {
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat) {
+	// NOTE: logType 参数目前仅用于向后兼容，实际统计始终基于 LogTypeConsume。
+	// 调用方应依赖 type=LogTypeConsume 的语义来获取消费类日志的聚合结果。
 	tx := LOG_DB.Table("logs").Select("sum(quota) quota")
 
-	// 为rpm和tpm创建单独的查询
+	// 为 rpm 和 tpm 创建单独的查询
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
 
 	if username != "" {
@@ -424,12 +426,33 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	tx = tx.Where("type = ?", LogTypeConsume)
 	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
 
-	// 只统计最近60秒的rpm和tpm
+	// 只统计最近60秒的 rpm 和 tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
-	// 执行查询
+	// 执行查询：先聚合总消费额度，再补充 rpm / tpm。
+	// 在日志中输出一次详细的调试信息，方便排查仪表盘与明细日志不一致的问题。
 	tx.Scan(&stat)
-	rpmTpmQuery.Scan(&stat)
+	if common.DataPlaneLogEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[SumUsedQuota] after quota scan: username=%s model=%s channel=%d group=%s start=%d end=%d quota=%d",
+			username, modelName, channel, group, startTimestamp, endTimestamp, stat.Quota,
+		))
+	}
+
+	var rpmTpm struct {
+		Rpm int `json:"rpm"`
+		Tpm int `json:"tpm"`
+	}
+	rpmTpmQuery.Scan(&rpmTpm)
+	stat.Rpm = rpmTpm.Rpm
+	stat.Tpm = rpmTpm.Tpm
+
+	if common.DataPlaneLogEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[SumUsedQuota] after rpm/tpm scan: username=%s model=%s rpm=%d tpm=%d quota=%d",
+			username, modelName, stat.Rpm, stat.Tpm, stat.Quota,
+		))
+	}
 
 	return stat
 }

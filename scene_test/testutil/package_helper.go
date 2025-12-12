@@ -358,6 +358,21 @@ func AddUserToGroup(t *testing.T, userId int, groupId int, status int) *model.Us
 
 	err := model.DB.Create(userGroup).Error
 	assert.Nil(t, err, "Failed to add user to group")
+	if err == nil {
+		t.Logf("AddUserToGroup: user_id=%d group_id=%d status=%d (SQLitePath=%s)", userId, groupId, status, common.SQLitePath)
+
+		// 新增成员关系后同步失效该用户的分组缓存，避免在此前已被读取并缓存为空列表的情况下，
+		// 后续 P2P 选路仍然看到旧的空分组信息（导致误判为「有 P2P 限制但无有效分组」）。
+		// 仅在测试进程已显式初始化 Redis 客户端时执行（例如 StartTestServer 场景），
+		// 避免在未配置 Redis 的管理面测试中因为 RDB 为 nil 而触发 panic。
+		if common.RDB != nil && common.RedisEnabled {
+			if cacheErr := model.InvalidateUserGroupCache(userId); cacheErr != nil {
+				t.Logf("AddUserToGroup: failed to invalidate user group cache for user_id=%d: %v", userId, cacheErr)
+			} else {
+				t.Logf("AddUserToGroup: invalidated user group cache for user_id=%d", userId)
+			}
+		}
+	}
 	return userGroup
 }
 

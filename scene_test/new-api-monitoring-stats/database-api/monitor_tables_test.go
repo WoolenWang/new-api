@@ -216,10 +216,11 @@ func TestDB11_MonitorPolicies_Update(t *testing.T) {
 	err = policy.SetTestTypes(newTypes)
 	require.NoError(t, err, "Failed to set new test types")
 
-	result = suite.DB.Save(policy)
-	require.NoError(t, result.Error, "Failed to update policy")
+	err = model.UpdateMonitorPolicy(policy)
+	require.NoError(t, err, "Failed to update policy via model.UpdateMonitorPolicy")
 
 	// Verify UpdatedAt changed
+	t.Logf("DB-11 debug: initialUpdatedAt=%d updated=%d", initialUpdatedAt, policy.UpdatedAt)
 	assert.Greater(t, policy.UpdatedAt, initialUpdatedAt, "UpdatedAt should be updated")
 
 	// Retrieve and verify updates

@@ -196,6 +196,10 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			channelSelfRoute.GET("/models", controller.ChannelListModels)
 			channelSelfRoute.GET("/models_enabled", controller.EnabledListModels)
+			// Channel Statistics Routes (must be before /:id route to avoid path conflict)
+			channelSelfRoute.GET("/stats", controller.GetUserChannelStats)                // Get user's channels stats list
+			channelSelfRoute.GET("/stats/history", controller.GetUserChannelStatsHistory) // Get channel historical trend
+
 			channelSelfRoute.GET("/", controller.GetUserChannels)
 			channelSelfRoute.GET("/:id", controller.GetUserChannel)
 			channelSelfRoute.POST("/", controller.CreateUserChannel)
@@ -330,6 +334,13 @@ func SetApiRouter(router *gin.Engine) {
 			// User Self-Service Routes (automatically use authenticated user ID)
 			p2pGroupsRoute.GET("/self/owned", controller.GetSelfOwnedGroups)   // Get current user's owned groups
 			p2pGroupsRoute.GET("/self/joined", controller.GetSelfJoinedGroups) // Get current user's joined groups
+
+			// System Groups Statistics (for dashboard)
+			p2pGroupsRoute.GET("/system/stats", controller.GetSystemGroupsStats) // Get system groups (default, vip, svip) stats
+
+			// Public and Joined Group Channel List Routes
+			p2pGroupsRoute.GET("/public/channels", controller.GetPublicGroupChannels) // Get public group channels (desensitized)
+			p2pGroupsRoute.GET("/joined/channels", controller.GetJoinedGroupChannels) // Get joined group channels (full data)
 
 			// Member Management
 			p2pGroupsRoute.POST("/apply", controller.ApplyToJoinGroup)    // Apply to join group

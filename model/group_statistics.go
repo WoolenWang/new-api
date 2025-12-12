@@ -83,10 +83,23 @@ func UpsertGroupStatistics(stat *GroupStatistics) error {
 			now = existing.UpdatedAt + 1
 		}
 		stat.UpdatedAt = now
-		return DB.Model(&GroupStatistics{}).
+
+		if err := DB.Model(&GroupStatistics{}).
 			Where("group_id = ? AND model_name = ? AND time_window_start = ?",
 				stat.GroupId, stat.ModelName, stat.TimeWindowStart).
-			Updates(stat).Error
+			Updates(stat).Error; err != nil {
+			return err
+		}
+
+		// Ensure the caller's struct observes the final UpdatedAt value after
+		// GORM hooks, even when updates happen within the same second.
+		var latest GroupStatistics
+		if err := DB.Where("group_id = ? AND model_name = ? AND time_window_start = ?",
+			stat.GroupId, stat.ModelName, stat.TimeWindowStart).
+			First(&latest).Error; err == nil {
+			stat.UpdatedAt = latest.UpdatedAt
+		}
+		return nil
 	}
 
 	// SQLite: 同样按唯一键查找以保证 UpdatedAt 单调递增。
@@ -107,7 +120,32 @@ func UpsertGroupStatistics(stat *GroupStatistics) error {
 		now = existing.UpdatedAt + 1
 	}
 	stat.UpdatedAt = now
-	return DB.Save(stat).Error
+
+	updates := map[string]interface{}{
+		"tpm":                  stat.TPM,
+		"rpm":                  stat.RPM,
+		"fail_rate":            stat.FailRate,
+		"avg_response_time_ms": stat.AvgResponseTimeMs,
+		"avg_cache_hit_rate":   stat.AvgCacheHitRate,
+		"stream_req_ratio":     stat.StreamReqRatio,
+		"quota_pm":             stat.QuotaPM,
+		"total_tokens":         stat.TotalTokens,
+		"total_quota":          stat.TotalQuota,
+		"avg_concurrency":      stat.AvgConcurrency,
+		"total_sessions":       stat.TotalSessions,
+		"downtime_percentage":  stat.DowntimePercentage,
+		"unique_users":         stat.UniqueUsers,
+		"updated_at":           now,
+	}
+
+	if err := DB.Model(&GroupStatistics{}).
+		Where("group_id = ? AND model_name = ? AND time_window_start = ?",
+			stat.GroupId, stat.ModelName, stat.TimeWindowStart).
+		Updates(updates).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // GetGroupStatistics 查询分组统计数据

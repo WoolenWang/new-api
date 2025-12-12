@@ -29,18 +29,21 @@ type BillingIntegrationTestSuite struct {
 
 // SetupSuite 测试套件初始化
 func (s *BillingIntegrationTestSuite) SetupSuite() {
-	server, err := testutil.StartServer(testutil.DefaultConfig())
+	// 使用统一的 StartTestServer，确保：
+	// - PACKAGE_ENABLED=true
+	// - Redis / MiniRedis 已正确初始化
+	// - 测试进程与被测服务共享同一 SQLite 数据库
+	server, err := testutil.StartTestServer()
 	s.Require().NoError(err)
+
 	s.server = server
 	s.client = testutil.NewAPIClient(server)
-	s.mockLLM = testutil.NewMockLLMServer()
+	// 复用 StartTestServer 创建的 Mock LLM，避免重复启动/关闭
+	s.mockLLM = server.MockLLM
 }
 
 // TearDownSuite 测试套件清理
 func (s *BillingIntegrationTestSuite) TearDownSuite() {
-	if s.mockLLM != nil {
-		s.mockLLM.Close()
-	}
 	if s.server != nil {
 		s.server.Stop()
 	}

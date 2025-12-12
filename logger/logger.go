@@ -189,3 +189,39 @@ func LogJson(ctx context.Context, msg string, obj any) {
 	}
 	LogDebug(ctx, fmt.Sprintf("%s | %s", msg, string(jsonStr)))
 }
+
+// Info 记录结构化的 Info 级别日志。
+// event 表示事件名称，fields 为关键字段（会被序列化为 JSON）。
+// 该接口主要用于新的监控/统计模块，内部复用现有的 LogInfo。
+func Info(ctx context.Context, event string, fields map[string]interface{}) {
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	payload := map[string]interface{}{
+		"event":  event,
+		"fields": fields,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		LogInfo(ctx, fmt.Sprintf("%s | %+v", event, fields))
+		return
+	}
+	LogInfo(ctx, string(data))
+}
+
+// Warn 记录结构化的 Warn 级别日志，语义与 Info 类似但用于告警场景。
+func Warn(ctx context.Context, event string, fields map[string]interface{}) {
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	payload := map[string]interface{}{
+		"event":  event,
+		"fields": fields,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		LogWarn(ctx, fmt.Sprintf("%s | %+v", event, fields))
+		return
+	}
+	LogWarn(ctx, string(data))
+}
