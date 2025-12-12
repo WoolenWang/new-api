@@ -111,6 +111,11 @@ func init() {
 	// 这里使用延迟初始化，在第一次调用时加载
 }
 
+// ResetSlidingWindowScriptCache 重置 Lua 脚本 SHA 缓存（主要用于单元测试，在切换 Redis 实例时调用）
+func ResetSlidingWindowScriptCache() {
+	scriptSHA = ""
+}
+
 // ensureScriptLoaded 确保Lua脚本已加载，如果未加载则立即加载
 func ensureScriptLoaded(ctx context.Context) error {
 	if scriptSHA != "" {
@@ -283,6 +288,14 @@ func CheckAllSlidingWindows(
 		result, err := CheckAndConsumeSlidingWindow(ctx, subscription.Id, config, quota)
 		if err != nil {
 			return fmt.Errorf("failed to check %s window: %w", config.Period, err)
+		}
+
+		// 在 DEBUG 模式下输出窗口检查的详细调试信息，便于定位「套餐超限 / 未超限」相关问题。
+		if common.DebugEnabled && common.DataPlaneLogEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[PackageWindowDebug] subscription_id=%d package_id=%d period=%s estimated_quota=%d success=%t consumed=%d limit=%d time_left=%d",
+				subscription.Id, pkg.Id, config.Period, quota, result.Success, result.Consumed, config.Limit, result.TimeLeft,
+			))
 		}
 
 		if !result.Success {

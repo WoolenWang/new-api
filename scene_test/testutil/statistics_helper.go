@@ -166,10 +166,8 @@ func UpdateSubscriptionConsumed(t *testing.T, subscriptionId int, consumed int64
 
 // IncrementSubscriptionConsumed 增加订阅的total_consumed（用于测试）
 func IncrementSubscriptionConsumed(t *testing.T, subscriptionId int, increment int64) {
-	sub, err := model.GetSubscriptionById(subscriptionId)
-	assert.Nil(t, err, "Failed to get subscription")
-
-	sub.TotalConsumed += increment
-	err = model.DB.Save(sub).Error
-	assert.Nil(t, err, "Failed to increment subscription consumed")
+	// 为了与正式代码保持一致，这里直接调用模型层的原子更新函数，
+	// 避免通过缓存读取旧值导致跨用例“脏累加”。
+	err := model.IncrementSubscriptionConsumed(subscriptionId, increment)
+	assert.Nil(t, err, "Failed to increment subscription consumed via model.IncrementSubscriptionConsumed")
 }

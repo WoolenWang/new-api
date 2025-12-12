@@ -186,8 +186,8 @@ func TestSW02_WithinWindow_Accumulates(t *testing.T) {
 // 预期结果:
 //   - consumed=8M (第一次请求后)
 //   - 第二次请求前consumed不变
-===========================
 //   - 第二次请求返回status=0 (失败)
+//
 // ============================================================================
 func TestSW03_Exceeded_Rejects(t *testing.T) {
 	t.Log("SW-03: Testing window limit exceeded rejection")
@@ -229,9 +229,8 @@ func TestSW03_Exceeded_Rejects(t *testing.T) {
 //   - 旧窗口被DEL
 //   - 创建新窗口
 //   - 新start_time=now
-============
-func TestSW04_Expi
 //   - 新consumed=quota (重新开始计数)
+//
 // ============================================================================
 func TestSW04_Expired_Rebuilds(t *testing.T) {
 	t.Log("SW-04: Testing window auto-rebuild after expiration")
@@ -281,9 +280,10 @@ func TestSW04_Expired_Rebuilds(t *testing.T) {
 // 优先级: P1
 // 测试场景: 窗口TTL过期后，Key被Redis自动删除
 // 预期结果:
-W05_TTL_AutoCleanup(
 //   - Key被Redis自动删除
 //   - 下次请求创建新窗口
+//
+// =========================================================================
 // ============================================================================
 func TestSW05_TTL_AutoCleanup(t *testing.T) {
 	t.Log("SW-05: Testing window TTL auto-cleanup")
@@ -323,11 +323,11 @@ func TestSW05_TTL_AutoCleanup(t *testing.T) {
 // ============================================================================
 // SW-06: RPM特殊处理
 // 测试ID: SW-06
-// 优先级: P0
 // 测试场景: RPM限制按请求数计数，而非quota
 // 预期结果:
-PM_SpecialHandling(t *testing.T)
+	// 预期结果:
 //   - RPM窗口consumed=请求数（非quota）
+=================
 //   - 第61次请求返回超限
 // ============================================================================
 func TestSW06_RPM_SpecialHandling(t *testing.T) {
@@ -368,13 +368,13 @@ func TestSW06_RPM_SpecialHandling(t *testing.T) {
 // ============================================================================
 // SW-07: 多维度独立滑动
 // 测试ID: SW-07
-// 优先级: P0
 // 测试场景: 同时配置多个时间维度的限额，各窗口独立创建和滑动
 // 预期结果:
 //   - 三个窗口独立创建
-.T) {
-	t.Log("SW-07: 
+	//   - 三个窗口独立创建
 //   - start_time各不相同
+=
+func TestSW07
 //   - 每个窗口独立滑动
 // ============================================================================
 func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
@@ -445,13 +445,12 @@ func TestSW07_MultiDimension_IndependentSliding(t *testing.T) {
 	t.Log("SW-07: Test completed - Multiple dimensions slide independently")
 }
 
-// ============================================================================
-// SW-08: 4小时窗口跨度
 // 测试ID: SW-08
 // 优先级: P1
-) {
-	t.Log("SW-08: Te
 // 测试场景: 验证窗口可以跨越日期边界
+	// 优先级: P1
+	// 测试场景: 验证窗口可以跨越日期边界
+========
 // 预期结果:
 //   - 窗口时间正确（22:00 ~ 次日02:00）
 // ============================================================================
@@ -500,14 +499,14 @@ func TestSW08_FourHourly_CrossesMidnight(t *testing.T) {
 	t.Log("SW-08: Test completed - 4-hourly window correctly crosses midnight")
 }
 
-// ============================================================================
-// SW-09: 无请求不创建Key
 // 测试ID: SW-09
 // 优先级: P1
- {
-	t.Log("SW-09: Testing no Redis keys cr
 // 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
+	// 优先级: P1
+	// 测试场景: 启用套餐后，如果不发起任何请求，Redis中不应创建任何窗口Key
 // 预期结果:
+何窗口Key存在
+//   - 资
 //   - 无任何窗口Key存在
 //   - 资源节省验证
 // ============================================================================
@@ -533,14 +532,16 @@ func TestSW09_NoRequest_NoKeyCreated(t *testing.T) {
 
 	t.Log("SW-09: Test completed - No keys created without requests, resource saved")
 }
-
-// ============================================================================
-// SW-10: Lua脚本原子性（并发测试）
 // 测试ID: SW-10
 // 优先级: P0
- Lua script atomicity under concu
 // 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
+	// 测试ID: SW-10
+	// 优先级: P0
+	// 测试场景: 100个并发请求同一套餐，验证无TOCTOU竞态
 // 预期结果:
+无TOCTOU竞态
+// 预期结果:
+//   - co
 //   - consumed精确=成功请求数×0.2M
 //   - 无超限超额
 //   - 数据一致性保证

@@ -28,7 +28,13 @@ local ttl = tonumber(ARGV[5])
 local exists = redis.call('EXISTS', key)
 
 if exists == 0 then
-    -- 场景1: 窗口不存在（首次请求或TTL已清理），创建新窗口
+    -- 场景1: 窗口不存在（首次请求或TTL已清理）
+    -- 如果本次请求的预扣额度本身就超过限额，则直接拒绝，不创建窗口。
+    if quota > limit then
+        return {0, 0, now, now + duration}
+    end
+
+    -- 否则创建新窗口并记录本次消耗
     redis.call('HSET', key, 'start_time', now)
     redis.call('HSET', key, 'end_time', now + duration)
     redis.call('HSET', key, 'consumed', quota)

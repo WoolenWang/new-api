@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 )
 
 // TestServer represents a running instance of the NewAPI server for testing.
@@ -42,6 +43,9 @@ type TestServer struct {
 
 	// MiniRedis is the in-memory Redis instance used by package-related scene tests.
 	MiniRedis *miniredis.Miniredis
+
+	// MockLLM is the upstream mock LLM server used by package-related scene tests.
+	MockLLM *MockLLMServer
 
 	cmd      *exec.Cmd
 	cancelFn context.CancelFunc
@@ -125,41 +129,30 @@ func executableName() string {
 	return "new-api-test"
 }
 
-var (
-	compileOnce   sync.Once
-	compiledPath  string
-	compiledError error
-)
-
 // CompileTestServer compiles the NewAPI server for testing.
 // It returns the path to the compiled executable.
 func CompileTestServer(projectRoot string) (string, error) {
-	compileOnce.Do(func() {
-		// Create a dedicated temporary directory for the compiled binary to
-		// avoid cross-package races when tests are run with `./scene_test/...`.
-		tmpDir, err := os.MkdirTemp("", "newapi-test-*")
-		if err != nil {
-			compiledError = fmt.Errorf("failed to create temp dir for test server: %w", err)
-			return
-		}
+	// Always compile into a dedicated temporary directory for isolation.
+	// This avoids stale binaries when tests modify the main application code
+	// between runs (e.g., during iterative debugging of scene tests).
+	tmpDir, err := os.MkdirTemp("", "newapi-test-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp dir for test server: %w", err)
+	}
 
-		exePath := filepath.Join(tmpDir, executableName())
+	exePath := filepath.Join(tmpDir, executableName())
 
-		// Compile the main package into the temporary path.
-		cmd := exec.Command("go", "build", "-o", exePath, ".")
-		cmd.Dir = projectRoot
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+	// Compile the main package into the temporary path.
+	cmd := exec.Command("go", "build", "-o", exePath, ".")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			compiledError = fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
-			return
-		}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
+	}
 
-		compiledPath = exePath
-	})
-
-	return compiledPath, compiledError
+	return exePath, nil
 }
 
 // StartServer starts a new test server instance with the given configuration.
@@ -406,6 +399,12 @@ func (s *TestServer) Stop() error {
 		os.RemoveAll(s.DataDir)
 	}
 
+	// Clean up Mock LLM server if it was started.
+	if s.MockLLM != nil {
+		s.MockLLM.Close()
+		s.MockLLM = nil
+	}
+
 	// Clean up MiniRedis if it was started via StartTestServer.
 	if s.MiniRedis != nil {
 		s.MiniRedis.Close()
@@ -561,6 +560,13 @@ func StartTestServer() (*TestServer, error) {
 		return nil, fmt.Errorf("failed to start miniredis for test server: %w", err)
 	}
 
+	// 为当前测试进程配置 Redis 客户端，使得诸如 GetUserQuota 等直接访问模型层的代码
+	// 在异步更新缓存时不会因为 common.RDB 为空而 panic。
+	common.RDB = redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	common.RedisEnabled = true
+
 	if cfg.CustomEnv == nil {
 		cfg.CustomEnv = make(map[string]string)
 	}
@@ -574,20 +580,35 @@ func StartTestServer() (*TestServer, error) {
 	// - 在测试环境下，通过环境变量将该上限调大，不影响生产默认行为。
 	cfg.CustomEnv["MAX_P2P_GROUPS_PER_USER"] = "100"
 
+	// Start a dedicated Mock LLM server for upstream simulation.
+	mockLLM := NewMockLLMServer()
+
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		mr.Close()
+		mockLLM.Close()
 		return nil, fmt.Errorf("failed to find project root for test server: %w", err)
 	}
 	cfg.ProjectRoot = projectRoot
 
+	// 在集成测试环境中默认开启 DEBUG 日志，便于观察滑动窗口、套餐选路等关键调试信息。
+	if cfg.CustomEnv == nil {
+		cfg.CustomEnv = make(map[string]string)
+	}
+	cfg.CustomEnv["DEBUG"] = "true"
+
 	server, err := StartServer(cfg)
 	if err != nil {
 		mr.Close()
+		mockLLM.Close()
 		return nil, err
 	}
 
 	server.MiniRedis = mr
+	server.MockLLM = mockLLM
+
+	// 为场景测试设置默认的渠道上游地址，便于 CreateTestChannel 在未显式指定 BaseURL 时使用。
+	SetDefaultChannelBaseURL(mockLLM.URL())
 	return server, nil
 }
 

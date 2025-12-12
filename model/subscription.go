@@ -1,6 +1,9 @@
 package model
 
 import (
+	"errors"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -97,18 +100,31 @@ func GetUserSubscriptions(userId int, status string) ([]*Subscription, error) {
 // IncrementSubscriptionConsumed atomically increments the total_consumed field
 // This is the same as UpdateConsumedQuota, provided for API consistency
 func IncrementSubscriptionConsumed(id int, quota int64) error {
-	err := DB.Model(&Subscription{}).Where("id = ?", id).
-		Update("total_consumed", gorm.Expr("total_consumed + ?", quota)).Error
+	const maxRetries = 5
 
-	if err != nil {
-		return err
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := DB.Model(&Subscription{}).
+			Where("id = ?", id).
+			Update("total_consumed", gorm.Expr("total_consumed + ?", quota)).Error
+		if err == nil {
+			// 【缓存一致性】更新消耗量后，使缓存失效
+			// 注意：由于 total_consumed 会频繁更新，缓存失效可能导致缓存频繁穿透
+			// 但为保证数据一致性，仍需失效缓存
+			GetPackageCache().InvalidateSubscription(id)
+			return nil
+		}
+
+		// 对于 SQLite，高并发下可能出现 "database is locked"（SQLITE_BUSY）。
+		// 在这种情况下进行短暂重试，可以提高并发更新成功率，避免误报失败。
+		if !(common.UsingSQLite && strings.Contains(err.Error(), "database is locked")) {
+			return err
+		}
+
+		// 退避等待一小段时间后重试
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 	}
 
-	// 【缓存一致性】更新消耗量后，使缓存失效
-	// 注意：由于 total_consumed 会频繁更新，缓存失效可能导致缓存频繁穿透
-	// 但为保证数据一致性，仍需失效缓存
-	GetPackageCache().InvalidateSubscription(id)
-	return nil
+	return errors.New("failed to increment subscription total_consumed after retries")
 }
 
 // GetUserActiveSubscriptions retrieves active subscriptions for a user
@@ -124,14 +140,65 @@ func GetUserActiveSubscriptions(userId int, p2pGroupId *int) ([]*Subscription, e
 		Where("subscriptions.start_time <= ?", now).
 		Where("subscriptions.end_time > ?", now)
 
-	if p2pGroupId != nil {
-		query = query.Where("packages.p2p_group_id = 0 OR packages.p2p_group_id = ?", *p2pGroupId)
-	} else {
-		query = query.Where("packages.p2p_group_id = 0")
+	// 兼容旧版本数据库：仅在 packages 表包含 p2p_group_id 列时才追加相关过滤条件，
+	// 防止在未完成迁移的环境中出现 "no such column: packages.p2p_group_id" 错误。
+	if hasPackagesP2PGroupColumn() {
+		if p2pGroupId != nil {
+			query = query.Where("packages.p2p_group_id = 0 OR packages.p2p_group_id = ?", *p2pGroupId)
+		} else {
+			query = query.Where("packages.p2p_group_id = 0")
+		}
 	}
 
 	err := query.Order("packages.priority DESC, subscriptions.id ASC").Find(&subs).Error
 	return subs, err
+}
+
+// ActivateSubscription performs an atomic state transition from "inventory" to "active"
+// for the given subscription ID. It calculates start_time/end_time based on the
+// associated package duration and uses a conditional UPDATE to avoid race conditions.
+//
+// This function is designed to be safe under concurrent activation attempts:
+// only one caller will successfully update the row (RowsAffected == 1),
+// others will receive an "invalid status" error.
+func ActivateSubscription(id int, now int64) error {
+	// Load subscription and its package to compute end_time.
+	var sub Subscription
+	if err := DB.First(&sub, id).Error; err != nil {
+		return err
+	}
+
+	pkg, err := GetPackageByID(sub.PackageId)
+	if err != nil {
+		return err
+	}
+
+	endTime, err := CalculateEndTime(now, pkg)
+	if err != nil {
+		return err
+	}
+
+	// Atomic state transition: only update when current status is "inventory".
+	result := DB.Model(&Subscription{}).
+		Where("id = ? AND status = ?", id, SubscriptionStatusInventory).
+		Updates(map[string]interface{}{
+			"status":     SubscriptionStatusActive,
+			"start_time": now,
+			"end_time":   endTime,
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		// Status was not "inventory" at the time of update (可能是重复激活或并发冲突)。
+		return errors.New("invalid status")
+	}
+
+	// Invalidate subscription cache to ensure subsequent reads see the new state.
+	GetPackageCache().InvalidateSubscription(id)
+	return nil
 }
 
 // Activate activates a subscription, setting start_time and calculating end_time
@@ -199,4 +266,52 @@ func CountUserActiveSubscriptions(userId int) (int64, error) {
 		Where("end_time > ?", now).
 		Count(&count).Error
 	return count, err
+}
+
+// hasPackagesP2PGroupColumn checks once whether the packages table contains
+// the p2p_group_id column. This is used as a guard before adding SQL that
+// references the column so we do not trigger runtime "no such column" errors
+// on databases that were created before the P2P package field existed.
+var (
+	packagesP2PGroupColumnOnce   sync.Once
+	packagesP2PGroupColumnExists bool
+)
+
+func hasPackagesP2PGroupColumn() bool {
+	packagesP2PGroupColumnOnce.Do(func() {
+		if DB == nil {
+			// DB 尚未初始化时，不做任何判断，保持默认 false。
+			return
+		}
+
+		// 对于非 SQLite 数据库，直接委托给 GORM 的 HasColumn 即可。
+		if !common.UsingSQLite {
+			packagesP2PGroupColumnExists = DB.Migrator().HasColumn(&Package{}, "P2PGroupId")
+			if !packagesP2PGroupColumnExists {
+				common.SysLog("warning: packages.p2p_group_id column not found on non-SQLite DB; P2P package filtering disabled until migration runs")
+			}
+			return
+		}
+
+		// SQLite 环境下，为了避免 HasColumn 在某些驱动版本上的兼容性问题，
+		// 直接使用 PRAGMA table_info 读取实际表结构进行判断。
+		type columnInfo struct {
+			Name string `gorm:"column:name"`
+		}
+		var cols []columnInfo
+		if err := DB.Raw("PRAGMA table_info(packages)").Scan(&cols).Error; err != nil {
+			common.SysError("failed to inspect packages table schema for p2p_group_id: " + err.Error())
+			return
+		}
+		for _, c := range cols {
+			if c.Name == "p2p_group_id" {
+				packagesP2PGroupColumnExists = true
+				break
+			}
+		}
+		if !packagesP2PGroupColumnExists {
+			common.SysLog("warning: packages.p2p_group_id column not found in SQLite schema; P2P package filtering disabled until migration runs")
+		}
+	})
+	return packagesP2PGroupColumnExists
 }

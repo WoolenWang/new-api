@@ -238,6 +238,19 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 		}
 	}
 
+	// 在 DEBUG 模式下输出访问控制的关键上下文，便于排查 P2P / 系统分组权限问题。
+	if common.DebugEnabled && common.DataPlaneLogEnabled {
+		allowedRaw := ""
+		if channel.AllowedGroups != nil {
+			allowedRaw = *channel.AllowedGroups
+		}
+		common.SysLog(fmt.Sprintf(
+			"[ChannelAccessDebug] channel_id=%d owner=%d is_private=%t user_id=%d user_group=%s routing_groups=%v allowed_groups=%q has_p2p_constraint=%t model=%s client_ip=%s",
+			channel.Id, channel.OwnerUserId, channel.IsPrivate,
+			userId, userGroup, routingGroups, allowedRaw, hasP2PConstraint, model, clientIP,
+		))
+	}
+
 	// Owner always has access to their own channels (bypass all restrictions)
 	if channel.OwnerUserId == userId && userId != 0 {
 		return true
@@ -339,10 +352,22 @@ func CheckChannelAccess(channel *Channel, userId int, userGroup string, routingG
 
 	// If any whitelist is configured, user must match at least one whitelist rule
 	if hasWhitelist {
+		if common.DebugEnabled && common.DataPlaneLogEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[ChannelAccessResult] channel_id=%d has_whitelist=true whitelist_matched=%t -> allowed=%t",
+				channel.Id, whitelistMatched, whitelistMatched,
+			))
+		}
 		return whitelistMatched
 	}
 
 	// If no access control is set (not private, no whitelist), it's a shared/public P2P channel
+	if common.DebugEnabled && common.DataPlaneLogEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[ChannelAccessResult] channel_id=%d has_whitelist=false -> allowed=true",
+			channel.Id,
+		))
+	}
 	return true
 }
 
@@ -377,7 +402,10 @@ func GetRandomSatisfiedChannelWithPriority(group string, model string, userId in
 	}
 
 	if len(channels) == 0 {
-		return nil, nil
+		// Cache miss for this group/model combination: fall back to the
+		// database-based selector so that newly created or recently updated
+		// channels can still be used before the next cache sync.
+		return GetChannelWithPriority(group, model, userId, userGroup, clientIP, retry, excluded)
 	}
 
 	// Separate channels into three priority tiers based on ownership and access control
@@ -515,7 +543,9 @@ func GetRandomSatisfiedChannelWithPriorityMultiGroup(routingGroups []string, mod
 	}
 
 	if len(allChannelIDs) == 0 {
-		return nil, "", errors.New(fmt.Sprintf("no satisfied channel found in any routing group, groups: %v, model: %s", routingGroups, model))
+		// Cache miss for all routing groups: fall back to the DB-based selector so that
+		// newly created or recently updated channels can be used before the next cache sync.
+		return GetChannelWithPriorityMultiGroup(routingGroups, model, userId, userGroup, clientIP, retry)
 	}
 
 	// Step 2: Classify channels into three priority tiers (Private > Shared > Public)

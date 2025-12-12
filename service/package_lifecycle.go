@@ -42,13 +42,10 @@ func ActivateSubscription(subscriptionId int, userId int) error {
 		return errors.New("permission denied: you do not own this subscription")
 	}
 
-	// Step 3: Validate status
-	if sub.Status != model.SubscriptionStatusInventory {
-		return fmt.Errorf("invalid status: subscription is '%s', expected 'inventory'", sub.Status)
-	}
-
-	// Step 4: Activate subscription (model layer handles time calculation)
-	if err := sub.Activate(); err != nil {
+	// Step 3: Perform atomic state transition from inventory -> active.
+	// Use model-level helper to avoid race conditions under concurrent activation.
+	now := common.GetTimestamp()
+	if err := model.ActivateSubscription(subscriptionId, now); err != nil {
 		return fmt.Errorf("failed to activate subscription: %w", err)
 	}
 

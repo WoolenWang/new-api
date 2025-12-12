@@ -407,9 +407,10 @@ func (c *APIClient) ApproveGroupMember(groupID, userID, status int) error {
 
 // ChatCompletionRequest represents an OpenAI-compatible chat request.
 type ChatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Stream   bool          `json:"stream,omitempty"`
+	Model     string        `json:"model"`
+	Messages  []ChatMessage `json:"messages"`
+	Stream    bool          `json:"stream,omitempty"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 // ChatMessage represents a message in a chat conversation.

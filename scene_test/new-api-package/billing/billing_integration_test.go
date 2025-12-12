@@ -68,10 +68,18 @@ func (s *BillingIntegrationTestSuite) TestE2E_PackageBilling_CompleteFlow() {
 	})
 
 	// 创建测试渠道
-	channel := testutil.CreateTestChannel(s.T(), "e2e-test-channel", "vip", "gpt-4", s.mockLLM.URL())
+	channel := testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
+		Name:    "e2e-test-channel",
+		Group:   "vip",
+		Models:  "gpt-4",
+		BaseURL: s.mockLLM.URL(),
+	})
 
 	// 创建测试Token
-	token := testutil.CreateTestToken(s.T(), user.Id, "e2e-test-token")
+	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
+		UserId: user.Id,
+		Name:   "e2e-test-token",
+	})
 
 	s.T().Logf("Step 1: Environment prepared - User: %d, Channel: %d, Token: %s",
 		user.Id, channel.Id, token.Key)
@@ -232,8 +240,16 @@ func (s *BillingIntegrationTestSuite) TestE2E_MultiPackage_PriorityDegradation()
 		Quota:    100000000, // 100M
 	})
 
-	testutil.CreateTestChannel(s.T(), "test-channel", "vip", "gpt-4", s.mockLLM.URL())
-	token := testutil.CreateTestToken(s.T(), user.Id, "multi-pkg-token")
+	testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
+		Name:    "test-channel",
+		Group:   "vip",
+		Models:  "gpt-4",
+		BaseURL: s.mockLLM.URL(),
+	})
+	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
+		UserId: user.Id,
+		Name:   "multi-pkg-token",
+	})
 
 	// 创建两个套餐：高优先级（小限额）+ 低优先级（大限额）
 	pkgHigh := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
@@ -343,8 +359,16 @@ func (s *BillingIntegrationTestSuite) TestE2E_BillingFormula_Precision() {
 		Quota:    100000000,
 	})
 
-	testutil.CreateTestChannel(s.T(), "precision-channel", "default", "gpt-3.5", s.mockLLM.URL())
-	token := testutil.CreateTestToken(s.T(), user.Id, "precision-token")
+	testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
+		Name:    "precision-channel",
+		Group:   "default",
+		Models:  "gpt-3.5",
+		BaseURL: s.mockLLM.URL(),
+	})
+	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
+		UserId: user.Id,
+		Name:   "precision-token",
+	})
 
 	pkg := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
 		Name:        "precision-package",
@@ -428,8 +452,16 @@ func (s *BillingIntegrationTestSuite) TestE2E_ErrorRecovery_ConsistentState() {
 		Quota:    100000000,
 	})
 
-	testutil.CreateTestChannel(s.T(), "recovery-channel", "vip", "gpt-4", s.mockLLM.URL())
-	token := testutil.CreateTestToken(s.T(), user.Id, "recovery-token")
+	testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
+		Name:    "recovery-channel",
+		Group:   "vip",
+		Models:  "gpt-4",
+		BaseURL: s.mockLLM.URL(),
+	})
+	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
+		UserId: user.Id,
+		Name:   "recovery-token",
+	})
 
 	pkg := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
 		Name:        "recovery-package",

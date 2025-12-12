@@ -1,4 +1,4 @@
-package billing_routing_test
+package billing_routing
 
 import (
 	"fmt"
@@ -148,13 +148,11 @@ func (s *BillingRoutingTestSuite) TestBR01_PackageAndBillingGroupIndependent() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: userA.Id,
 		Name:   "user-a-token",
-		Key:    "sk-test-br01",
 	})
 	s.T().Logf("创建Token，Key=%s", token.Key)
 
 	// Arrange: 配置Mock LLM响应
 	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		Content:          "BR-01测试响应",
@@ -162,9 +160,9 @@ func (s *BillingRoutingTestSuite) TestBR01_PackageAndBillingGroupIndependent() {
 
 	// Act: 发起API请求
 	s.T().Log("发起ChatCompletion请求...")
-	resp, body := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &testutil.ChatRequest{
+	resp, body := CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &ChatRequest{
 		Model: "gpt-4",
-		Messages: []testutil.Message{
+		Messages: []ChatMessage{
 			{Role: "user", Content: "test BR-01"},
 		},
 	})
@@ -187,7 +185,8 @@ func (s *BillingRoutingTestSuite) TestBR01_PackageAndBillingGroupIndependent() {
 	s.T().Log("验证通过：用户余额未变，确认使用了套餐")
 
 	// Assert: 验证滑动窗口创建
-	windowExists := testutil.AssertWindowExists(s.T(), s.server.MiniRedis, subscription.Id, "hourly")
+	windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	windowExists := windowHelper.WindowExists(subscription.Id, "hourly")
 	assert.True(s.T(), windowExists, "小时滑动窗口应该已创建")
 
 	// Assert: 验证路由到vip渠道（关键验证点：路由基于BillingGroup）
@@ -298,14 +297,12 @@ func (s *BillingRoutingTestSuite) TestBR02_PackageDoesNotAffectP2PRouting() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId:     userB.Id,
 		Name:       "user-b-token",
-		Key:        "sk-test-br02",
 		P2PGroupId: groupG1.Id, // 允许使用P2P分组G1
 	})
 	s.T().Logf("创建Token，Key=%s，P2P Group=%d", token.Key, groupG1.Id)
 
 	// Arrange: 配置Mock LLM响应
 	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		Content:          "BR-02测试响应",
@@ -313,9 +310,9 @@ func (s *BillingRoutingTestSuite) TestBR02_PackageDoesNotAffectP2PRouting() {
 
 	// Act: 发起API请求
 	s.T().Log("发起ChatCompletion请求...")
-	resp, body := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &testutil.ChatRequest{
+	resp, body := CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &ChatRequest{
 		Model: "gpt-4",
-		Messages: []testutil.Message{
+		Messages: []ChatMessage{
 			{Role: "user", Content: "test BR-02"},
 		},
 	})
@@ -338,7 +335,8 @@ func (s *BillingRoutingTestSuite) TestBR02_PackageDoesNotAffectP2PRouting() {
 	s.T().Log("验证通过：用户余额未变，确认使用了P2P套餐")
 
 	// Assert: 验证滑动窗口创建
-	windowExists := testutil.AssertWindowExists(s.T(), s.server.MiniRedis, subscription.Id, "hourly")
+	windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	windowExists := windowHelper.WindowExists(subscription.Id, "hourly")
 	assert.True(s.T(), windowExists, "小时滑动窗口应该已创建")
 
 	// Assert: 验证路由到P2P渠道或公共渠道
@@ -422,14 +420,12 @@ func (s *BillingRoutingTestSuite) TestBR03_TokenOverridesBillingGroup() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: userA.Id,
 		Name:   "user-a-token-override",
-		Key:    "sk-test-br03",
 		Group:  `["default"]`, // Token覆盖BillingGroup为default
 	})
 	s.T().Logf("创建Token，Key=%s，BillingGroup覆盖为default", token.Key)
 
 	// Arrange: 配置Mock LLM响应
 	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		Content:          "BR-03测试响应",
@@ -437,9 +433,9 @@ func (s *BillingRoutingTestSuite) TestBR03_TokenOverridesBillingGroup() {
 
 	// Act: 发起API请求
 	s.T().Log("发起ChatCompletion请求（Token覆盖BillingGroup为default）...")
-	resp, body := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &testutil.ChatRequest{
+	resp, body := CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &ChatRequest{
 		Model: "gpt-4",
-		Messages: []testutil.Message{
+		Messages: []ChatMessage{
 			{Role: "user", Content: "test BR-03"},
 		},
 	})
@@ -469,7 +465,8 @@ func (s *BillingRoutingTestSuite) TestBR03_TokenOverridesBillingGroup() {
 	s.T().Log("验证通过：用户余额未变，确认使用了套餐")
 
 	// Assert: 验证滑动窗口创建
-	windowExists := testutil.AssertWindowExists(s.T(), s.server.MiniRedis, subscription.Id, "hourly")
+	windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	windowExists := windowHelper.WindowExists(subscription.Id, "hourly")
 	assert.True(s.T(), windowExists, "小时滑动窗口应该已创建")
 
 	// Assert: 验证路由到Ch-default渠道（基于Token覆盖的BillingGroup）
@@ -524,11 +521,14 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 
 	// Arrange: 创建套餐A（优先级15，小时限额5M，允许fallback）
 	pkg := testutil.CreateTestPackage(s.T(), testutil.PackageTestData{
-		Name:              "Small Hourly Limit Package",
-		Priority:          15,
-		P2PGroupId:        0,
-		Quota:             500000000,
-		HourlyLimit:       5000000, // 小时限额仅5M
+		Name:       "Small Hourly Limit Package",
+		Priority:   15,
+		P2PGroupId: 0,
+		// 将月度总额度设置得足够大，避免触发月度限额，仅依赖小时滑动窗口验证 Fallback 行为。
+		Quota: 100000000,
+		// 小时滑动窗口限额：第一阶段的预估消耗（≈7.5k）可以通过；
+		// 第二阶段再次请求相同量时，累计预估消耗（≈15k）会超过该限额，从而触发套餐超限逻辑。
+		HourlyLimit:       10000,
 		DailyLimit:        150000000,
 		RpmLimit:          60,
 		DurationType:      "month",
@@ -537,6 +537,19 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 		Status:            1,
 	})
 	s.T().Logf("创建套餐A，ID=%d，小时限额=%d，允许fallback", pkg.Id, pkg.HourlyLimit)
+
+	// 调试：确认 DB 与缓存中的套餐配置与预期一致，避免因缓存复用导致 HourlyLimit 与测试配置不符。
+	if dbPkg, err := model.GetPackageByIDFromDB(pkg.Id); err == nil {
+		s.T().Logf("BR-04 调试：DB 中套餐A配置 - ID=%d, Quota=%d, HourlyLimit=%d", dbPkg.Id, dbPkg.Quota, dbPkg.HourlyLimit)
+	} else {
+		s.T().Logf("BR-04 调试：从 DB 读取套餐A失败: %v", err)
+	}
+
+	if cachePkg, err := model.GetPackageByID(pkg.Id); err == nil {
+		s.T().Logf("BR-04 调试：缓存中套餐A配置 - ID=%d, Quota=%d, HourlyLimit=%d", cachePkg.Id, cachePkg.Quota, cachePkg.HourlyLimit)
+	} else {
+		s.T().Logf("BR-04 调试：从缓存读取套餐A失败: %v", err)
+	}
 
 	// Arrange: 为用户A订阅并启用套餐A
 	subscription := testutil.CreateAndActivateSubscription(s.T(), userA.Id, pkg.Id)
@@ -556,7 +569,6 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: userA.Id,
 		Name:   "user-a-token",
-		Key:    "sk-test-br04",
 	})
 	s.T().Logf("创建Token，Key=%s", token.Key)
 
@@ -567,16 +579,15 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 
 	// Arrange: 配置Mock LLM响应（约3M quota）
 	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
 		PromptTokens:     1500,
 		CompletionTokens: 750,
 		Content:          "BR-04阶段1响应",
 	})
 
 	// Act: 阶段1请求
-	resp1, body1 := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &testutil.ChatRequest{
+	resp1, body1 := CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &ChatRequest{
 		Model: "gpt-4",
-		Messages: []testutil.Message{
+		Messages: []ChatMessage{
 			{Role: "user", Content: "test BR-04 phase 1"},
 		},
 	})
@@ -598,6 +609,14 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 		"阶段1用户余额应保持不变，初始=%d，阶段1后=%d", initialQuota, quotaAfterPhase1)
 	s.T().Logf("阶段1完成：套餐扣减=%d，用户余额未变", phase1Consumed)
 
+	// 调试：记录阶段1结束后的小时窗口状态
+	windowHelperPhase1 := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	if fields, err := windowHelperPhase1.GetAllWindowFields(subscription.Id, "hourly"); err == nil {
+		s.T().Logf("BR-04 调试：阶段1后 hourly 窗口字段: %+v (package.HourlyLimit=%d)", fields, pkg.HourlyLimit)
+	} else {
+		s.T().Logf("BR-04 调试：阶段1后获取 hourly 窗口字段失败: %v", err)
+	}
+
 	// ====================================================================
 	// 阶段2：套餐超限后请求（再请求4M，总计7M > 5M限额）
 	// ====================================================================
@@ -605,16 +624,15 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 
 	// Arrange: 配置Mock LLM响应（约4M quota）
 	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
 		PromptTokens:     2000,
 		CompletionTokens: 1000,
 		Content:          "BR-04阶段2响应",
 	})
 
 	// Act: 阶段2请求（应触发Fallback到用户余额）
-	resp2, body2 := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &testutil.ChatRequest{
+	resp2, body2 := CallChatCompletion(s.T(), s.server.BaseURL, token.Key, &ChatRequest{
 		Model: "gpt-4",
-		Messages: []testutil.Message{
+		Messages: []ChatMessage{
 			{Role: "user", Content: "test BR-04 phase 2"},
 		},
 	})
@@ -623,6 +641,14 @@ func (s *BillingRoutingTestSuite) TestBR04_RoutingUnchangedAfterPackageExhausted
 	// Assert: 验证阶段2响应码为200（Fallback成功）
 	assert.Equal(s.T(), http.StatusOK, resp2.StatusCode,
 		"阶段2应该返回HTTP 200（Fallback），实际返回: %d, Body: %s", resp2.StatusCode, body2)
+
+	// 调试：查看当前小时窗口的 Redis 状态，确认是否触发滑动窗口超限
+	windowHelper := testutil.NewRedisWindowHelper(s.server.MiniRedis)
+	if fields, err := windowHelper.GetAllWindowFields(subscription.Id, "hourly"); err == nil {
+		s.T().Logf("BR-04 调试：hourly 窗口字段: %+v (package.HourlyLimit=%d)", fields, pkg.HourlyLimit)
+	} else {
+		s.T().Logf("BR-04 调试：获取 hourly 窗口字段失败: %v", err)
+	}
 
 	// Assert: 验证阶段2套餐未继续扣减（已超限）
 	updatedSub2, _ := model.GetSubscriptionById(subscription.Id)

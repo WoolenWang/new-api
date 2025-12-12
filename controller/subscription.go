@@ -91,6 +91,17 @@ func SubscribePackage(c *gin.Context) {
 
 	userId := c.GetInt("id")
 
+	// 在 DEBUG 模式下记录订阅调用的关键身份信息，便于排查测试场景中的用户错配问题。
+	// 只在控制面关键路径输出一次，避免影响正常环境。
+	if common.DebugEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[SubscribePackage][DEBUG] user_id=%d, package_id=%d, auth_header=%q, new_api_user=%q",
+			userId, pkgId,
+			c.Request.Header.Get("Authorization"),
+			c.Request.Header.Get("New-Api-User"),
+		))
+	}
+
 	// 验证订阅权限（全局套餐 vs P2P套餐）
 	if err := service.ValidatePackageSubscription(userId, pkgId); err != nil {
 		common.ApiError(c, err)
@@ -122,6 +133,13 @@ func SubscribePackage(c *gin.Context) {
 	if err := model.CreateSubscription(sub); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	if common.DebugEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[SubscribePackage][DEBUG] created subscription: id=%d, user_id=%d, package_id=%d, status=%s",
+			sub.Id, sub.UserId, sub.PackageId, sub.Status,
+		))
 	}
 
 	// 查询套餐名称用于响应

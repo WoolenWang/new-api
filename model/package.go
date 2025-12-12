@@ -217,12 +217,35 @@ func GetPackagesForUser(userId int, userP2PGroupIds []int, status int) ([]*Packa
 	}
 
 	// 权限过滤：全局套餐 OR 用户的P2P分组套餐
+	//
+	// 兼容旧版本数据库：
+	// - 早期版本可能不存在 `p2p_group_id` 列，或者使用了 GORM 默认生成的 `p2_p_group_id`。
+	// - 为避免在未完成迁移的环境中出现 "no such column: p2p_group_id" 错误，这里动态探测列名。
+	hasNewColumn := DB.Migrator().HasColumn(&Package{}, "p2p_group_id")
+	hasLegacyColumn := DB.Migrator().HasColumn(&Package{}, "p2_p_group_id")
+
 	if len(userP2PGroupIds) > 0 {
-		// 用户有P2P分组：返回全局套餐 + 这些分组的套餐
-		query = query.Where("p2p_group_id = 0 OR p2p_group_id IN (?)", userP2PGroupIds)
+		// 用户有 P2P 分组：返回全局套餐 + 这些分组的套餐
+		switch {
+		case hasNewColumn:
+			query = query.Where("p2p_group_id = 0 OR p2p_group_id IN (?)", userP2PGroupIds)
+		case hasLegacyColumn:
+			query = query.Where("p2_p_group_id = 0 OR p2_p_group_id IN (?)", userP2PGroupIds)
+		default:
+			// 数据库尚未包含 P2P 分组列：退化为“仅按状态过滤，不做 P2P 维度限制”
+			// 这意味着所有套餐被视为“全局可见”，但在订阅和消费时仍会通过
+			// ValidatePackageSubscription 等逻辑做权限校验。
+		}
 	} else {
-		// 用户没有P2P分组：只返回全局套餐
-		query = query.Where("p2p_group_id = 0")
+		// 用户没有 P2P 分组：只返回全局套餐
+		switch {
+		case hasNewColumn:
+			query = query.Where("p2p_group_id = 0")
+		case hasLegacyColumn:
+			query = query.Where("p2_p_group_id = 0")
+		default:
+			// 无相关列：不额外添加过滤条件，行为等同于“无 P2P 套餐”
+		}
 	}
 
 	err := query.Order("priority DESC, id ASC").Find(&packages).Error

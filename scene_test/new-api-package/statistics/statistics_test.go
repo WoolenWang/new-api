@@ -8,9 +8,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
-	"scene_test/testutil"
 )
 
 var (
@@ -19,21 +19,35 @@ var (
 
 // TestMain 测试主入口
 func TestMain(m *testing.M) {
-	// Setup
+	// Setup Redis（使用 miniredis 模拟真实 Redis）
 	var err error
 	mr, err = miniredis.Run()
 	if err != nil {
 		panic("Failed to start miniredis: " + err.Error())
 	}
-	defer mr.Close()
 
-	// TODO: 初始化数据库连接
-	// TODO: 设置Redis连接到miniredis
+	// 使用内存 SQLite，保证测试之间完全隔离
+	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+
+	// 将应用侧 Redis 连接指向同一个 miniredis，避免缓存相关逻辑出现 nil 客户端
+	os.Setenv("REDIS_CONN_STRING", "redis://"+mr.Addr()+"/0")
+
+	// 初始化环境与数据库 / Redis 客户端
+	common.InitEnv()
+	if err := model.InitDB(); err != nil {
+		panic(fmt.Sprintf("failed to init test DB: %v", err))
+	}
+	if err := common.InitRedisClient(); err != nil {
+		panic(fmt.Sprintf("failed to init redis client for statistics tests: %v", err))
+	}
 
 	// Run tests
 	exitCode := m.Run()
 
-	// Cleanup
+	// Cleanup（进程退出会释放内存资源）
+	mr.Close()
+
 	os.Exit(exitCode)
 }
 
@@ -377,9 +391,6 @@ func TestST07_FallbackTriggerRate(t *testing.T) {
 
 	sub := testutil.CreateAndActivateSubscription(t, user.Id, pkg.Id)
 
-	// 记录用户初始余额
-	initialUserQuota, _ := model.GetUserQuota(user.Id, true)
-
 	// Act: 模拟100次请求
 	totalRequests := 100
 	fallbackCount := 0
@@ -457,6 +468,10 @@ func TestST08_WindowExceededCount(t *testing.T) {
 		Group:    "default",
 		Quota:    100000000,
 	})
+
+	// 记录用户初始余额，用于验证不允许 Fallback 时余额保持不变
+	initialUserQuota, err := model.GetUserQuota(user.Id, true)
+	assert.Nil(t, err, "failed to get initial user quota for ST-08")
 
 	// 创建小时限额较小的套餐，且不允许Fallback
 	pkg := testutil.CreateTestPackage(t, testutil.PackageTestData{

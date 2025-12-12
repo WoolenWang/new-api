@@ -281,6 +281,20 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+
+	// 兼容旧版本数据库：确保 packages 表包含新字段 P2PGroupId。
+	// 早期版本可能使用 GORM 默认命名规则创建了列名 p2_p_group_id，
+	// 而较新的结构体定义期望列名为 p2p_group_id。这里采用“存在任一列则不再迁移”的策略，
+	// 仅在两者都不存在时才调用 AddColumn，避免在全新数据库或已迁移环境中出现
+	// "duplicate column name: p2_p_group_id" 之类的错误。
+	hasLegacyColumn := DB.Migrator().HasColumn(&Package{}, "p2_p_group_id")
+	hasNewColumn := DB.Migrator().HasColumn(&Package{}, "p2p_group_id")
+	if !hasLegacyColumn && !hasNewColumn {
+		if err := DB.Migrator().AddColumn(&Package{}, "P2PGroupId"); err != nil {
+			return fmt.Errorf("failed to add packages.p2p_group_id column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -363,13 +377,19 @@ func closeDB(db *gorm.DB) error {
 }
 
 func CloseDB() error {
-	if LOG_DB != DB {
-		err := closeDB(LOG_DB)
-		if err != nil {
+	// 优先关闭日志数据库连接（如果存在且与主库不同）
+	if LOG_DB != nil && LOG_DB != DB {
+		if err := closeDB(LOG_DB); err != nil {
 			return err
 		}
 	}
-	return closeDB(DB)
+
+	// 再关闭主库连接（如果已初始化）
+	if DB != nil {
+		return closeDB(DB)
+	}
+
+	return nil
 }
 
 // checkMySQLChineseSupport ensures the MySQL connection and current schema

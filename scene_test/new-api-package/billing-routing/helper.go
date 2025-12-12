@@ -1,4 +1,4 @@
-package billing_routing_test
+package billing_routing
 
 import (
 	"bytes"
@@ -17,10 +17,10 @@ import (
 
 // ChatRequest OpenAI格式的聊天请求
 type ChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []ChatMessage   `json:"messages"`
-	Stream   bool            `json:"stream,omitempty"`
-	MaxTokens int            `json:"max_tokens,omitempty"`
+	Model     string        `json:"model"`
+	Messages  []ChatMessage `json:"messages"`
+	Stream    bool          `json:"stream,omitempty"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 // ChatMessage 聊天消息
@@ -31,12 +31,12 @@ type ChatMessage struct {
 
 // ChatResponse OpenAI格式的聊天响应
 type ChatResponse struct {
-	ID      string        `json:"id"`
-	Object  string        `json:"object"`
-	Created int64         `json:"created"`
-	Model   string        `json:"model"`
-	Choices []ChatChoice  `json:"choices"`
-	Usage   UsageInfo     `json:"usage"`
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	Model   string       `json:"model"`
+	Choices []ChatChoice `json:"choices"`
+	Usage   UsageInfo    `json:"usage"`
 }
 
 // ChatChoice 聊天选择
@@ -55,12 +55,12 @@ type UsageInfo struct {
 
 // RelayInfo 请求转发信息（用于验证）
 type RelayInfo struct {
-	UserId            int      `json:"user_id"`
-	UsingPackageId    int      `json:"using_package_id"`
-	BillingGroup      string   `json:"billing_group"`
-	RoutingGroups     []string `json:"routing_groups"`
-	ChannelId         int      `json:"channel_id"`
-	ConsumedQuota     int64    `json:"consumed_quota"`
+	UserId         int      `json:"user_id"`
+	UsingPackageId int      `json:"using_package_id"`
+	BillingGroup   string   `json:"billing_group"`
+	RoutingGroups  []string `json:"routing_groups"`
+	ChannelId      int      `json:"channel_id"`
+	ConsumedQuota  int64    `json:"consumed_quota"`
 }
 
 // ============================================================================

@@ -57,6 +57,21 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 	// 3. 所有套餐都超限，检查是否允许 fallback
 	if err != nil {
 		// 有错误（说明尝试过至少一个套餐但都失败了）
+		if common.DataPlaneLogEnabled {
+			lastPkgID := 0
+			lastPkgPriority := 0
+			lastPkgFallback := false
+			if pkg != nil {
+				lastPkgID = pkg.Id
+				lastPkgPriority = pkg.Priority
+				lastPkgFallback = pkg.FallbackToBalance
+			}
+			common.SysLog(fmt.Sprintf(
+				"[Package] All subscriptions exceeded for user %d, last package id=%d priority=%d fallback_to_balance=%v, err=%v",
+				userId, lastPkgID, lastPkgPriority, lastPkgFallback, err,
+			))
+		}
+
 		if pkg != nil && pkg.FallbackToBalance {
 			// 最后尝试的套餐允许 fallback 到用户余额
 			// 【监控】记录 Fallback 到余额
@@ -71,6 +86,7 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 			}
 			return 0, 0, nil
 		}
+
 		// 不允许 fallback，返回错误（请求将被拒绝）
 		return 0, 0, fmt.Errorf("all available packages exceeded limit and fallback is disabled: %w", err)
 	}
@@ -79,6 +95,13 @@ func TryConsumeFromPackage(userId int, p2pGroupId *int, estimatedQuota int64) (i
 	// 作为兜底，降级到用户余额
 	// 【监控】记录使用余额
 	IncrementBalanceRequest()
+
+	if common.DataPlaneLogEnabled {
+		common.SysLog(fmt.Sprintf(
+			"[Package] No subscription selected for user %d, no error returned from selector; falling back to user balance",
+			userId,
+		))
+	}
 
 	return 0, 0, nil
 }
@@ -98,13 +121,29 @@ func SelectAvailablePackage(subscriptions []*model.Subscription, estimatedQuota 
 	var lastPackage *model.Package
 
 	for _, sub := range subscriptions {
-		// 加载套餐配置
-		pkg, err := model.GetPackageByID(sub.PackageId)
+		// 加载套餐配置（强制从 DB 读取，以确保在测试或后台任务直接修改 packages 表后，
+		// 不会因为 PackageCache 中的旧值导致限额配置（如 HourlyLimit）失真）。
+		pkg, err := model.GetPackageByIDFromDB(sub.PackageId)
 		if err != nil {
 			// 数据库查询失败，跳过此套餐
 			common.SysError(fmt.Sprintf("failed to load package %d: %v", sub.PackageId, err))
 			lastError = err
 			continue
+		}
+
+		if common.DataPlaneLogEnabled {
+			common.SysLog(fmt.Sprintf(
+				"[Package] Evaluating subscription %d for user %d: package_id=%d priority=%d fallback_to_balance=%v hourly_limit=%d quota=%d total_consumed=%d estimated_quota=%d",
+				sub.Id,
+				sub.UserId,
+				pkg.Id,
+				pkg.Priority,
+				pkg.FallbackToBalance,
+				pkg.HourlyLimit,
+				pkg.Quota,
+				sub.TotalConsumed,
+				estimatedQuota,
+			))
 		}
 
 		// 检查并预留套餐额度

@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -402,6 +403,26 @@ func NewFlakeyResponse(failureRate float64, errorMessage string) *MockLLMRespons
 		FailureRate:      failureRate,
 		ErrorMessage:     errorMessage,
 	}
+}
+
+// SetupMockLLMResponse 为指定的 MockLLMServer 配置默认响应。
+// 场景测试通常只关心“本次请求的模型与用量”，因此这里简单地设置全局默认响应即可。
+func SetupMockLLMResponse(t *testing.T, mock *MockLLMServer, resp MockLLMResponse) {
+	t.Helper()
+	if mock == nil {
+		t.Fatalf("SetupMockLLMResponse: mock LLM server is nil")
+	}
+
+	// 默认使用 200 OK
+	if resp.StatusCode == 0 {
+		resp.StatusCode = http.StatusOK
+	}
+	// 提供一个默认内容，避免返回空字符串导致上游解析异常
+	if resp.Content == "" {
+		resp.Content = "mock response"
+	}
+
+	mock.SetDefaultResponse(&resp)
 }
 
 // ConfigureChannelResponse is a helper to configure responses for a channel.

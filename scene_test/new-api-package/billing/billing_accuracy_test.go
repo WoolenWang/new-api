@@ -26,12 +26,16 @@ import (
 
 // TestMain 为 billing_test 套件初始化测试环境（内存 SQLite DB 等）
 func TestMain(m *testing.M) {
-	// 使用内存 SQLite，确保测试环境隔离且与设计文档一致
+	// 使用内存 SQLite & 禁用 Redis，确保测试环境隔离且不会触发缓存写入
 	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Unsetenv("REDIS_CONN_STRING")
 	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+
 	common.InitEnv()
-	if err := model.InitDB(); err != nil {
-		panic(fmt.Sprintf("failed to init test DB for billing tests: %v", err))
+	// 不在这里初始化 model.DB，改为在各测试套件的 SetupSuite 中
+	// 通过 TestServer.DataDir 连接到同一 SQLite 文件，保证与被测服务共享数据
+	if err := common.InitRedisClient(); err != nil {
+		panic(fmt.Sprintf("failed to init redis client for billing tests: %v", err))
 	}
 
 	// 运行测试
@@ -45,17 +49,22 @@ type BillingAccuracyTestSuite struct {
 	server     *testutil.TestServer
 	client     *testutil.APIClient
 	mockLLM    *testutil.MockLLMServer
+	fixtures   *testutil.TestFixtures
 	testUserID int
 	testToken  string
 }
 
 // SetupSuite 在整个测试套件开始前执行一次
 func (s *BillingAccuracyTestSuite) SetupSuite() {
-	// 启动测试服务器
-	server, err := testutil.StartServer(testutil.DefaultConfig())
+	// 启动测试服务器（启用 PACKAGE_ENABLED 且接入 miniredis）
+	server, err := testutil.StartTestServer()
 	s.Require().NoError(err, "Failed to start test server")
 	s.server = server
 	s.client = testutil.NewAPIClient(server)
+
+	// 配置计费环境：确保模型倍率 / 分组倍率 / 补全倍率与测试设计文档一致，
+	// 避免使用生产默认倍率导致计算公式与测试期望不一致。
+	configurePackageBillingEnvironment(s.T(), s.client)
 
 	// 启动Mock LLM服务器
 	s.mockLLM = testutil.NewMockLLMServer()
@@ -84,26 +93,48 @@ func (s *BillingAccuracyTestSuite) TearDownSuite() {
 
 // SetupTest 在每个测试用例开始前执行
 func (s *BillingAccuracyTestSuite) SetupTest() {
-	// 清理测试数据
+	// 清理上一轮测试数据（DB 级）
 	testutil.CleanupPackageTestData(s.T())
+	// 清理上一轮通过 HTTP 创建的资源
+	if s.fixtures != nil {
+		s.fixtures.Cleanup()
+	}
 
-	// 创建测试用户（vip分组，GroupRatio=2.0）
-	user := testutil.CreateTestUser(s.T(), testutil.UserTestData{
-		Username: fmt.Sprintf("billing-test-user-%d", time.Now().UnixNano()),
-		Group:    "vip",
-		Quota:    100000000, // 100M初始余额
-	})
-	s.testUserID = user.Id
+	// 使用 HTTP 管理接口创建测试用户 / 渠道 / Token，避免绕过路由与缓存逻辑
+	s.fixtures = testutil.NewTestFixtures(s.T(), s.client)
 
-	// 创建测试渠道（指向Mock LLM）
-	channel := testutil.CreateTestChannel(s.T(), "test-channel", "vip", "gpt-4", s.mockLLM.URL())
+	username := fmt.Sprintf("ba-user-%d", time.Now().UnixNano()%1e6)
+	password := "testpass123"
 
-	// 创建测试Token
-	tokenModel := testutil.CreateTestToken(s.T(), s.testUserID, "test-token")
-	s.testToken = tokenModel.Key
+	// 创建 vip 分组用户
+	user, err := s.fixtures.CreateTestUser(username, password, "vip")
+	s.Require().NoError(err, "Failed to create test user via HTTP API")
+	s.testUserID = user.ID
+
+	// 为该用户创建独立会话客户端并登录
+	userClient := s.client.Clone()
+	_, err = userClient.Login(username, password)
+	s.Require().NoError(err, "Failed to login test user")
+
+	// 创建测试 Token（无限额度，由套餐/余额控制）
+	tokenKey, err := s.fixtures.CreateTestAPIToken("billing-test-token", userClient, nil)
+	s.Require().NoError(err, "Failed to create test token via HTTP API")
+	s.testToken = tokenKey
+
+	// 创建 vip 分组、支持 gpt-4 和 gpt-3.5 的测试渠道，指向 Mock LLM
+	channel, err := s.fixtures.CreateTestChannel(
+		"billing-test-channel",
+		"gpt-4,gpt-3.5",
+		"vip",
+		s.mockLLM.URL(),
+		false, // not private
+		0,
+		"",
+	)
+	s.Require().NoError(err, "Failed to create test channel via HTTP API")
 
 	s.T().Logf("SetupTest: Created test user (ID=%d), channel (ID=%d), token (key=%s)",
-		s.testUserID, channel.Id, s.testToken)
+		s.testUserID, channel.ID, s.testToken)
 }
 
 // TearDownTest 在每个测试用例结束后执行
@@ -136,7 +167,8 @@ func (s *BillingAccuracyTestSuite) TestBA01_PackageConsumption_BasicFormula() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000 // 用户初始余额
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
 
 	// 配置Mock LLM响应：InputTokens=1000, OutputTokens=500
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{
@@ -157,8 +189,11 @@ func (s *BillingAccuracyTestSuite) TestBA01_PackageConsumption_BasicFormula() {
 	s.Require().NoError(err, "ChatCompletion request should not fail")
 	defer resp.Body.Close()
 
-	// Assert: 请求成功
-	assert.Equal(s.T(), http.StatusOK, resp.StatusCode, "Request should succeed")
+	// Assert: 请求成功；若失败，输出响应体辅助排查
+	if !assert.Equal(s.T(), http.StatusOK, resp.StatusCode, "Request should succeed") {
+		body, _ := io.ReadAll(resp.Body)
+		s.T().Logf("BA-01 unexpected status: %d, body: %s", resp.StatusCode, string(body))
+	}
 
 	// 等待异步更新完成
 	time.Sleep(500 * time.Millisecond)
@@ -204,7 +239,9 @@ func (s *BillingAccuracyTestSuite) TestBA02_Fallback_AppliesGroupRatio() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000 // 用户初始余额
+	// 使用系统实际配置的用户初始余额，避免与测试环境的配额设置（如10B）产生偏差。
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota for BA-02")
 
 	// 配置Mock LLM响应：构造一个消耗8M的请求
 	// 假设ModelRatio=2.0, GroupRatio=2.0 (vip)
@@ -225,6 +262,9 @@ func (s *BillingAccuracyTestSuite) TestBA02_Fallback_AppliesGroupRatio() {
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test large request"},
 		},
+		// 通过设置一个足够大的 max_tokens 来让预估额度（QuotaToPreConsume）
+		// 接近实际消耗 8M，从而触发套餐小时限额 5M 的超限逻辑并走 Fallback。
+		MaxTokens: 2000000,
 	})
 	s.Require().NoError(err, "ChatCompletion request should not fail")
 	defer resp.Body.Close()
@@ -279,7 +319,9 @@ func (s *BillingAccuracyTestSuite) TestBA03_StreamRequest_PreConsumeAndAdjust() 
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	// 读取实际初始余额，用于验证套餐场景下用户余额保持不变。
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota for BA-03")
 
 	// 配置Mock LLM流式响应
 	// 实际返回2500 tokens (InputTokens=1500, OutputTokens=1000)
@@ -404,13 +446,11 @@ func (s *BillingAccuracyTestSuite) TestBA05_MultiModelMixedBilling() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	// 获取用户真实初始余额，避免依赖固定数值假设。
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota for BA-05")
 
-	// 创建两个渠道：gpt-4 和 gpt-3.5
-	channelGPT4 := testutil.CreateTestChannel(s.T(), "gpt4-channel", "vip", "gpt-4", s.mockLLM.URL())
-	channelGPT35 := testutil.CreateTestChannel(s.T(), "gpt35-channel", "vip", "gpt-3.5", s.mockLLM.URL())
-
-	s.T().Logf("Created channels: GPT-4 (ID=%d), GPT-3.5 (ID=%d)", channelGPT4.Id, channelGPT35.Id)
+	// SetupTest 中已经通过 fixtures 创建了支持 gpt-4,gpt-3.5 的渠道，这里无需重复创建
 
 	// Act: 第一次请求 gpt-4
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{

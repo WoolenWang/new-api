@@ -71,10 +71,16 @@ func GetPackageCache() *PackageCache {
 		packageCache = &PackageCache{
 			config: DefaultPackageCacheConfig,
 		}
-		// 启动后台清理任务
 		go packageCache.startEvictionLoop()
 	})
 	return packageCache
+}
+
+// ResetPackageCacheForTests 清空套餐与订阅的 L1 内存缓存。
+// 仅用于集成测试场景，在测试代码直接操作数据库（例如 DELETE FROM packages）
+// 后，避免缓存中的旧值影响后续用例。
+func ResetPackageCacheForTests() {
+	GetPackageCache().ResetForTest()
 }
 
 // ============================================
@@ -173,6 +179,11 @@ func (pc *PackageCache) getPackageFromL2(id int) (*Package, error) {
 
 // setPackageToL2 写入 L2 Redis 缓存
 func (pc *PackageCache) setPackageToL2(id int, pkg *Package) {
+	// 在未启用 Redis 或客户端未初始化时直接跳过写缓存，避免 nil 指针
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+
 	ctx := context.Background()
 	key := fmt.Sprintf("package:%d", id)
 
@@ -300,6 +311,11 @@ func (pc *PackageCache) getSubscriptionFromL2(id int) (*Subscription, error) {
 
 // setSubscriptionToL2 写入 L2 Redis 缓存
 func (pc *PackageCache) setSubscriptionToL2(id int, sub *Subscription) {
+	// 在未启用 Redis 或客户端未初始化时直接跳过写缓存，避免 nil 指针
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+
 	ctx := context.Background()
 	key := fmt.Sprintf("subscription:%d", id)
 
@@ -330,6 +346,53 @@ func (pc *PackageCache) InvalidateSubscription(id int) {
 		key := fmt.Sprintf("subscription:%d", id)
 		common.RDB.Del(ctx, key)
 	}
+}
+
+// ResetForTest 清空套餐与订阅的缓存，仅用于测试场景。
+// 说明：
+//   - 场景测试会在同一进程内多次直接清理 packages / subscriptions 表，
+//     若不显式清理 PackageCache，可能导致缓存中的旧值与 DB 不一致（尤其是复用自增 ID 时）。
+//   - 生产环境不应调用此函数。
+func (pc *PackageCache) ResetForTest() {
+	// 清空 L1 Package 缓存
+	pc.l1Packages.Range(func(key, _ interface{}) bool {
+		pc.l1Packages.Delete(key)
+		return true
+	})
+
+	// 清空 L1 Subscription 缓存
+	pc.l1Subscriptions.Range(func(key, _ interface{}) bool {
+		pc.l1Subscriptions.Delete(key)
+		return true
+	})
+
+	// 清空 L2 Redis 缓存（仅在 Redis 已初始化时执行）
+	if common.RedisEnabled && common.RDB != nil {
+		ctx := context.Background()
+		patterns := []string{"package:*", "subscription:*"}
+		for _, pat := range patterns {
+			iter := common.RDB.Scan(ctx, 0, pat, 0).Iterator()
+			for iter.Next(ctx) {
+				if err := common.RDB.Del(ctx, iter.Val()).Err(); err != nil {
+					common.SysError(fmt.Sprintf("failed to delete key %s when resetting package cache: %v", iter.Val(), err))
+				}
+			}
+			if err := iter.Err(); err != nil {
+				common.SysError(fmt.Sprintf("failed to scan keys with pattern %s when resetting package cache: %v", pat, err))
+			}
+		}
+	}
+
+	// 重置统计信息
+	pc.statsMu.Lock()
+	pc.stats = struct {
+		L1Hits   uint64
+		L1Misses uint64
+		L2Hits   uint64
+		L2Misses uint64
+		DBHits   uint64
+	}{}
+	pc.statsMu.Unlock()
 }
 
 // ============================================

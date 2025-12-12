@@ -29,17 +29,21 @@ type BillingExceptionTestSuite struct {
 	server     *testutil.TestServer
 	client     *testutil.APIClient
 	mockLLM    *testutil.MockLLMServer
+	fixtures   *testutil.TestFixtures
 	testUserID int
 	testToken  string
 }
 
 // SetupSuite 在整个测试套件开始前执行一次
 func (s *BillingExceptionTestSuite) SetupSuite() {
-	// 启动测试服务器
-	server, err := testutil.StartServer(testutil.DefaultConfig())
+	// 启动测试服务器（启用 PACKAGE_ENABLED 且接入 miniredis）
+	server, err := testutil.StartTestServer()
 	s.Require().NoError(err, "Failed to start test server")
 	s.server = server
 	s.client = testutil.NewAPIClient(server)
+
+	// 配置计费环境，确保异常计费用例与正常计费用例共享相同的倍率设置。
+	configurePackageBillingEnvironment(s.T(), s.client)
 
 	// 启动Mock LLM服务器
 	s.mockLLM = testutil.NewMockLLMServer()
@@ -60,25 +64,46 @@ func (s *BillingExceptionTestSuite) TearDownSuite() {
 
 // SetupTest 在每个测试用例开始前执行
 func (s *BillingExceptionTestSuite) SetupTest() {
-	// 清理测试数据
+	// 清理上一轮测试数据
 	testutil.CleanupPackageTestData(s.T())
+	if s.fixtures != nil {
+		s.fixtures.Cleanup()
+	}
 
-	// 创建测试用户（vip分组）
-	user := testutil.CreateTestUser(s.T(), testutil.UserTestData{
-		Username: fmt.Sprintf("exception-test-user-%d", time.Now().UnixNano()),
-		Group:    "vip",
-		Quota:    100000000, // 100M初始余额
-	})
-	s.testUserID = user.Id
+	// 使用 HTTP 管理接口创建测试用户 / 渠道 / Token
+	s.fixtures = testutil.NewTestFixtures(s.T(), s.client)
 
-	// 创建测试渠道
-	testutil.CreateTestChannel(s.T(), "test-channel", "vip", "gpt-4,gpt-3.5", s.mockLLM.URL())
+	username := fmt.Sprintf("exception-user-%d", time.Now().UnixNano()%1e6)
+	password := "testpass123"
 
-	// 创建测试Token
-	tokenModel := testutil.CreateTestToken(s.T(), s.testUserID, "test-token")
-	s.testToken = tokenModel.Key
+	// 创建 vip 分组用户
+	user, err := s.fixtures.CreateTestUser(username, password, "vip")
+	s.Require().NoError(err, "Failed to create exception test user via HTTP API")
+	s.testUserID = user.ID
 
-	s.T().Logf("SetupTest: Created test user (ID=%d)", s.testUserID)
+	// 为该用户创建登录客户端
+	userClient := s.client.Clone()
+	_, err = userClient.Login(username, password)
+	s.Require().NoError(err, "Failed to login exception test user")
+
+	// 创建测试 Token
+	tokenKey, err := s.fixtures.CreateTestAPIToken("exception-test-token", userClient, nil)
+	s.Require().NoError(err, "Failed to create exception test token via HTTP API")
+	s.testToken = tokenKey
+
+	// 创建支持 gpt-4,gpt-3.5 的渠道
+	channel, err := s.fixtures.CreateTestChannel(
+		"exception-test-channel",
+		"gpt-4,gpt-3.5",
+		"vip",
+		s.mockLLM.URL(),
+		false,
+		0,
+		"",
+	)
+	s.Require().NoError(err, "Failed to create exception test channel via HTTP API")
+
+	s.T().Logf("SetupTest: Created test user (ID=%d), channel (ID=%d)", s.testUserID, channel.ID)
 }
 
 // TestBA06_EmptyUsage_UsesEstimation 测试BA-06：异常-上游返回空usage

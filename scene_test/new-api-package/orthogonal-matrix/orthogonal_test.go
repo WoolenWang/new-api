@@ -26,11 +26,8 @@ type OrthogonalMatrixSuite struct {
 func (s *OrthogonalMatrixSuite) SetupSuite() {
 	s.T().Log("========== 正交矩阵测试套件开始 ==========")
 
-	// 启动测试服务器
-	cfg := testutil.DefaultConfig()
-	cfg.Verbose = true // 启用详细日志
-
-	server, err := testutil.StartServer(cfg)
+	// 启动带 Redis 的测试服务器，确保套餐系统与滑动窗口功能完整可用
+	server, err := testutil.StartTestServer()
 	if err != nil {
 		s.T().Fatalf("Failed to start test server: %v", err)
 	}
@@ -38,8 +35,13 @@ func (s *OrthogonalMatrixSuite) SetupSuite() {
 
 	s.T().Logf("测试服务器已启动: %s", s.server.BaseURL)
 
-	// 初始化Redis Mock（如果需要）
-	// s.redisMock = testutil.StartRedisMock(s.T())
+	// 使用与测试服务器共享的 miniredis 实例构造 RedisMock，仅用于窗口状态断言
+	if server.MiniRedis != nil {
+		s.redisMock = testutil.NewRedisMockFromMiniRedis(s.T(), server.MiniRedis)
+		s.T().Log("Redis Mock已初始化并绑定到测试服务器的 miniredis")
+	} else {
+		s.T().Log("警告: 测试服务器未启用 Redis，正交矩阵窗口相关断言将被跳过")
+	}
 }
 
 // TearDownSuite 在整个测试套件结束后执行一次
@@ -211,7 +213,7 @@ var orthogonalTestCases = []OrthogonalTestCase{
 		UserInP2PGroup:       false,
 		P2PGroupName:         "",
 		ChannelType:          "public",
-		ChannelSystemGroup:   "default",
+		ChannelSystemGroup:   "svip",
 		TokenConfig:          "normal",
 		TokenBillingGroups:   nil,
 		TokenP2PGroupID:      0,
@@ -417,73 +419,105 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 		t.Logf("    - 创建并启用第二个订阅 (ID=%d)", ctx.SecondSubID)
 	}
 
-	// 5. 创建渠道
-	baseURL := "http://localhost:8080" // Mock URL
-	var allowedGroupsPtr *string
+	// 5. 创建渠道（使用测试辅助函数，确保能力表与路由缓存行为与生产一致）
+	var allowedGroupsStr string
 	if tc.ChannelType == "p2p" && ctx.P2PGroupID > 0 {
-		allowedGroupsStr := fmt.Sprintf("[%d]", ctx.P2PGroupID)
-		allowedGroupsPtr = &allowedGroupsStr
+		allowedGroupsStr = fmt.Sprintf("[%d]", ctx.P2PGroupID)
 	}
 
-	channel := &model.Channel{
-		Name:          fmt.Sprintf("ox_ch_%s_%d", tc.ChannelType, time.Now().UnixNano()),
-		Type:          1, // OpenAI type
-		Group:         tc.ChannelSystemGroup,
-		Models:        "gpt-4",
-		BaseURL:       &baseURL,
-		Key:           "sk-test-key-" + fmt.Sprintf("%d", time.Now().UnixNano()),
-		Status:        common.ChannelStatusEnabled,
-		IsPrivate:     tc.ChannelType == "private",
-		OwnerUserId:   ctx.UserID,
-		AllowedGroups: allowedGroupsPtr,
+	// 对于 OM-06 场景，需要模拟“他人私有渠道”：渠道 Owner 不是当前请求用户，
+	// 这样才能验证私有渠道权限隔离导致的路由失败。
+	privateOwnerID := 0
+	if tc.ChannelType == "private" && tc.ID == "OM-06" {
+		privateOwner := testutil.CreateTestUser(t, testutil.UserTestData{
+			Username: fmt.Sprintf("ox_owner_private_%d", time.Now().UnixNano()),
+			Group:    tc.ChannelSystemGroup,
+			Quota:    100000000,
+			Role:     common.RoleCommonUser,
+			Status:   common.UserStatusEnabled,
+		})
+		privateOwnerID = privateOwner.Id
+		t.Logf("    - 创建私有渠道所有者用户 (OwnerID=%d, Group=%s)", privateOwnerID, tc.ChannelSystemGroup)
 	}
-	err := model.DB.Create(channel).Error
-	assert.Nil(t, err, "Failed to create channel")
+
+	// 对于 OM-07 场景，需要模拟“他人P2P共享渠道”：P2P 渠道由分组Owner创建，
+	// 当前请求用户只是普通组员，且 Token 无 P2P 限制，应无法访问该渠道。
+	p2pOwnerID := 0
+	if tc.ChannelType == "p2p" && tc.ID == "OM-07" {
+		p2pOwner := testutil.CreateTestUser(t, testutil.UserTestData{
+			Username: fmt.Sprintf("ox_owner_p2p_%d", time.Now().UnixNano()),
+			Grou
+	ownerID := 0
+	isPrivate := false
+	switch tc.ChannelType {
+	case "private":
+		if tc.ID == "OM-06" && privateOwnerID > 0 {
+			ownerID = privateOwnerID
+		} else {
+			ownerID = ctx.UserID
+		}
+		isPrivate = true
+	case "p2p":
+		ownerID = ctx.UserID // 共享渠道由用户作为Owner
+	default: // "public"
+		ownerID = 0
+	}
+
+	channel := testutil.CreateTestChannel(t, testutil.ChannelTestData{
+		Name:          fmt.Sprintf("ox_ch_%s_%d", tc.ChannelType, time.Now().UnixNano()),
+		Type:          1,
+		if tc.ID == "OM-07" && p2pOwnerID > 0 {
+			ownerID = p2pOwnerID
+		} else {
+			ownerID = ctx.UserID // 默认：共享渠道由当前用户作为Owner
+		}
+		Models:        "gpt-4",
+		Status:        common.ChannelStatusEnabled,
+		BaseURL:       "", // 使用默认 Mock LLM 上游地址
+		OwnerUserId:   ownerID,
+		IsPrivate:     isPrivate,
+		AllowedGroups: allowedGroupsStr,
+	})
 	ctx.ChannelID = channel.Id
-	t.Logf("    - 创建渠道 (ID=%d, Type=%s, Group=%s, IsPrivate=%v)",
-		ctx.ChannelID, tc.ChannelType, tc.ChannelSystemGroup, channel.IsPrivate)
+	t.Logf("    - 创建渠道 (ID=%d, Type=%s, Group=%s, IsPrivate=%v, Owner=%d)",
+		ctx.ChannelID, tc.ChannelType, tc.ChannelSystemGroup, channel.IsPrivate, channel.OwnerUserId)
 
 	if tc.ChannelType == "mixed" {
 		// OM-08特殊场景：创建两个渠道（公共+P2P）
-		// 第一个：公共渠道
-		channel1 := &model.Channel{
+		// 第一个：公共渠道（平台公共渠道）
+		channel1 := testutil.CreateTestChannel(t, testutil.ChannelTestData{
 			Name:        fmt.Sprintf("ox_ch_public_%d", time.Now().UnixNano()),
 			Type:        1,
 			Group:       tc.ChannelSystemGroup,
 			Models:      "gpt-4",
-			BaseURL:     &baseURL,
-			Key:         "sk-test-key-public-" + fmt.Sprintf("%d", time.Now().UnixNano()),
 			Status:      common.ChannelStatusEnabled,
+			BaseURL:     "",
+			OwnerUserId: 0,
 			IsPrivate:   false,
-			OwnerUserId: 0, // 公共渠道
-		}
-		err = model.DB.Create(channel1).Error
-		assert.Nil(t, err, "Failed to create public channel")
+		})
 		ctx.ChannelID = channel1.Id
 
-		// 第二个：P2P渠道
-		allowedGroupsStr := fmt.Sprintf("[%d]", ctx.P2PGroupID)
-		allowedGroupsPtr2 := &allowedGroupsStr
-		channel2 := &model.Channel{
+		// 第二个：P2P渠道（授权给当前P2P分组）
+		p2pAllowed := fmt.Sprintf("[%d]", ctx.P2PGroupID)
+		channel2 := testutil.CreateTestChannel(t, testutil.ChannelTestData{
 			Name:          fmt.Sprintf("ox_ch_p2p_%d", time.Now().UnixNano()),
 			Type:          1,
 			Group:         tc.ChannelSystemGroup,
 			Models:        "gpt-4",
-			BaseURL:       &baseURL,
-			Key:           "sk-test-key-p2p-" + fmt.Sprintf("%d", time.Now().UnixNano()),
 			Status:        common.ChannelStatusEnabled,
-			IsPrivate:     false,
+			BaseURL:       "",
 			OwnerUserId:   ctx.UserID,
-			AllowedGroups: allowedGroupsPtr2,
-		}
-		err = model.DB.Create(channel2).Error
-		assert.Nil(t, err, "Failed to create second channel")
+			IsPrivate:     false,
+			AllowedGroups: p2pAllowed,
+		})
 		ctx.SecondChannelID = channel2.Id
 		t.Logf("    - 创建公共渠道 (ID=%d) 和 P2P渠道 (ID=%d)", ctx.ChannelID, ctx.SecondChannelID)
 	}
 
 	// 6. 创建Token
-	tokenKey := fmt.Sprintf("sk-ox-%d", time.Now().UnixNano())
+	rawKey, err := common.GenerateKey()
+	assert.Nil(t, err, "Failed to generate token key for orthogonal test")
+
 	var groupStr string
 	if tc.TokenConfig == "billing_override" && len(tc.TokenBillingGroups) > 0 {
 		// 构建billing groups JSON数组字符串
@@ -496,10 +530,10 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 
 	token := &model.Token{
 		UserId:         ctx.UserID,
-		Key:            tokenKey,
+		Key:            rawKey, // DB 中存储“裸”token，HTTP 请求使用 sk- 前缀
 		Name:           fmt.Sprintf("ox_token_%s", tc.TokenConfig),
 		Status:         common.TokenStatusEnabled,
-		UnlimitedQuota: false,
+		UnlimitedQuota: true, // 测试令牌本身不限额，由套餐/用户余额控制实际扣费
 		RemainQuota:    0,
 		Group:          groupStr,
 	}
@@ -511,9 +545,14 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 
 	err = model.DB.Create(token).Error
 	assert.Nil(t, err, "Failed to create token")
-	ctx.TokenKey = tokenKey
-	t.Logf("    - 创建Token (Key=%s..., Config=%s, BillingGroups=%v, P2PGroup=%d)",
-		ctx.TokenKey[:12], tc.TokenConfig, tc.TokenBillingGroups, tc.TokenP2PGroupID)
+	// 对外使用的API Token带有 sk- 前缀，符合生产环境约定
+	ctx.TokenKey = "sk-" + rawKey
+	displayKey := ctx.TokenKey
+	if len(displayKey) > 16 {
+		displayKey = displayKey[:16]
+	}
+	t.Logf("    - 创建Token (DBKey=%s..., APIToken=%s..., Config=%s, BillingGroups=%v, P2PGroup=%d)",
+		rawKey[:12], displayKey, tc.TokenConfig, tc.TokenBillingGroups, tc.TokenP2PGroupID)
 
 	// 7. 设置滑动窗口状态（使用Redis Mock）
 	if ctx.RedisMock != nil {
@@ -531,6 +570,27 @@ func (s *OrthogonalMatrixSuite) executePackageRequest(tc OrthogonalTestCase, ctx
 	t := s.T()
 	t.Helper()
 	t.Logf("  [Execute] 发起API请求...")
+
+	// 根据用例预期结果配置 Mock LLM 用量，确保覆盖对应的额度/窗口场景
+	if s.server != nil && s.server.MockLLM != nil {
+		// 默认小用量配置（约 10/20 tokens），与 MockLLM 默认行为一致
+		mockResp := testutil.MockLLMResponse{
+			StatusCode:       http.StatusOK,
+			Content:          "orthogonal matrix test response",
+			PromptTokens:     10,
+			CompletionTokens: 20,
+		}
+
+		if tc.ExpectedResult == "balance_consumed" {
+			// OM-05 场景：需要触发套餐超限并回退到余额。
+			// 使用大用量（约 8M tokens）模拟超过小时窗口/套餐限额。
+			mockResp.Content = "orthogonal matrix large quota test"
+			mockResp.PromptTokens = 4000000
+			mockResp.CompletionTokens = 4000000
+		}
+
+		testutil.SetupMockLLMResponse(t, s.server.MockLLM, mockResp)
+	}
 
 	// 构建请求参数
 	chatRequest := testutil.ChatCompletionRequest{
@@ -639,10 +699,12 @@ func (s *OrthogonalMatrixSuite) verifyOrthogonalResult(tc OrthogonalTestCase, re
 
 	case "rejected":
 		// 验证请求被拒绝
-		assert.True(t, resp.StatusCode == http.StatusForbidden ||
-			resp.StatusCode == http.StatusNotFound ||
-			resp.StatusCode == http.StatusTooManyRequests,
-			fmt.Sprintf("请求应该被拒绝 (403/404/429), 实际: %d", resp.StatusCode))
+		assert.True(t,
+			resp.StatusCode == http.StatusForbidden || // 403: 权限不足
+				resp.StatusCode == http.StatusNotFound || // 404: 资源/渠道不存在
+				resp.StatusCode == http.StatusTooManyRequests || // 429: 限流/额度不足
+				resp.StatusCode == http.StatusServiceUnavailable, // 503: 无可用渠道（distributor）
+			fmt.Sprintf("请求应该被拒绝 (403/404/429/503), 实际: %d", resp.StatusCode))
 		t.Logf("    ✓ 请求被拒绝 (StatusCode=%d)", resp.StatusCode)
 
 		// 验证套餐未扣减（或仅有初始消耗）
@@ -754,10 +816,14 @@ func setupSlidingWindowState(t *testing.T, rm *testutil.RedisMock, subscriptionI
 			hourlyLimit/1000000, endTime-now)
 
 	case "active_exceeded":
-		// 创建一个接近超限的窗口
+		// 创建一个接近超限的窗口：剩余额度略小于本次预估扣减额度，
+		// 确保本次请求会触发窗口超限逻辑。
 		startTime := now - 1800
 		endTime := startTime + 3600
-		consumed := hourlyLimit - 1000000 // 只剩1M额度
+		// 这里假设预估扣减额度约为 7500 quota（与默认 Mock LLM 用量匹配），
+		// 因此预留 <7500 的剩余额度，保证本次请求会超限。
+		const nearLimitRemaining int64 = 5000
+		consumed := hourlyLimit - nearLimitRemaining
 		rm.SetHashField(key, "start_time", fmt.Sprintf("%d", startTime))
 		rm.SetHashField(key, "end_time", fmt.Sprintf("%d", endTime))
 		rm.SetHashField(key, "consumed", fmt.Sprintf("%d", consumed))
@@ -793,8 +859,6 @@ func setupSlidingWindowState(t *testing.T, rm *testutil.RedisMock, subscriptionI
 // Test Scenario: 全局套餐高优先级VIP用户公共渠道
 // Expected Result: 套餐扣减成功，创建新窗口，用户余额不变
 func (s *OrthogonalMatrixSuite) TestOM01_GlobalPackageHighPriorityVipUserPublicChannel() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[0] // OM-01
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -813,8 +877,6 @@ func (s *OrthogonalMatrixSuite) TestOM01_GlobalPackageHighPriorityVipUserPublicC
 // Test Scenario: P2P套餐default用户G1渠道
 // Expected Result: 套餐扣减成功，创建新窗口，计费分组=default
 func (s *OrthogonalMatrixSuite) TestOM02_P2PPackageDefaultUserG1Channel() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[1] // OM-02
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -833,8 +895,6 @@ func (s *OrthogonalMatrixSuite) TestOM02_P2PPackageDefaultUserG1Channel() {
 // Test Scenario: 全局套餐低优先级VIP用户billing覆盖为default
 // Expected Result: 套餐扣减成功，窗口累加，计费分组=default
 func (s *OrthogonalMatrixSuite) TestOM03_GlobalPackageLowPriorityBillingOverride() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[2] // OM-03
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -853,8 +913,6 @@ func (s *OrthogonalMatrixSuite) TestOM03_GlobalPackageLowPriorityBillingOverride
 // Test Scenario: P2P套餐VIP用户加入G1使用P2P渠道窗口过期
 // Expected Result: 窗口重建并套餐扣减成功
 func (s *OrthogonalMatrixSuite) TestOM04_P2PPackageWindowExpired() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[3] // OM-04
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -873,8 +931,6 @@ func (s *OrthogonalMatrixSuite) TestOM04_P2PPackageWindowExpired() {
 // Test Scenario: 全局套餐高优先级svip用户窗口有效但已超限
 // Expected Result: 套餐超限，Fallback到用户余额
 func (s *OrthogonalMatrixSuite) TestOM05_GlobalPackageWindowExceeded() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[4] // OM-05
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -893,8 +949,6 @@ func (s *OrthogonalMatrixSuite) TestOM05_GlobalPackageWindowExceeded() {
 // Test Scenario: P2P套餐default用户加入G1但渠道为私有
 // Expected Result: 无法使用私有渠道，路由失败
 func (s *OrthogonalMatrixSuite) TestOM06_P2PPackagePrivateChannelRejected() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[5] // OM-06
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
@@ -913,8 +967,6 @@ func (s *OrthogonalMatrixSuite) TestOM06_P2PPackagePrivateChannelRejected() {
 // Test Scenario: 全局套餐低优先级default用户加入G1但Token无P2P限制
 // Expected Result: Token无P2P限制时无法使用P2P渠道
 func (s *OrthogonalMatrixSuite) TestOM07_GlobalPackageNoP2PRestrictionRejected() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[6] // OM-07
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)

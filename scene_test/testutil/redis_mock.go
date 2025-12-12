@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,30 @@ import (
 type RedisMock struct {
 	Server *miniredis.Miniredis
 	Client *redis.Client
+}
+
+// NewRedisMockFromMiniRedis 使用已有的 miniredis 实例创建 RedisMock。
+// 该方法不会修改 common.RDB / common.RedisEnabled，全局 Redis 配置由
+// 调用方（例如独立的测试服务器进程）自行管理。
+func NewRedisMockFromMiniRedis(t *testing.T, mr *miniredis.Miniredis) *RedisMock {
+	if mr == nil {
+		t.Fatalf("NewRedisMockFromMiniRedis: miniredis instance is nil")
+	}
+
+	// 仅为测试进程创建一个客户端，用于读取/断言窗口状态。
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	ctx := context.Background()
+	if _, err := client.Ping(ctx).Result(); err != nil {
+		t.Fatalf("NewRedisMockFromMiniRedis: failed to connect to miniredis: %v", err)
+	}
+
+	return &RedisMock{
+		Server: mr,
+		Client: client,
+	}
 }
 
 // StartRedisMock 启动miniredis实例并初始化Redis客户端
@@ -37,6 +62,9 @@ func StartRedisMock(t *testing.T) *RedisMock {
 	// 设置全局Redis客户端（供被测代码使用）
 	common.RDB = client
 	common.RedisEnabled = true
+
+	// 重置滑动窗口 Lua 脚本缓存，避免在不同测试用例之间复用过期的 script SHA
+	service.ResetSlidingWindowScriptCache()
 
 	return &RedisMock{
 		Server: mr,
