@@ -32,6 +32,8 @@ func TestMain(m *testing.M) {
 	if err := model.InitDB(); err != nil {
 		panic(fmt.Sprintf("failed to init test DB for boundary-edge-cases: %v", err))
 	}
+	// 确保存在 root 用户，避免 CleanupPackageTestData 依赖的 "id > 1" 过滤失效。
+	model.CheckSetup()
 
 	exitCode := m.Run()
 	os.Exit(exitCode)
@@ -44,9 +46,9 @@ func setupTest(t *testing.T) (*testutil.RedisMock, int, int) {
 
 	// 创建测试用户
 	user := testutil.CreateTestUser(t, testutil.UserTestData{
-		Username: "test-user-boundary",
-		Group:    "default",
-		Quota:    100000000, // 100M用户余额
+		// 不指定用户名以避免唯一约束冲突，由辅助函数生成唯一用户名
+		Group: "default",
+		Quota: 100000000, // 100M用户余额
 	})
 
 	// 创建测试套餐
@@ -74,9 +76,9 @@ func setupTestWithCustomPackage(t *testing.T, pkgData testutil.PackageTestData) 
 
 	// 创建测试用户
 	user := testutil.CreateTestUser(t, testutil.UserTestData{
-		Username: "test-user-boundary-custom",
-		Group:    "default",
-		Quota:    100000000,
+		// 不指定用户名以避免唯一约束冲突，由辅助函数生成唯一用户名
+		Group: "default",
+		Quota: 100000000,
 	})
 
 	// 创建自定义套餐
@@ -442,9 +444,9 @@ func TestEC08_ZeroPackages_UseBalance(t *testing.T) {
 	defer rm.Close()
 
 	user := testutil.CreateTestUser(t, testutil.UserTestData{
-		Username: "test-user-no-package",
-		Group:    "default",
-		Quota:    50000000, // 50M余额
+		// 不指定用户名以避免唯一约束冲突，由辅助函数生成唯一用户名
+		Group: "default",
+		Quota: 50000000, // 50M余额
 	})
 
 	initialQuota := user.Quota
@@ -493,9 +495,9 @@ func TestEC09_TwentyPackages_Performance(t *testing.T) {
 	defer teardownTest(rm)
 
 	user := testutil.CreateTestUser(t, testutil.UserTestData{
-		Username: "test-user-many-packages",
-		Group:    "default",
-		Quota:    100000000,
+		// 不指定用户名以避免唯一约束冲突，由辅助函数生成唯一用户名
+		Group: "default",
+		Quota: 100000000,
 	})
 
 	// 创建20个不同优先级的套餐

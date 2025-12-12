@@ -775,7 +775,6 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	for i := 1; i <= requestCount; i++ {
 		// 配置Mock LLM（每次约1M quota）
 		testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
-			Model:            "gpt-4",
 			PromptTokens:     500, // 约0.5M
 			CompletionTokens: 250, // 约0.5M（总计约1M）
 			Content:          fmt.Sprintf("CC-06请求#%d", i),

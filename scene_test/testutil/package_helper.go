@@ -615,8 +615,10 @@ func ParseChatResponse(body io.Reader) (*ChatCompletionResponse, error) {
 }
 
 // GetSubscriptionById 获取订阅（包装函数，便于测试使用）
+// 注意：这里强制从 DB 读取并刷新缓存，避免测试进程与服务进程各自的
+// PackageCache 导致订阅 total_consumed 读取到过期值。
 func GetSubscriptionById(subscriptionId int) (*model.Subscription, error) {
-	return model.GetSubscriptionById(subscriptionId)
+	return model.GetSubscriptionByIdFromDB(subscriptionId)
 }
 
 // DB 暴露数据库连接供测试使用

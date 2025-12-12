@@ -861,7 +861,7 @@ func (s *PriorityFallbackTestSuite) TestPF08_MonthlyQuota_CheckFirst() {
 
 	// 手动设置订阅已消耗95M（接近月度限额）
 	sub.TotalConsumed = 95000000 // 95M
-	err := testutil.DB.Save(sub).Error
+	err := model.DB.Save(sub).Error
 	assert.Nil(t, err, "Failed to update subscription consumed")
 	t.Logf("Pre-set subscription consumed: %d (approaching monthly limit)", sub.TotalConsumed)
 

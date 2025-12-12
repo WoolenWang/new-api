@@ -1019,32 +1019,44 @@ func (s *OrthogonalMatrixSuite) TestOM08_MultiPackagePriorityDegradation() {
 
 	ctx := s.setupOrthogonalTestCase(tc)
 
+	// 小工具函数：等待订阅的 total_consumed 被异步更新（最多等待2秒）
+	waitConsumed := func(subID int) int64 {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			sub, _ := model.GetSubscriptionByIdFromDB(subID)
+			if sub.TotalConsumed > 0 || time.Now().After(deadline) {
+				return sub.TotalConsumed
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
 	// OM-08特殊处理：需要通过两次请求观察套餐从高优先级降级到低优先级的行为。
 	// 第一次请求：使用高优先级全局套餐（priority=15）
 	t := s.T()
 	t.Logf("  [OM-08] 第一次请求：期望使用高优先级全局套餐")
 	resp1, _ := s.executePackageRequest(tc, ctx)
 	assert.Equal(t, http.StatusOK, resp1.StatusCode, "第一次请求应成功")
-	sub1, _ := model.GetSubscriptionById(ctx.SubscriptionID)
-	sub2, _ := model.GetSubscriptionById(ctx.SecondSubID)
-	assert.Greater(t, sub1.TotalConsumed, int64(0), "第一次请求后，高优先级套餐应有消耗")
-	assert.Equal(t, int64(0), sub2.TotalConsumed, "第一次请求后，低优先级套餐不应被使用")
+	sub1Consumed := waitConsumed(ctx.SubscriptionID)
+	sub2Consumed := waitConsumed(ctx.SecondSubID) // 预计仍为0
+	assert.Greater(t, sub1Consumed, int64(0), "第一次请求后，高优先级套餐应有消耗")
+	assert.Equal(t, int64(0), sub2Consumed, "第一次请求后，低优先级套餐不应被使用")
 	t.Logf("  [OM-08] 第一次请求完成，高优先级套餐消耗=%dM，低优先级套餐消耗=%dM",
-		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
+		sub1Consumed/1000000, sub2Consumed/1000000)
 
 	// 再次请求，使高优先级套餐超限
 	t.Logf("  [OM-08] 第二次请求：高优先级套餐小时窗口应超限，应降级到P2P套餐")
 	resp2, _ := s.executePackageRequest(tc, ctx)
 	assert.Equal(t, http.StatusOK, resp2.StatusCode, "第二次请求应成功")
-	sub1, _ = model.GetSubscriptionById(ctx.SubscriptionID)
-	sub2, _ = model.GetSubscriptionById(ctx.SecondSubID)
-	assert.Greater(t, sub1.TotalConsumed, int64(0), "第二次请求后，高优先级套餐应仍然有消耗记录")
-	assert.Greater(t, sub2.TotalConsumed, int64(0), "第二次请求后，低优先级套餐应被使用")
+	sub1Consumed = waitConsumed(ctx.SubscriptionID)
+	sub2Consumed = waitConsumed(ctx.SecondSubID)
+	assert.Greater(t, sub1Consumed, int64(0), "第二次请求后，高优先级套餐应仍然有消耗记录")
+	assert.Greater(t, sub2Consumed, int64(0), "第二次请求后，低优先级套餐应被使用")
 	t.Logf("  [OM-08] 第二次请求完成，高优先级套餐消耗=%dM，低优先级套餐消耗=%dM",
-		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
+		sub1Consumed/1000000, sub2Consumed/1000000)
 
 	t.Logf("  [OM-08] 验证完成：套餐1消耗=%dM, 套餐2消耗=%dM",
-		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
+		sub1Consumed/1000000, sub2Consumed/1000000)
 
 	s.cleanupOrthogonalTestCase(tc, ctx)
 
