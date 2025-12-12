@@ -61,10 +61,10 @@ func GetChannelStatsL3Service() *ChannelStatsL3Service {
 
 		channelStatsL3Service = &ChannelStatsL3Service{
 			l2Service:       GetChannelStatsL2Service(),
-			syncInterval:    syncInterval,     // 默认1分钟，可通过ENV缩短
-			windowSize:      windowSize,       // 默认15分钟，可通过ENV缩短
-			maxConcurrency:  5,                // 最多5个并发同步
-			syncJitterRange: 60 * time.Second, // 0-60秒抖动
+			syncInterval:    syncInterval,                     // 默认1分钟，可通过ENV缩短
+			windowSize:      windowSize,                       // 默认15分钟，可通过ENV缩短
+			maxConcurrency:  5,                                // 最多5个并发同步
+			syncJitterRange: getChannelStatsSyncJitterRange(), // 默认0-60秒抖动，可通过ENV缩短
 			semaphore:       make(chan struct{}, 5),
 			stopChan:        make(chan struct{}),
 		}
@@ -199,11 +199,39 @@ func (s *ChannelStatsL3Service) setNextSyncTime(channelID int, modelName string)
 	ctx := context.Background()
 	key := fmt.Sprintf("channel_sync_time:%d:%s", channelID, modelName)
 
-	// 计算下次同步时间：15分钟 + 0-60秒随机抖动
-	jitter := time.Duration(rand.Int63n(int64(s.syncJitterRange)))
-	nextSync := time.Now().Add(s.windowSize).Add(jitter).Unix()
+	// 计算下次同步时间：默认窗口大小 + 随机抖动，可通过ENV覆盖以加速测试。
+	jitter := time.Duration(0)
+	if s.syncJitterRange > 0 {
+		jitter = time.Duration(rand.Int63n(int64(s.syncJitterRange)))
+	}
+	delaySeconds := common.GetEnvOrDefault("CHANNEL_STATS_NEXT_SYNC_DELAY_SECONDS", int(s.windowSize.Seconds()))
+	if delaySeconds < 0 {
+		delaySeconds = int(s.windowSize.Seconds())
+	}
+	delay := time.Duration(delaySeconds) * time.Second
+	nextSync := time.Now().Add(delay).Add(jitter).Unix()
 
 	return common.RDB.Set(ctx, key, nextSync, s.windowSize*2).Err()
+}
+
+// getChannelStatsSyncJitterRange 读取同步抖动范围（秒）。
+// 默认 60 秒，可通过 CHANNEL_STATS_SYNC_JITTER_SECONDS 缩短到 0-2 秒，
+// 以便在测试环境快速触发多次窗口同步。
+func getChannelStatsSyncJitterRange() time.Duration {
+	const envName = "CHANNEL_STATS_SYNC_JITTER_SECONDS"
+	defaultRange := 60 * time.Second
+
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return defaultRange
+	}
+
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec < 0 {
+		common.SysLog(fmt.Sprintf("Invalid %s=%q, using default %s", envName, raw, defaultRange))
+		return defaultRange
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // syncChannel 同步单个渠道的统计数据

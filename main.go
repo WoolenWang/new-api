@@ -105,6 +105,22 @@ func main() {
 		}
 	}()
 
+	// 定期标记过期的套餐订阅（每小时执行一次）
+	if common.PackageEnabled {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				if count, err := service.MarkExpiredSubscriptions(); err == nil {
+					if count > 0 {
+						common.SysLog(fmt.Sprintf("Package expiration check: marked %d subscriptions as expired", count))
+					}
+				}
+			}
+		}()
+		common.SysLog("Package expiration check task started (runs every hour)")
+	}
+
 	// 数据看板
 	go model.UpdateQuotaData()
 

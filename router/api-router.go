@@ -412,18 +412,20 @@ func SetApiRouter(router *gin.Engine) {
 
 		packageRoute := apiRouter.Group("/packages")
 		{
-			packageRoute.GET("/", middleware.UserAuth(), controller.GetPackages)
-			packageRoute.POST("/", middleware.AdminAuth(), controller.CreatePackage)
-			packageRoute.PUT("/:id", middleware.AdminAuth(), controller.UpdatePackage)
-			packageRoute.DELETE("/:id", middleware.AdminAuth(), controller.DeletePackage)
+			packageRoute.GET("/", middleware.UserAuth(), controller.GetPackages)          // List packages
+			packageRoute.GET("/:id", middleware.UserAuth(), controller.GetPackageById)    // Get package details
+			packageRoute.POST("/", middleware.AdminAuth(), controller.CreatePackage)      // Create package
+			packageRoute.PUT("/:id", middleware.AdminAuth(), controller.UpdatePackage)    // Update package
+			packageRoute.DELETE("/:id", middleware.AdminAuth(), controller.DeletePackage) // Delete package
 		}
 
 		subscriptionRoute := apiRouter.Group("/subscriptions")
 		subscriptionRoute.Use(middleware.UserAuth())
 		{
-			subscriptionRoute.GET("/my", controller.GetUserSubscriptions)
-			subscriptionRoute.POST("/subscribe/:id", controller.SubscribePackage)
-			subscriptionRoute.POST("/activate/:id", controller.ActivateSubscription)
+			subscriptionRoute.GET("/my", controller.GetUserSubscriptions)            // Get my subscriptions
+			subscriptionRoute.POST("/subscribe/:id", controller.SubscribePackage)    // Subscribe to package
+			subscriptionRoute.POST("/activate/:id", controller.ActivateSubscription) // Activate subscription
+			subscriptionRoute.GET("/:id/status", controller.GetSubscriptionStatus)   // Get subscription status with sliding windows
 		}
 	}
 }

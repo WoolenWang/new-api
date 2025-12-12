@@ -49,7 +49,12 @@ func (gs *GroupStatistics) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeUpdate GORM hook: update UpdatedAt timestamp
 func (gs *GroupStatistics) BeforeUpdate(tx *gorm.DB) error {
-	gs.UpdatedAt = common.GetTimestamp()
+	now := common.GetTimestamp()
+	// Ensure UpdatedAt is strictly increasing for rapid successive updates.
+	if now <= gs.UpdatedAt {
+		now = gs.UpdatedAt + 1
+	}
+	gs.UpdatedAt = now
 	return nil
 }
 
@@ -73,14 +78,30 @@ func UpsertGroupStatistics(stat *GroupStatistics) error {
 		}
 
 		// 记录存在，执行更新
-		stat.UpdatedAt = common.GetTimestamp()
+		now := common.GetTimestamp()
+		if now <= existing.UpdatedAt {
+			now = existing.UpdatedAt + 1
+		}
+		stat.UpdatedAt = now
 		return DB.Model(&GroupStatistics{}).
 			Where("group_id = ? AND model_name = ? AND time_window_start = ?",
 				stat.GroupId, stat.ModelName, stat.TimeWindowStart).
 			Updates(stat).Error
 	}
 
-	// SQLite: 使用 Save 方法（GORM 会自动处理）
+	// SQLite: 同样按唯一键查找以保证 UpdatedAt 单调递增。
+	var existing GroupStatistics
+	err := DB.Where("group_id = ? AND model_name = ? AND time_window_start = ?",
+		stat.GroupId, stat.ModelName, stat.TimeWindowStart).
+		First(&existing).Error
+
+	if err == gorm.ErrRecordNotFound {
+		return DB.Create(stat).Error
+	} else if err != nil {
+		return err
+	}
+
+	stat.UpdatedAt = existing.UpdatedAt
 	return DB.Save(stat).Error
 }
 

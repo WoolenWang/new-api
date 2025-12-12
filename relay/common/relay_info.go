@@ -116,6 +116,10 @@ type RelayInfo struct {
 	FinalPreConsumedQuota  int  // 最终预消耗的配额
 	IsClaudeBetaQuery      bool // /v1/messages?beta=true
 
+	// Package subscription fields (TS4: Billing System Integration)
+	UsingPackageId         int // 当前请求使用的套餐订阅ID (0表示未使用套餐)
+	PreConsumedFromPackage int // 从套餐预扣的额度
+
 	PriceData types.PriceData
 
 	Request dto.Request

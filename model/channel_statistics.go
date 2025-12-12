@@ -48,7 +48,12 @@ func (cs *ChannelStatistics) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeUpdate GORM hook: update UpdatedAt timestamp
 func (cs *ChannelStatistics) BeforeUpdate(tx *gorm.DB) error {
-	cs.UpdatedAt = common.GetTimestamp()
+	now := common.GetTimestamp()
+	// Ensure UpdatedAt is strictly increasing even under sub-second updates.
+	if now <= cs.UpdatedAt {
+		now = cs.UpdatedAt + 1
+	}
+	cs.UpdatedAt = now
 	return nil
 }
 
@@ -98,10 +103,25 @@ func UpsertChannelStatistics(stat *ChannelStatistics) error {
 		// 记录存在，执行更新
 		stat.Id = existing.Id               // 保留原有ID
 		stat.CreatedAt = existing.CreatedAt // 保留创建时间
+		stat.UpdatedAt = existing.UpdatedAt // 传递旧值供hook做单调递增
 		return DB.Save(stat).Error
 	}
 
-	// SQLite: 使用 Save 方法（GORM 会自动处理）
+	// SQLite: 无唯一约束时 Save 会插入重复行，需要显式按唯一键查找再更新。
+	var existing ChannelStatistics
+	err := DB.Where("channel_id = ? AND model_name = ? AND time_window_start = ?",
+		stat.ChannelId, stat.ModelName, stat.TimeWindowStart).
+		First(&existing).Error
+
+	if err == gorm.ErrRecordNotFound {
+		return DB.Create(stat).Error
+	} else if err != nil {
+		return err
+	}
+
+	stat.Id = existing.Id
+	stat.CreatedAt = existing.CreatedAt
+	stat.UpdatedAt = existing.UpdatedAt
 	return DB.Save(stat).Error
 }
 

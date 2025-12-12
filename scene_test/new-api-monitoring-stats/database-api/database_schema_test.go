@@ -74,6 +74,10 @@ func SetupDatabaseSchemaSuite(t *testing.T) (*DatabaseSchemaSuite, func()) {
 
 	// Open direct database access to the same SQLite file used by the test server.
 	db := openTestDB(t, server)
+	// Initialize model package globals for tests that call model helpers
+	// in the test process (server runs out-of-process).
+	model.DB = db
+	model.LOG_DB = db
 
 	suite := &DatabaseSchemaSuite{
 		Server:   server,

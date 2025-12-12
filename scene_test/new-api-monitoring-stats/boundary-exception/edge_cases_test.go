@@ -94,6 +94,8 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	t.Setenv("CHANNEL_STATS_FLUSH_INTERVAL_SECONDS", "2")
 	t.Setenv("CHANNEL_STATS_WINDOW_SECONDS", "10")
 	t.Setenv("CHANNEL_STATS_SYNC_INTERVAL_SECONDS", "2")
+	t.Setenv("CHANNEL_STATS_SYNC_JITTER_SECONDS", "0")
+	t.Setenv("CHANNEL_STATS_NEXT_SYNC_DELAY_SECONDS", "0")
 	t.Setenv("MONITOR_PROBE_TIMEOUT_SECONDS", "2")
 	t.Setenv("MONITOR_PROBE_MAX_RETRIES", "1")
 	t.Setenv("MONITOR_JUDGE_URL", fmt.Sprintf("%s/v1/chat/completions", judgeLLM.BaseURL))
@@ -104,6 +106,8 @@ func SetupSuite(t *testing.T) (*TestSuite, func()) {
 	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
 	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
 	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
+	cfg.CustomEnv["CHANNEL_STATS_SYNC_JITTER_SECONDS"] = "0"
+	cfg.CustomEnv["CHANNEL_STATS_NEXT_SYNC_DELAY_SECONDS"] = "0"
 	cfg.CustomEnv["ENABLE_CHANNEL_STATS"] = "true"
 	cfg.CustomEnv["ENABLE_MODEL_MONITORING"] = "true"
 	cfg.CustomEnv["MONITOR_PROBE_TIMEOUT_SECONDS"] = "2"
@@ -212,10 +216,13 @@ func createTestUser(t *testing.T, admin *testutil.APIClient, username, password,
 		t.Fatalf("failed to create user %s: %v", username, err)
 	}
 	user.ID = id
+
 	// CreateUser ignores quota; adjust it explicitly for data-plane tests.
 	if user.Quota > 0 {
 		if err := admin.AdjustUserQuota(id, int(user.Quota)); err != nil {
-			t.Fatalf("failed to adjust quota for user %s: %v", usernam
+			t.Fatalf("failed to adjust quota for user %s: %v", username, err)
+		}
+	}
 
 	return user
 }
@@ -237,10 +244,13 @@ func createTestUserNonFatal(admin *testutil.APIClient, username, password, group
 	}
 	user.ID = id
 
-	return user, nil
-ser.Quota > 0 {
+	if user.Quota > 0 {
 		if err := admin.AdjustUserQuota(id, int(user.Quota)); err != nil {
-			ret
+			return nil, fmt.Errorf("adjust quota for user %s failed: %w", username, err)
+		}
+	}
+
+	return user, nil
 }
 
 func envInt(name string, defaultValue int) int {
@@ -1152,18 +1162,56 @@ func TestED08_StatsWindowCrossDisablePeriod(t *testing.T) {
 	waitForL1ToL2Flush()
 	waitForL2ToL3Sync()
 
+	// Read downtime_seconds from DB and compute expected downtime percentage
+	// using window-level semantics (same as CS-08 and controller logic).
+	dbInspector, err := testutil.NewDBStatsInspectorFromServer(suite.Server)
+	if err != nil {
+		t.Fatalf("failed to create DBStatsInspector: %v", err)
+	}
+	defer dbInspector.Close()
+
+	const modelName = "gpt-4"
+	windowSeconds := envInt("CHANNEL_STATS_WINDOW_SECONDS", 900)
+	if windowSeconds <= 0 {
+		windowSeconds = 900
+	}
+
+	maxDowntimeSeconds := 0
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		records, err := dbInspector.QueryChannelStatistics(channelID, modelName, 0, 0)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		for _, rec := range records {
+			if rec.DowntimeSeconds > maxDowntimeSeconds {
+				maxDowntimeSeconds = rec.DowntimeSeconds
+			}
+		}
+		if maxDowntimeSeconds > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if maxDowntimeSeconds == 0 {
+		t.Fatalf("ED-08 FAILED: no channel_statistics record with non-zero downtime_seconds found for channel %d", channelID)
+	}
+
 	// Query statistics.
-	stats, err := admin.GetChannelStats(channelID, "1h", "gpt-4")
+	stats, err := admin.GetChannelStats(channelID, "1h", modelName)
 	if err != nil {
 		t.Fatalf("failed to query channel stats: %v", err)
 	}
 
 	// Calculate expected downtime percentage.
-	expectedDowntimePercent := (actualDisableDuration.Seconds() / totalWindowDuration.Seconds()) * 100
+	expectedDowntimePercent := float64(maxDowntimeSeconds) / float64(windowSeconds) * 100
 
 	t.Logf("Statistics:")
 	t.Logf("  Downtime percentage: %.2f%%", stats.DowntimePercent)
-	t.Logf("  Expected downtime: ~%.2f%%", expectedDowntimePercent)
+	t.Logf("  Expected downtime from DB/window: ~%.2f%% (max downtime_seconds=%d, window=%ds)",
+		expectedDowntimePercent, maxDowntimeSeconds, windowSeconds)
 
 	// Allow some tolerance in the calculation (±5%).
 	tolerance := 5.0

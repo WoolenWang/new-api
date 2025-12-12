@@ -78,6 +78,9 @@ func SetupStatsCalcSuite(t *testing.T) (*StatsCalculationSuite, func()) {
 	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
 	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
 	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
+	// Disable L3 sync jitter/delay so multiple dirty windows are flushed quickly in tests.
+	cfg.CustomEnv["CHANNEL_STATS_SYNC_JITTER_SECONDS"] = "0"
+	cfg.CustomEnv["CHANNEL_STATS_NEXT_SYNC_DELAY_SECONDS"] = "0"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {
@@ -704,25 +707,35 @@ func TestCS04_TPM_RPM_Calculation(t *testing.T) {
 	}
 
 	const windowSeconds = 10 // 与 SetupStatsCalcSuite 中 CHANNEL_STATS_WINDOW_SECONDS 保持一致
-	expectedRPM := int(int64(aggregated.RequestCount) * 60 / int64(windowSeconds))
-	expectedTPM := int(aggregated.TotalTokens * 60 / int64(windowSeconds))
+	// current_stats 定义为最新窗口（channels表）的实时快照，
+	// 因此应基于最新的非空 channel_statistics 窗口计算期望值。
+	latestRecord := dbRecords[0]
+	for _, rec := range dbRecords {
+		if rec.RequestCount > 0 || rec.TotalTokens > 0 {
+			latestRecord = rec
+			break
+		}
+	}
+
+	expectedRPM := int(int64(latestRecord.RequestCount) * 60 / int64(windowSeconds))
+	expectedTPM := int(latestRecord.TotalTokens * 60 / int64(windowSeconds))
 
 	actualRPM := currentResp.Data.RPM
 	actualTPM := currentResp.Data.TPM
 
-	t.Logf("CS-04 current_stats: RPM=%d (expected≈%d), TPM=%d (expected≈%d) [window=%ds]",
-		actualRPM, expectedRPM, actualTPM, expectedTPM, windowSeconds)
+	t.Logf("CS-04 current_stats: RPM=%d (expected≈%d), TPM=%d (expected≈%d) [window=%ds, latest_window_start=%d]",
+		actualRPM, expectedRPM, actualTPM, expectedTPM, windowSeconds, latestRecord.TimeWindowStart)
 
 	if actualRPM <= 0 || actualTPM <= 0 {
 		t.Errorf("CS-04 FAILED: current_stats returned non-positive RPM/TPM (RPM=%d, TPM=%d)",
 			actualRPM, actualTPM)
 	} else {
 		if actualRPM != expectedRPM {
-			t.Errorf("CS-04: RPM mismatch between DB/window and current_stats: expected %d, got %d",
+			t.Errorf("CS-04: RPM mismatch between latest DB window and current_stats: expected %d, got %d",
 				expectedRPM, actualRPM)
 		}
 		if actualTPM != expectedTPM {
-			t.Errorf("CS-04: TPM mismatch between DB/window and current_stats: expected %d, got %d",
+			t.Errorf("CS-04: TPM mismatch between latest DB window and current_stats: expected %d, got %d",
 				expectedTPM, actualTPM)
 		}
 	}

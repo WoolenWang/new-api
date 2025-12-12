@@ -696,3 +696,16 @@ func GetMemberInfo(groupId, userId int) (*UserGroup, error) {
 	}
 	return &userGroup, nil
 }
+
+// IsUserGroupMember 检查用户是否为指定分组的成员（指定状态）
+// 用于权限验证，例如订阅P2P套餐时检查用户是否在该分组中
+func IsUserGroupMember(userId, groupId int, requiredStatus int) (bool, error) {
+	var count int64
+	err := DB.Model(&UserGroup{}).
+		Where("user_id = ? AND group_id = ? AND status = ?", userId, groupId, requiredStatus).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}

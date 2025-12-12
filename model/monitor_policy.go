@@ -21,7 +21,7 @@ type MonitorPolicy struct {
 	TargetChannels     *string `json:"target_channels" gorm:"type:text;comment:受此策略影响的渠道ID列表(JSON Array); 为空表示所有渠道"`
 	ThresholdOverrides *string `json:"threshold_overrides" gorm:"type:text;comment:阈值覆盖配置(JSON Object: {\"strict\":95.0,\"standard\":85.0,\"lenient\":70.0}); 为空则使用全局默认值"`
 	ScheduleCron       string  `json:"schedule_cron" gorm:"type:varchar(50);not null;comment:Cron表达式"`
-	IsEnabled          bool    `json:"is_enabled" gorm:"type:boolean;default:true;comment:是否启用"`
+	IsEnabled          bool    `json:"is_enabled" gorm:"type:boolean;comment:是否启用"`
 	CreatedAt          int64   `json:"created_at" gorm:"bigint"`
 	UpdatedAt          int64   `json:"updated_at" gorm:"bigint"`
 	LastExecutedAt     int64   `json:"last_executed_at" gorm:"bigint;default:0;comment:上次执行时间"`
@@ -47,7 +47,11 @@ func (mp *MonitorPolicy) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeUpdate GORM hook: update UpdatedAt timestamp
 func (mp *MonitorPolicy) BeforeUpdate(tx *gorm.DB) error {
-	mp.UpdatedAt = common.GetTimestamp()
+	now := common.GetTimestamp()
+	if now <= mp.UpdatedAt {
+		now = mp.UpdatedAt + 1
+	}
+	mp.UpdatedAt = now
 	return nil
 }
 

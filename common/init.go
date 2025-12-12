@@ -80,6 +80,8 @@ func InitEnv() {
 	// Initialize variables from constants.go that were using environment variables
 	DebugEnabled = os.Getenv("DEBUG") == "true"
 	MemoryCacheEnabled = os.Getenv("MEMORY_CACHE_ENABLED") == "true"
+	PackageEnabled = GetEnvOrDefaultBool("PACKAGE_ENABLED", false)                    // 默认关闭，确保向后兼容
+	MaxActiveSubscriptionsPerUser = GetEnvOrDefault("PACKAGE_MAX_ACTIVE_PER_USER", 0) // 0表示无限制
 	IsMasterNode = os.Getenv("NODE_TYPE") != "slave"
 
 	// Control / data plane logging switches

@@ -274,8 +274,9 @@ func migrateDB() error {
 		&MonitorPolicy{},         // 监控策略表 (Phase 9.1)
 		&ModelBaseline{},         // 模型基准表 (Phase 9.1)
 		&ModelMonitoringResult{}, // 模型监控结果表 (Phase 9.1)
-		&Package{},               // 套餐模板表
-		&Subscription{},          // 用户套餐订阅表
+		&Package{},               // 套餐模板表 (Task Set 1)
+		&Subscription{},          // 用户套餐订阅表 (Task Set 1)
+		&SubscriptionHistory{},   // 套餐消耗历史表 (Task Set 1, Optional)
 	)
 	if err != nil {
 		return err

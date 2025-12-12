@@ -71,6 +71,14 @@ var EmailLoginAuthServerList = []string{
 var DebugEnabled bool
 var MemoryCacheEnabled bool
 
+// PackageEnabled 套餐功能总开关 (默认false，防止未完成开发时误开启)
+// 环境变量: PACKAGE_ENABLED
+var PackageEnabled bool
+
+// MaxActiveSubscriptionsPerUser 单个用户最大活跃套餐订阅数 (0表示无限制)
+// 环境变量: PACKAGE_MAX_ACTIVE_PER_USER
+var MaxActiveSubscriptionsPerUser int
+
 var LogConsumeEnabled = true
 
 // ControlPlaneLogEnabled gates high-level logs for configuration changes

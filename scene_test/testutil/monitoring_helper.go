@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"encoding/json"
 	"fmt"
 )
 
@@ -51,9 +52,9 @@ type ModelMonitoringResultModel struct {
 // CreateBaseline creates a new model baseline.
 func (c *APIClient) CreateBaseline(baseline *ModelBaselineModel) (int, error) {
 	var resp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
-		Data    int    `json:"data"`
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 
 	err := c.PostJSON("/api/monitor/baselines", baseline, &resp)
@@ -65,7 +66,17 @@ func (c *APIClient) CreateBaseline(baseline *ModelBaselineModel) (int, error) {
 		return 0, fmt.Errorf("create baseline failed: %s", resp.Message)
 	}
 
-	return resp.Data, nil
+	var id int
+	if err := json.Unmarshal(resp.Data, &id); err == nil && id > 0 {
+		return id, nil
+	}
+	var obj struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Data, &obj); err == nil && obj.ID > 0 {
+		return obj.ID, nil
+	}
+	return 0, fmt.Errorf("unexpected baseline response: %s", string(resp.Data))
 }
 
 // GetBaseline retrieves a specific baseline by model, test type, and evaluation standard.
@@ -149,9 +160,9 @@ func (c *APIClient) DeleteBaseline(id int) error {
 // CreateMonitorPolicy creates a new monitoring policy.
 func (c *APIClient) CreateMonitorPolicy(policy *MonitorPolicyModel) (int, error) {
 	var resp struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
-		Data    int    `json:"data"`
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 
 	err := c.PostJSON("/api/monitor/policies", policy, &resp)
@@ -163,7 +174,17 @@ func (c *APIClient) CreateMonitorPolicy(policy *MonitorPolicyModel) (int, error)
 		return 0, fmt.Errorf("create monitor policy failed: %s", resp.Message)
 	}
 
-	return resp.Data, nil
+	var id int
+	if err := json.Unmarshal(resp.Data, &id); err == nil && id > 0 {
+		return id, nil
+	}
+	var obj struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Data, &obj); err == nil && obj.ID > 0 {
+		return obj.ID, nil
+	}
+	return 0, fmt.Errorf("unexpected monitor policy response: %s", string(resp.Data))
 }
 
 // GetMonitorPolicy retrieves a specific policy by ID.

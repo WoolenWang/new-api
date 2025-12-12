@@ -522,6 +522,48 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (err error) {
 
+	// ============ TS4: 套餐消耗更新分支 ============
+	if relayInfo.UsingPackageId > 0 {
+		// 使用了套餐，更新套餐的 total_consumed
+		// 注意：滑动窗口已在 PreConsumeQuota 时通过 Lua 脚本原子性更新
+		// 这里仅更新数据库的月度总消耗统计
+
+		if quota > 0 {
+			// 异步更新套餐消耗（提升性能）
+			gopool.Go(func() {
+				err := model.IncrementSubscriptionConsumed(relayInfo.UsingPackageId, int64(quota))
+				if err != nil {
+					common.SysError(fmt.Sprintf(
+						"[Package] Failed to update subscription %d consumed: %v",
+						relayInfo.UsingPackageId, err,
+					))
+				}
+			})
+
+			if common.DataPlaneLogEnabled {
+				common.SysLog(fmt.Sprintf(
+					"[Package] Subscription %d consumed %d quota (pre-consumed: %d)",
+					relayInfo.UsingPackageId, quota, relayInfo.PreConsumedFromPackage,
+				))
+			}
+		} else {
+			// quota <= 0 表示返还额度（请求失败场景）
+			// 套餐场景下，滑动窗口的返还由 Redis TTL 自动处理
+			// 月度总限额不需要返还（因为预扣时未修改 DB）
+			if common.DataPlaneLogEnabled {
+				common.SysLog(fmt.Sprintf(
+					"[Package] Subscription %d quota return skipped (quota=%d)",
+					relayInfo.UsingPackageId, quota,
+				))
+			}
+		}
+
+		// 使用套餐时，不更新用户余额和 Token 余额
+		return nil
+	}
+	// ==================== 套餐逻辑结束 ====================
+
+	// ========== 原有逻辑：用户余额更新 ==========
 	if quota > 0 {
 		err = model.DecreaseUserQuota(relayInfo.UserId, quota)
 	} else {

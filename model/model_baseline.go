@@ -40,7 +40,11 @@ func (mb *ModelBaseline) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeUpdate GORM hook: update UpdatedAt timestamp
 func (mb *ModelBaseline) BeforeUpdate(tx *gorm.DB) error {
-	mb.UpdatedAt = common.GetTimestamp()
+	now := common.GetTimestamp()
+	if now <= mb.UpdatedAt {
+		now = mb.UpdatedAt + 1
+	}
+	mb.UpdatedAt = now
 	return nil
 }
 
@@ -114,6 +118,7 @@ func UpsertModelBaseline(baseline *ModelBaseline) error {
 	// 记录存在，执行更新
 	baseline.Id = existing.Id               // 保留原有ID
 	baseline.CreatedAt = existing.CreatedAt // 保留创建时间
+	baseline.UpdatedAt = existing.UpdatedAt // 传递旧值供hook做单调递增
 	return DB.Save(baseline).Error
 }
 
