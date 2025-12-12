@@ -276,7 +276,7 @@ var orthogonalTestCases = []OrthogonalTestCase{
 		ChannelSystemGroup:   "vip",
 		TokenConfig:          "billing_override",
 		TokenBillingGroups:   []string{"vip", "default"},
-		TokenP2PGroupID:      0,
+		TokenP2PGroupID:      1, // 为Token启用P2P分组限制（将映射到测试创建的G1）
 		WindowState:          "active",
 		ExpectedResult:       "package_consumed",
 		ExpectedBillingGroup: "vip",
@@ -446,7 +446,15 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 	if tc.ChannelType == "p2p" && tc.ID == "OM-07" {
 		p2pOwner := testutil.CreateTestUser(t, testutil.UserTestData{
 			Username: fmt.Sprintf("ox_owner_p2p_%d", time.Now().UnixNano()),
-			Grou
+			Group:    tc.ChannelSystemGroup,
+			Quota:    100000000,
+			Role:     common.RoleCommonUser,
+			Status:   common.UserStatusEnabled,
+		})
+		p2pOwnerID = p2pOwner.Id
+		t.Logf("    - 创建P2P渠道所有者用户 (OwnerID=%d, Group=%s)", p2pOwnerID, tc.ChannelSystemGroup)
+	}
+
 	ownerID := 0
 	isPrivate := false
 	switch tc.ChannelType {
@@ -458,7 +466,11 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 		}
 		isPrivate = true
 	case "p2p":
-		ownerID = ctx.UserID // 共享渠道由用户作为Owner
+		if tc.ID == "OM-07" && p2pOwnerID > 0 {
+			ownerID = p2pOwnerID
+		} else {
+			ownerID = ctx.UserID // 默认：共享渠道由当前用户作为Owner
+		}
 	default: // "public"
 		ownerID = 0
 	}
@@ -466,11 +478,7 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 	channel := testutil.CreateTestChannel(t, testutil.ChannelTestData{
 		Name:          fmt.Sprintf("ox_ch_%s_%d", tc.ChannelType, time.Now().UnixNano()),
 		Type:          1,
-		if tc.ID == "OM-07" && p2pOwnerID > 0 {
-			ownerID = p2pOwnerID
-		} else {
-			ownerID = ctx.UserID // 默认：共享渠道由当前用户作为Owner
-		}
+		Group:         tc.ChannelSystemGroup,
 		Models:        "gpt-4",
 		Status:        common.ChannelStatusEnabled,
 		BaseURL:       "", // 使用默认 Mock LLM 上游地址
@@ -538,7 +546,9 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 		Group:          groupStr,
 	}
 
-	if tc.TokenConfig == "p2p_restriction" && tc.TokenP2PGroupID > 0 {
+	// 只要测试用例配置了 TokenP2PGroupID (>0)，就为 Token 绑定当前用例创建的 P2P 分组，
+	// 与 TokenConfig 枚举解耦，便于构造同时具备 billing_override 与 P2P 限制的组合场景（如 OM-08）。
+	if tc.TokenP2PGroupID > 0 && ctx.P2PGroupID > 0 {
 		p2pGroupID := ctx.P2PGroupID
 		token.P2PGroupID = &p2pGroupID
 	}
@@ -557,6 +567,24 @@ func (s *OrthogonalMatrixSuite) setupOrthogonalTestCase(tc OrthogonalTestCase) *
 	// 7. 设置滑动窗口状态（使用Redis Mock）
 	if ctx.RedisMock != nil {
 		setupSlidingWindowState(t, ctx.RedisMock, ctx.SubscriptionID, tc.WindowState, tc.PackageHourlyLimit)
+
+		// OM-08: 调整高优先级套餐的小时窗口，使其在两次请求后刚好超限，
+		// 从而验证「高优先级套餐用尽后自动降级到低优先级套餐」的行为。
+		if tc.ID == "OM-08" && tc.WindowState == "active" {
+			key := testutil.GetWindowKey(ctx.SubscriptionID, "hourly")
+			// 这里使用当前实现中的预扣额度估算值约 7500 quota：
+			//   第一次请求: consumed0 + E <= limit
+			//   第二次请求: consumed0 + 2E > limit
+			const estimatedQuota int64 = 7500
+			const delta int64 = 1000 // 留一点裕度，避免边界误差
+			consumed := tc.PackageHourlyLimit - (2*estimatedQuota - delta)
+			if consumed < 0 {
+				consumed = 0
+			}
+			ctx.RedisMock.SetHashField(key, "consumed", fmt.Sprintf("%d", consumed))
+			ctx.RedisMock.SetHashField(key, "limit", fmt.Sprintf("%d", tc.PackageHourlyLimit))
+			t.Logf("    - [OM-08] 调整高优先级套餐窗口: consumed=%d, limit=%d (预计两次请求后超限)", consumed, tc.PackageHourlyLimit)
+		}
 	} else {
 		t.Logf("    - 警告: RedisMock未初始化，跳过滑动窗口设置")
 	}
@@ -985,35 +1013,36 @@ func (s *OrthogonalMatrixSuite) TestOM07_GlobalPackageNoP2PRestrictionRejected()
 // Test Scenario: 多套餐组合：全局15+P2P11，VIP用户，billing列表，窗口有效
 // Expected Result: 优先级15套餐超限后降级到优先级11套餐
 func (s *OrthogonalMatrixSuite) TestOM08_MultiPackagePriorityDegradation() {
-	s.T().Skip("等待套餐系统后端实现")
-
 	tc := orthogonalTestCases[7] // OM-08
 	s.T().Logf("=== 执行正交测试用例 %s ===", tc.ID)
 	s.T().Logf("场景描述: %s", tc.Name)
 
 	ctx := s.setupOrthogonalTestCase(tc)
 
-	// OM-08特殊处理：需要先耗尽高优先级套餐
-	// 第一次请求：消耗高优先级套餐（5M限额）
+	// OM-08特殊处理：需要通过两次请求观察套餐从高优先级降级到低优先级的行为。
+	// 第一次请求：使用高优先级全局套餐（priority=15）
 	t := s.T()
-	t.Logf("  [OM-08] 第一次请求：消耗高优先级套餐")
-	resp1, relayInfo1 := s.executePackageRequest(tc, ctx)
+	t.Logf("  [OM-08] 第一次请求：期望使用高优先级全局套餐")
+	resp1, _ := s.executePackageRequest(tc, ctx)
 	assert.Equal(t, http.StatusOK, resp1.StatusCode, "第一次请求应成功")
-	assert.Equal(t, ctx.PackageID, relayInfo1.UsingPackageId, "应使用高优先级套餐")
-	t.Logf("  [OM-08] 第一次请求完成，使用套餐ID=%d", ctx.PackageID)
-
-	// 再次请求，使高优先级套餐超限
-	t.Logf("  [OM-08] 第二次请求：高优先级套餐超限，应降级到P2P套餐")
-	resp2, relayInfo2 := s.executePackageRequest(tc, ctx)
-	assert.Equal(t, http.StatusOK, resp2.StatusCode, "第二次请求应成功")
-	assert.Equal(t, ctx.SecondPackageID, relayInfo2.UsingPackageId, "应降级到P2P套餐")
-	t.Logf("  [OM-08] 第二次请求完成，降级到套餐ID=%d", ctx.SecondPackageID)
-
-	// 验证两个套餐都有消耗
 	sub1, _ := model.GetSubscriptionById(ctx.SubscriptionID)
 	sub2, _ := model.GetSubscriptionById(ctx.SecondSubID)
-	assert.Greater(t, sub1.TotalConsumed, int64(0), "高优先级套餐应有消耗")
-	assert.Greater(t, sub2.TotalConsumed, int64(0), "P2P套餐应有消耗")
+	assert.Greater(t, sub1.TotalConsumed, int64(0), "第一次请求后，高优先级套餐应有消耗")
+	assert.Equal(t, int64(0), sub2.TotalConsumed, "第一次请求后，低优先级套餐不应被使用")
+	t.Logf("  [OM-08] 第一次请求完成，高优先级套餐消耗=%dM，低优先级套餐消耗=%dM",
+		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
+
+	// 再次请求，使高优先级套餐超限
+	t.Logf("  [OM-08] 第二次请求：高优先级套餐小时窗口应超限，应降级到P2P套餐")
+	resp2, _ := s.executePackageRequest(tc, ctx)
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "第二次请求应成功")
+	sub1, _ = model.GetSubscriptionById(ctx.SubscriptionID)
+	sub2, _ = model.GetSubscriptionById(ctx.SecondSubID)
+	assert.Greater(t, sub1.TotalConsumed, int64(0), "第二次请求后，高优先级套餐应仍然有消耗记录")
+	assert.Greater(t, sub2.TotalConsumed, int64(0), "第二次请求后，低优先级套餐应被使用")
+	t.Logf("  [OM-08] 第二次请求完成，高优先级套餐消耗=%dM，低优先级套餐消耗=%dM",
+		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
+
 	t.Logf("  [OM-08] 验证完成：套餐1消耗=%dM, 套餐2消耗=%dM",
 		sub1.TotalConsumed/1000000, sub2.TotalConsumed/1000000)
 

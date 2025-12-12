@@ -3,9 +3,11 @@ package boundary_edge_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 	"github.com/QuantumNous/new-api/service"
@@ -19,14 +21,20 @@ var (
 
 // TestMain 测试主函数，负责环境准备和清理
 func TestMain(m *testing.M) {
-	// 初始化context
+	// 初始化 context 与内存数据库环境，保持与其它套餐测试套件一致：
+	// - 使用 SQLite 内存库，避免污染本地 one-api.db
+	// - 仅初始化 model.DB，Redis 在各用例中通过 StartRedisMock 单独启动
 	ctx = context.Background()
 
-	// 运行测试
-	exitCode := m.Run()
+	_ = os.Unsetenv("SQL_DSN")
+	_ = os.Setenv("SQLITE_PATH", "file::memory:?cache=shared")
+	common.InitEnv()
+	if err := model.InitDB(); err != nil {
+		panic(fmt.Sprintf("failed to init test DB for boundary-edge-cases: %v", err))
+	}
 
-	// 退出
-	panic(exitCode)
+	exitCode := m.Run()
+	os.Exit(exitCode)
 }
 
 // setupTest 每个测试前的准备工作
@@ -99,6 +107,7 @@ func teardownTest(rm *testutil.RedisMock) {
 //   - 删除并重建窗口
 //   - 新窗口start_time > 旧窗口start_time
 //   - 新窗口consumed重新从quota开始计数
+//
 // ============================================================================
 func TestEC01_WindowTimeBoundary_ExactlyExpired(t *testing.T) {
 	t.Log("EC-01: Testing window exactly at expiration boundary")
@@ -158,6 +167,7 @@ func TestEC01_WindowTimeBoundary_ExactlyExpired(t *testing.T) {
 //   - 允许扣减
 //   - 窗口时间不变
 //   - consumed累加
+//
 // ============================================================================
 func TestEC02_WindowTimeBoundary_OneSecondLeft(t *testing.T) {
 	t.Log("EC-02: Testing window with 1 second left before expiration")
@@ -205,11 +215,14 @@ func TestEC02_WindowTimeBoundary_OneSecondLeft(t *testing.T) {
 // 测试ID: EC-03
 // 优先级: P0
 // 测试场景: consumed=9999999, limit=10000000, 请求1 quota
-//           (9999999 + 1 = 10000000 = limit)，应通过
+//
+//	(9999999 + 1 = 10000000 = limit)，应通过
+//
 // 预期结果:
 //   - Lua判定为未超限
 //   - 扣减成功
 //   - consumed=10000000
+//
 // ============================================================================
 func TestEC03_LimitBoundary_ExactlyFull(t *testing.T) {
 	t.Log("EC-03: Testing limit boundary - exactly full")
@@ -246,11 +259,14 @@ func TestEC03_LimitBoundary_ExactlyFull(t *testing.T) {
 // 测试ID: EC-04
 // 优先级: P0
 // 测试场景: consumed=10000000, limit=10000000, 请求1 quota
-//           (10000000 + 1 = 10000001 > limit)，应拒绝
+//
+//	(10000000 + 1 = 10000001 > limit)，应拒绝
+//
 // 预期结果:
 //   - Lua判定为超限
 //   - 拒绝扣减
 //   - consumed保持10000000不变
+//
 // ============================================================================
 func TestEC04_LimitBoundary_ExceedByOne(t *testing.T) {
 	t.Log("EC-04: Testing limit boundary - exceed by 1 quota")
@@ -287,11 +303,14 @@ func TestEC04_LimitBoundary_ExceedByOne(t *testing.T) {
 // 测试ID: EC-05
 // 优先级: P0
 // 测试场景: end_time = now（套餐刚好过期），定时任务应标记为expired，
-//           不可用于新请求
+//
+//	不可用于新请求
+//
 // 预期结果:
 //   - 定时任务标记为expired
 //   - 查询时动态检测过期
 //   - 不使用该套餐
+//
 // ============================================================================
 func TestEC05_SubscriptionLifecycleBoundary_ExactlyExpired(t *testing.T) {
 	t.Log("EC-05: Testing subscription lifecycle boundary - exactly expired")
@@ -320,9 +339,10 @@ func TestEC05_SubscriptionLifecycleBoundary_ExactlyExpired(t *testing.T) {
 	assert.Greater(t, result.RowsAffected, int64(0), "At least one subscription should be marked as expired")
 
 	// Act: 查询用户可用套餐（应该不包含已过期的套餐）
-	// 注意：model.GetUserAvailablePackages 函数需要在 model/subscription.go 中实现
-	// 该函数应返回用户所有active且未过期的订阅列表
-	packages, err := model.GetUserActiveSubscriptions(userId, now)
+	// 使用当前实现的 GetUserActiveSubscriptions(userId, p2pGroupId *int)，
+	// p2pGroupId 传 nil 表示仅返回全局套餐，时间窗口在函数内部基于 time.Now 过滤。
+	var p2pGroupId *int
+	packages, err := model.GetUserActiveSubscriptions(userId, p2pGroupId)
 	if err != nil {
 		// 如果函数未实现，跳过此验证
 		t.Skip("GetUserActiveSubscriptions not implemented yet")
@@ -331,12 +351,8 @@ func TestEC05_SubscriptionLifecycleBoundary_ExactlyExpired(t *testing.T) {
 	// Assert: 可用套餐列表应为空（因为唯一的套餐已过期）
 	assert.Empty(t, packages, "Expired subscription should not be in available packages list")
 
-	// Act: 尝试使用该订阅创建窗口（应失败或降级到用户余额）
-	config := testutil.CreateHourlyWindowConfig(subscriptionId, 20000000)
-	result2 := testutil.CallCheckAndConsumeWindow(t, ctx, config, 2500000)
-
-	// Note: 由于套餐已过期，系统应该不会使用该套餐
-	// 这里我们主要验证定时任务标记正确，实际请求行为在其他测试中覆盖
+	// Note: 数据面“请求应失败或降级到用户余额”的行为由生命周期/计费集成测试覆盖，
+	// 此处不再额外断言窗口创建结果。
 
 	t.Log("EC-05: Test completed - Subscription marked as expired at exact boundary")
 }
@@ -349,6 +365,7 @@ func TestEC05_SubscriptionLifecycleBoundary_ExactlyExpired(t *testing.T) {
 // 预期结果:
 //   - 正常扣减
 //   - 系统正确处理
+//
 // ============================================================================
 func TestEC06_MinimalQuota_OneQuota(t *testing.T) {
 	t.Log("EC-06: Testing minimal quota request (1 quota)")
@@ -379,6 +396,7 @@ func TestEC06_MinimalQuota_OneQuota(t *testing.T) {
 // 预期结果:
 //   - 正确处理（可能超限，但系统不崩溃）
 //   - 如果超限则正确拒绝
+//
 // ============================================================================
 func TestEC07_MaximalQuota_HundredMillion(t *testing.T) {
 	t.Log("EC-07: Testing maximal quota request (100 million)")
@@ -414,6 +432,7 @@ func TestEC07_MaximalQuota_HundredMillion(t *testing.T) {
 // 预期结果:
 //   - 直接使用用户余额
 //   - 不调用套餐逻辑
+//
 // ============================================================================
 func TestEC08_ZeroPackages_UseBalance(t *testing.T) {
 	t.Log("EC-08: Testing user with zero packages")
@@ -431,9 +450,10 @@ func TestEC08_ZeroPackages_UseBalance(t *testing.T) {
 	initialQuota := user.Quota
 
 	// Act: 查询用户可用套餐
-	// 注意：这里假设 model.GetUserActiveSubscriptions 函数已实现
-	// 如果未实现，测试会skip
-	packages, err := model.GetUserActiveSubscriptions(user.Id, time.Now().Unix())
+	// 使用当前实现的 GetUserActiveSubscriptions(userId, p2pGroupId *int)，
+	// 传 nil 表示仅返回全局套餐。
+	var p2pGroupId *int
+	packages, err := model.GetUserActiveSubscriptions(user.Id, p2pGroupId)
 	if err != nil {
 		t.Skip("GetUserActiveSubscriptions not implemented yet")
 		return
@@ -463,6 +483,7 @@ func TestEC08_ZeroPackages_UseBalance(t *testing.T) {
 // 预期结果:
 //   - 按优先级正确遍历
 //   - 路由性能可接受（<50ms）
+//
 // ============================================================================
 func TestEC09_TwentyPackages_Performance(t *testing.T) {
 	t.Log("EC-09: Testing user with 20 packages - priority traversal and performance")
@@ -495,8 +516,10 @@ func TestEC09_TwentyPackages_Performance(t *testing.T) {
 
 	// Act: 查询用户可用套餐，测量耗时
 	startTime := time.Now()
-	// 注意：这里假设 model.GetUserActiveSubscriptions 函数已实现
-	packages, err := model.GetUserActiveSubscriptions(user.Id, time.Now().Unix())
+	// 使用当前实现的 GetUserActiveSubscriptions(userId, p2pGroupId *int)，
+	// 传 nil 表示仅返回全局套餐。
+	var p2pGroupId2 *int
+	packages, err := model.GetUserActiveSubscriptions(user.Id, p2pGroupId2)
 	elapsed := time.Since(startTime)
 
 	// 如果函数未实现，跳过测试
@@ -547,6 +570,7 @@ func TestEC09_TwentyPackages_Performance(t *testing.T) {
 // 预期结果:
 //   - 仅检查滑动窗口
 //   - 月度限额不生效
+//
 // ============================================================================
 func TestEC10_PackageQuotaZero_OnlyCheckWindows(t *testing.T) {
 	t.Log("EC-10: Testing package with quota=0 (unlimited monthly)")
@@ -562,7 +586,7 @@ func TestEC10_PackageQuotaZero_OnlyCheckWindows(t *testing.T) {
 	defer teardownTest(rm)
 
 	// 模拟已消耗大量月度额度（如果有月度限额应该失败）
-	sub, _ := model.GetSubscriptionById(subscriptionId, false)
+	sub, _ := model.GetSubscriptionById(subscriptionId)
 	sub.TotalConsumed = 500000000 // 已消耗500M
 	model.DB.Save(sub)
 
@@ -587,6 +611,7 @@ func TestEC10_PackageQuotaZero_OnlyCheckWindows(t *testing.T) {
 // 预期结果:
 //   - 仅检查月度总限额
 //   - 滑动窗口不限制
+//
 // ============================================================================
 func TestEC11_AllLimitsZero_OnlyCheckMonthly(t *testing.T) {
 	t.Log("EC-11: Testing package with all limits=0 (only monthly quota)")
@@ -607,8 +632,8 @@ func TestEC11_AllLimitsZero_OnlyCheckMonthly(t *testing.T) {
 	// Act: 发起多次大额请求（如果有小时限额应该失败）
 	config := testutil.CreateHourlyWindowConfig(subscriptionId, 0) // limit=0表示不检查
 
-	// 第一次请求20M
-	result1 := testutil.CallCheckAndConsumeWindow(t, ctx, config, 20000000)
+	// 第一次请求20M（当所有 limit=0 时，滑动窗口不应限制请求）
+	_ = testutil.CallCheckAndConsumeWindow(t, ctx, config, 20000000)
 
 	// 由于所有limit=0，系统不应创建滑动窗口
 	// 这里我们主要验证：当所有limit=0时，仅依赖DB的total_consumed检查月度限额
@@ -650,6 +675,7 @@ func TestEC11_AllLimitsZero_OnlyCheckMonthly(t *testing.T) {
 // 预期结果:
 //   - 系统正确隔离
 //   - 无数据污染
+//
 // ============================================================================
 func TestEC12_RedisKeyConflict_Isolation(t *testing.T) {
 	t.Log("EC-12: Testing Redis key isolation (conflict scenario)")

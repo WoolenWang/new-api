@@ -19,9 +19,17 @@ type BillingRoutingTestSuite struct {
 	server *testutil.TestServer
 }
 
-// SetupSuite 套件级初始化
 func (s *BillingRoutingTestSuite) SetupSuite() {
-	s.T().Log("BillingRoutingTestSuite: 启动测试环境")
+	s.T().Log("BillingRoutingTestSuite: 套件初始化")
+}
+
+func (s *BillingRoutingTestSuite) TearDownSuite() {
+	s.T().Log("BillingRoutingTestSuite: 套件清理完成")
+}
+
+// SetupTest 每个测试用例前的初始化
+func (s *BillingRoutingTestSuite) SetupTest() {
+	s.T().Log("BillingRoutingTestSuite: 启动独立测试服务器")
 
 	var err error
 	s.server, err = testutil.StartTestServer()
@@ -29,22 +37,7 @@ func (s *BillingRoutingTestSuite) SetupSuite() {
 		s.T().Fatalf("Failed to start test server: %v", err)
 	}
 
-	s.T().Log("BillingRoutingTestSuite: 测试服务器启动成功")
-}
-
-// TearDownSuite 套件级清理
-func (s *BillingRoutingTestSuite) TearDownSuite() {
-	s.T().Log("BillingRoutingTestSuite: 清理测试环境")
-
-	if s.server != nil {
-		s.server.Stop()
-		s.T().Log("BillingRoutingTestSuite: 测试服务器已停止")
-	}
-}
-
-// SetupTest 每个测试用例前的初始化
-func (s *BillingRoutingTestSuite) SetupTest() {
-	// 清理测试数据
+	// 为每个用例显式清理一次测试数据与缓存，确保完全隔离。
 	testutil.CleanupPackageTestData(s.T())
 	testutil.CleanupChannelTestData(s.T())
 	testutil.CleanupGroupTestData(s.T())
@@ -54,10 +47,18 @@ func (s *BillingRoutingTestSuite) SetupTest() {
 
 // TearDownTest 每个测试用例后的清理
 func (s *BillingRoutingTestSuite) TearDownTest() {
-	// 清理测试数据
-	testutil.CleanupPackageTestData(s.T())
-	testutil.CleanupChannelTestData(s.T())
-	testutil.CleanupGroupTestData(s.T())
+	s.T().Log("BillingRoutingTestSuite: 清理测试环境")
+
+	// 测试结束后停止当前用例的服务器实例，释放资源并避免跨用例状态串扰。
+	if s.server != nil {
+		err := s.server.Stop()
+		if err != nil {
+			s.T().Logf("BillingRoutingTestSuite: 停止测试服务器时出错: %v", err)
+		} else {
+			s.T().Log("BillingRoutingTestSuite: 测试服务器已停止")
+		}
+		s.server = nil
+	}
 }
 
 // TestBillingRoutingTestSuite 测试套件入口

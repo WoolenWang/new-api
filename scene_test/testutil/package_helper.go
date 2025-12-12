@@ -13,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 )
@@ -96,11 +97,25 @@ func CreateTestPackage(t *testing.T, data PackageTestData) *model.Package {
 		CreatorId:         data.CreatorId,
 	}
 
-	// 直接使用 Select(\"*\") 写入所有字段，确保 fallback_to_balance=false
-	// 不会被数据库默认值覆盖为 true。
+	// 直接使用 Select("*") 写入所有字段，避免部分字段因默认值而被省略。
 	err := model.DB.Select("*").Create(pkg).Error
 	assert.Nil(t, err, "Failed to create test package")
-	t.Logf("CreateTestPackage: id=%d, name=%s, hourly_limit=%d, quota=%d, fallback_to_balance=%v", pkg.Id, pkg.Name, pkg.HourlyLimit, pkg.Quota, pkg.FallbackToBalance)
+
+	// 由于 GORM + SQLite 在 bool 字段带有 default:true 时，Create 后模型实例
+	// 可能被回填为 true，这里在需要时显式执行一次 UpdateColumn 来覆盖 DB 默认值，
+	// 并重新读取一遍，确保 pkg.FallbackToBalance 与测试输入保持一致。
+	if !data.FallbackToBalance {
+		updateErr := model.DB.Model(&model.Package{}).
+			Where("id = ?", pkg.Id).
+			UpdateColumn("fallback_to_balance", false).Error
+		assert.Nil(t, updateErr, "Failed to override fallback_to_balance to false for test package")
+
+		reloadErr := model.DB.First(pkg, pkg.Id).Error
+		assert.Nil(t, reloadErr, "Failed to reload test package after overriding fallback_to_balance")
+	}
+
+	t.Logf("CreateTestPackage: id=%d, name=%s, hourly_limit=%d, quota=%d, fallback_to_balance=%v",
+		pkg.Id, pkg.Name, pkg.HourlyLimit, pkg.Quota, pkg.FallbackToBalance)
 	return pkg
 }
 
@@ -164,6 +179,19 @@ func CreateAndActivateSubscription(t *testing.T, userId int, packageId int) *mod
 	assert.Nil(t, err, "Failed to activate subscription")
 
 	return sub
+}
+
+// ActivateSubscription 激活已有订阅（通过真实业务逻辑）
+func ActivateSubscription(t *testing.T, subscriptionId int) *model.Subscription {
+	sub, err := model.GetSubscriptionById(subscriptionId)
+	assert.Nil(t, err, "Failed to get subscription before activation")
+
+	err = service.ActivateSubscription(subscriptionId, sub.UserId)
+	assert.Nil(t, err, "Failed to activate subscription")
+
+	activated, err := model.GetSubscriptionById(subscriptionId)
+	assert.Nil(t, err, "Failed to reload activated subscription")
+	return activated
 }
 
 // CalculateEndTime 计算套餐结束时间

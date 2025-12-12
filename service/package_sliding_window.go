@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,8 +16,13 @@ import (
 //go:embed check_and_consume_sliding_window.lua
 var luaCheckAndConsumeWindow string
 
-// scriptSHA 存储Lua脚本的SHA值，在应用启动时预加载
-var scriptSHA string
+// scriptSHA 存储Lua脚本的SHA值，在应用启动时预加载。
+// 由于滑动窗口检查会在高并发下频繁调用，需要在并发环境下安全地读写该值，
+// 因此使用读写锁保护，避免数据竞争。
+var (
+	scriptSHA   string
+	scriptSHAMu sync.RWMutex
+)
 
 // SlidingWindowConfig 滑动窗口配置
 type SlidingWindowConfig struct {
@@ -113,13 +119,26 @@ func init() {
 
 // ResetSlidingWindowScriptCache 重置 Lua 脚本 SHA 缓存（主要用于单元测试，在切换 Redis 实例时调用）
 func ResetSlidingWindowScriptCache() {
+	scriptSHAMu.Lock()
 	scriptSHA = ""
+	scriptSHAMu.Unlock()
 }
 
 // ensureScriptLoaded 确保Lua脚本已加载，如果未加载则立即加载
 func ensureScriptLoaded(ctx context.Context) error {
+	// 快路径：使用读锁检查是否已加载
+	scriptSHAMu.RLock()
 	if scriptSHA != "" {
+		scriptSHAMu.RUnlock()
 		return nil // 已加载
+	}
+	scriptSHAMu.RUnlock()
+
+	// 慢路径：加写锁并再次检查，避免重复加载
+	scriptSHAMu.Lock()
+	defer scriptSHAMu.Unlock()
+	if scriptSHA != "" {
+		return nil
 	}
 
 	if !common.RedisEnabled {
@@ -163,10 +182,15 @@ func CheckAndConsumeSlidingWindow(
 	now := getRedisNowUnix(ctx)
 	key := fmt.Sprintf("subscription:%d:%s:window", subscriptionId, config.Period)
 
+	// 读取当前脚本 SHA 的快照，避免在执行过程中被并发修改。
+	scriptSHAMu.RLock()
+	currentSHA := scriptSHA
+	scriptSHAMu.RUnlock()
+
 	// 执行Lua脚本
 	result, err := common.RDB.EvalSha(
 		ctx,
-		scriptSHA,
+		currentSHA,
 		[]string{key},
 		now,
 		config.Duration,
@@ -180,12 +204,17 @@ func CheckAndConsumeSlidingWindow(
 		// 尝试重新加载 Lua 脚本并重试一次，避免直接降级为“无限制”。
 		if strings.Contains(err.Error(), "NOSCRIPT") {
 			// 清空本地缓存的 SHA，强制重新加载脚本
-			scriptSHA = ""
+			ResetSlidingWindowScriptCache()
 			if loadErr := ensureScriptLoaded(ctx); loadErr == nil {
+				// 重新获取最新的 SHA
+				scriptSHAMu.RLock()
+				reloadedSHA := scriptSHA
+				scriptSHAMu.RUnlock()
+
 				// 重新执行脚本
 				result, err = common.RDB.EvalSha(
 					ctx,
-					scriptSHA,
+					reloadedSHA,
 					[]string{key},
 					now,
 					config.Duration,

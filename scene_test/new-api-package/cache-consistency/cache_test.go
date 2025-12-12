@@ -8,7 +8,6 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/scene_test/testutil"
-	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -24,7 +23,9 @@ import (
 // 5. 故障恢复能力
 type CacheConsistencyTestSuite struct {
 	suite.Suite
-	server *testutil.TestServer
+	server             *testutil.TestServer
+	mockLLM            *testutil.MockLLMServer
+	redisRestartNeeded bool
 }
 
 // SetupSuite 在整个测试套件开始前执行一次
@@ -39,12 +40,21 @@ func (s *CacheConsistencyTestSuite) SetupSuite() {
 	}
 	s.T().Logf("测试服务器已启动: %s", s.server.BaseURL)
 
+	// 启动 Mock LLM，用于承接数据面请求，避免访问真实上游
+	s.mockLLM = testutil.NewMockLLMServer()
+	testutil.SetDefaultChannelBaseURL(s.mockLLM.URL())
+
 	s.T().Log("=== CacheConsistencyTestSuite: 测试环境初始化完成 ===")
 }
 
 // TearDownSuite 在整个测试套件结束后执行一次
 func (s *CacheConsistencyTestSuite) TearDownSuite() {
 	s.T().Log("=== CacheConsistencyTestSuite: 开始清理测试环境 ===")
+
+	if s.mockLLM != nil {
+		s.mockLLM.Close()
+		s.mockLLM = nil
+	}
 
 	if s.server != nil {
 		s.server.Stop()
@@ -69,6 +79,17 @@ func (s *CacheConsistencyTestSuite) SetupTest() {
 func (s *CacheConsistencyTestSuite) TearDownTest() {
 	// 清理测试数据
 	testutil.CleanupPackageTestData(s.T())
+
+	// 如果上一用例中人为关闭了 MiniRedis，这里尝试在同一端口上重启，
+	// 以便后续用例仍然能够使用滑动窗口功能。
+	if s.redisRestartNeeded && s.server != nil && s.server.MiniRedis != nil {
+		if err := s.server.MiniRedis.Restart(); err != nil {
+			s.T().Logf("TearDownTest: failed to restart miniredis: %v", err)
+		} else {
+			s.T().Log("TearDownTest: miniredis restarted successfully")
+		}
+		s.redisRestartNeeded = false
+	}
 }
 
 // TestCacheConsistencySuite 测试套件入口
@@ -97,17 +118,22 @@ func (s *CacheConsistencyTestSuite) assertWindowNotExists(subscriptionId int, pe
 // assertWindowConsumed 断言窗口消耗值
 func (s *CacheConsistencyTestSuite) assertWindowConsumed(subscriptionId int, period string, expectedConsumed int64) {
 	key := fmt.Sprintf("subscription:%d:%s:window", subscriptionId, period)
-	consumed, err := s.server.MiniRedis.HGet(key, "consumed")
-	assert.Nil(s.T(), err)
+	if s.server.MiniRedis == nil {
+		s.T().Fatal("assertWindowConsumed: MiniRedis is nil")
+	}
+	consumed := s.server.MiniRedis.HGet(key, "consumed")
 	assert.Equal(s.T(), fmt.Sprintf("%d", expectedConsumed), consumed, "窗口消耗值应该匹配")
 }
 
 // getWindowConsumed 获取窗口消耗值
 func (s *CacheConsistencyTestSuite) getWindowConsumed(subscriptionId int, period string) (int64, error) {
 	key := fmt.Sprintf("subscription:%d:%s:window", subscriptionId, period)
-	consumed, err := s.server.MiniRedis.HGet(key, "consumed")
-	if err != nil {
-		return 0, err
+	if s.server.MiniRedis == nil {
+		return 0, fmt.Errorf("MiniRedis is nil")
+	}
+	consumed := s.server.MiniRedis.HGet(key, "consumed")
+	if consumed == "" {
+		return 0, fmt.Errorf("hash field %s:consumed not found", key)
 	}
 	return strconv.ParseInt(consumed, 10, 64)
 }
@@ -169,18 +195,13 @@ func (s *CacheConsistencyTestSuite) TestCC01_PackageCacheWriteThrough() {
 	s.waitForAsyncOperation()
 
 	// Act: 查询套餐信息（应从缓存读取或读DB后回填）
-	queriedPkg, err := model.GetPackageById(pkg.Id, false) // false表示允许从缓存读取
+	queriedPkg, err := model.GetPackageByID(pkg.Id)
 	assert.Nil(s.T(), err, "查询套餐应该成功")
 	assert.NotNil(s.T(), queriedPkg, "查询结果不应为空")
 	s.T().Logf("查询套餐成功: ID=%d, Name=%s", queriedPkg.Id, queriedPkg.Name)
 
 	// 再次等待，确保Redis回填完成
 	s.waitForAsyncOperation()
-
-	// Assert: 验证缓存一致性
-	// 注意：实际缓存Key格式可能与model层实现有关
-	// 这里假设使用 package:{id} 格式
-	cacheKey := fmt.Sprintf("package:%d", pkg.Id)
 
 	// 验证 DB 数据正确
 	assert.Equal(s.T(), pkg.Id, queriedPkg.Id, "查询到的套餐ID应该一致")
@@ -190,7 +211,7 @@ func (s *CacheConsistencyTestSuite) TestCC01_PackageCacheWriteThrough() {
 
 	// 验证 Redis 缓存（如果model层实现了缓存）
 	// 由于缓存实现可能是透明的，这里主要验证多次查询的一致性
-	queriedPkg2, err := model.GetPackageById(pkg.Id, false)
+	queriedPkg2, err := model.GetPackageByID(pkg.Id)
 	assert.Nil(s.T(), err)
 	assert.Equal(s.T(), queriedPkg.Id, queriedPkg2.Id, "多次查询应该返回一致的数据")
 	s.T().Log("✓ 验证通过: 多次查询数据一致，Cache-Aside模式正确")
@@ -265,8 +286,8 @@ func (s *CacheConsistencyTestSuite) TestCC02_SubscriptionCacheInvalidation() {
 	// 等待异步操作
 	s.waitForAsyncOperation()
 
-	// Act: 启用订阅（状态变更）
-	s.T().Log("启用订阅，状态变更为 active...")
+	// Act: 启用订阅（状态变更，走真实 service.ActivateSubscription 流程）
+	s.T().Log("启用订阅，状态变更为 active（通过 ActivateSubscription）...")
 	activatedSub := testutil.ActivateSubscription(s.T(), sub.Id)
 	s.T().Logf("启用订阅成功: ID=%d, Status=%s, StartTime=%d, EndTime=%d",
 		activatedSub.Id, activatedSub.Status, *activatedSub.StartTime, *activatedSub.EndTime)
@@ -358,13 +379,14 @@ func (s *CacheConsistencyTestSuite) TestCC03_SlidingWindowRedisInvalidation() {
 	subscription := testutil.CreateAndActivateSubscription(s.T(), user.Id, pkg.Id)
 	s.T().Logf("创建订阅: ID=%d", subscription.Id)
 
-	// Arrange: 创建渠道
+	// Arrange: 创建渠道（指向 Mock LLM）
 	channel := testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
-		Name:   "CC-03-Channel",
-		Type:   1,
-		Group:  "default",
-		Models: "gpt-4",
-		Status: 1,
+		Name:    "CC-03-Channel",
+		Type:    1,
+		Group:   "default",
+		Models:  "gpt-4",
+		Status:  1,
+		BaseURL: s.mockLLM.URL(),
 	})
 	s.T().Logf("创建渠道: ID=%d", channel.Id)
 
@@ -372,12 +394,10 @@ func (s *CacheConsistencyTestSuite) TestCC03_SlidingWindowRedisInvalidation() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: user.Id,
 		Name:   "cc03-token",
-		Key:    "sk-test-cc03",
 	})
 
 	// Arrange: 配置Mock LLM
-	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
+	testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
 		PromptTokens:     1200,
 		CompletionTokens: 600,
 		Content:          "CC-03第一次请求",
@@ -412,8 +432,7 @@ func (s *CacheConsistencyTestSuite) TestCC03_SlidingWindowRedisInvalidation() {
 	s.T().Log("✓ 窗口已删除")
 
 	// Act: 第二次请求 - 应该重建窗口
-	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
+	testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
 		PromptTokens:     1500,
 		CompletionTokens: 750,
 		Content:          "CC-03第二次请求",
@@ -508,13 +527,14 @@ func (s *CacheConsistencyTestSuite) TestCC04_RedisCompletelyUnavailable() {
 	subscription := testutil.CreateAndActivateSubscription(s.T(), user.Id, pkg.Id)
 	s.T().Logf("创建订阅: ID=%d, Status=%s", subscription.Id, subscription.Status)
 
-	// Arrange: 创建渠道
+	// Arrange: 创建渠道（指向 Mock LLM）
 	channel := testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
-		Name:   "CC-04-Channel",
-		Type:   1,
-		Group:  "default",
-		Models: "gpt-4",
-		Status: 1,
+		Name:    "CC-04-Channel",
+		Type:    1,
+		Group:   "default",
+		Models:  "gpt-4",
+		Status:  1,
+		BaseURL: s.mockLLM.URL(),
 	})
 	s.T().Logf("创建渠道: ID=%d", channel.Id)
 
@@ -522,29 +542,24 @@ func (s *CacheConsistencyTestSuite) TestCC04_RedisCompletelyUnavailable() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: user.Id,
 		Name:   "cc04-token",
-		Key:    "sk-test-cc04",
 	})
 
 	// Act: 关闭Redis（模拟故障）
 	s.T().Log("===== 阶段1: 模拟Redis故障 =====")
 	s.T().Log("关闭miniredis，模拟Redis不可用...")
 
-	// 保存原Redis状态
-	originalRedis := s.server.MiniRedis
-
 	// 关闭Redis
 	if s.server.MiniRedis != nil {
 		s.server.MiniRedis.Close()
-		s.server.MiniRedis = nil
 		s.T().Log("✓ miniredis已停止")
+		s.redisRestartNeeded = true
 	}
 
 	// 注意：如果系统使用 common.RedisEnabled 标志，应设置为false
 	// 这依赖于具体实现。这里假设系统会自动检测Redis连接失败并降级
 
 	// Arrange: 配置Mock LLM（Redis关闭后）
-	testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
-		Model:            "gpt-4",
+	testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		Content:          "CC-04测试响应（Redis不可用）",
@@ -653,10 +668,9 @@ func (s *CacheConsistencyTestSuite) TestCC05_RedisFunctionRecovery() {
 
 		// Phase 1: Redis不可用时请求
 		s.server.MiniRedis.Close()
-		s.server.MiniRedis = nil
 		// common.RedisEnabled = false
 
-		testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, ...)
+		testutil.SetupMockLLMResponse(s.T(), s.mockLLM, ...)
 		resp1, _ := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, ...)
 		assert.Equal(s.T(), 200, resp1.StatusCode)  // 降级成功
 
@@ -671,7 +685,7 @@ func (s *CacheConsistencyTestSuite) TestCC05_RedisFunctionRecovery() {
 		// common.RDB = redis.NewClient(&redis.Options{Addr: mr.Addr()})  // 关键：动态切换连接
 
 		// Phase 3: Redis恢复后请求
-		testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, ...)
+		testutil.SetupMockLLMResponse(s.T(), s.mockLLM, ...)
 		resp2, _ := testutil.CallChatCompletion(s.T(), s.server.BaseURL, token.Key, ...)
 		assert.Equal(s.T(), 200, resp2.StatusCode)  // 请求成功
 
@@ -737,13 +751,14 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	subscription := testutil.CreateAndActivateSubscription(s.T(), user.Id, pkg.Id)
 	s.T().Logf("创建订阅: ID=%d", subscription.Id)
 
-	// Arrange: 创建渠道
+	// Arrange: 创建渠道（指向 Mock LLM）
 	channel := testutil.CreateTestChannel(s.T(), testutil.ChannelTestData{
-		Name:   "CC-06-Channel",
-		Type:   1,
-		Group:  "default",
-		Models: "gpt-4",
-		Status: 1,
+		Name:    "CC-06-Channel",
+		Type:    1,
+		Group:   "default",
+		Models:  "gpt-4",
+		Status:  1,
+		BaseURL: s.mockLLM.URL(),
 	})
 	s.T().Logf("创建渠道: ID=%d", channel.Id)
 
@@ -751,7 +766,6 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 	token := testutil.CreateTestToken(s.T(), testutil.TokenTestData{
 		UserId: user.Id,
 		Name:   "cc06-token",
-		Key:    "sk-test-cc06",
 	})
 
 	// Act: 发起100次真实HTTP请求
@@ -760,7 +774,7 @@ func (s *CacheConsistencyTestSuite) TestCC06_DBRedisDataConsistency() {
 
 	for i := 1; i <= requestCount; i++ {
 		// 配置Mock LLM（每次约1M quota）
-		testutil.SetupMockLLMResponse(s.T(), s.server.MockLLM, testutil.MockLLMResponse{
+		testutil.SetupMockLLMResponse(s.T(), s.mockLLM, testutil.MockLLMResponse{
 			Model:            "gpt-4",
 			PromptTokens:     500, // 约0.5M
 			CompletionTokens: 250, // 约0.5M（总计约1M）

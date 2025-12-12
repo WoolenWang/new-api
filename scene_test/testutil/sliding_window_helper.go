@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -70,9 +71,21 @@ func GetWindowKey(subscriptionId int, period string) string {
 }
 
 // AssertWindowExists 断言窗口存在
-func AssertWindowExists(t *testing.T, rm *RedisMock, subscriptionId int, period string) {
+func AssertWindowExists(t *testing.T, redisInstance interface{}, subscriptionId int, period string) bool {
 	key := GetWindowKey(subscriptionId, period)
-	rm.AssertKeyExists(t, key)
+
+	switch v := redisInstance.(type) {
+	case *RedisMock:
+		v.AssertKeyExists(t, key)
+		return true
+	case *miniredis.Miniredis:
+		exists := v.Exists(key)
+		assert.True(t, exists, fmt.Sprintf("Redis key '%s' should exist", key))
+		return exists
+	default:
+		t.Fatalf("AssertWindowExists: unsupported redis instance type %T", redisInstance)
+		return false
+	}
 }
 
 // AssertWindowNotExists 断言窗口不存在

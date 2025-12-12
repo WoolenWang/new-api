@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"testing"
 	"time"
 )
 
@@ -60,6 +61,13 @@ type APIResponse struct {
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
+
+// Message is an alias of ChatMessage for compatibility with older test code.
+// This allows scene tests to use a shorter type name without duplicating structs.
+type Message = ChatMessage
+
+// ChatRequest is an alias of ChatCompletionRequest for compatibility.
+type ChatRequest = ChatCompletionRequest
 
 // Request performs an HTTP request and returns the response.
 func (c *APIClient) Request(method, path string, body interface{}) (*http.Response, error) {
@@ -422,6 +430,34 @@ type ChatMessage struct {
 // ChatCompletion sends a chat completion request.
 func (c *APIClient) ChatCompletion(req ChatCompletionRequest) (*http.Response, error) {
 	return c.Post("/v1/chat/completions", req)
+}
+
+// CallChatCompletion is a test helper to send a chat completion request using
+// a raw baseURL and token. It reads the full response body into memory and
+// returns both the response and body string, while keeping resp.Body reusable.
+func CallChatCompletion(t *testing.T, baseURL string, token string, req *ChatRequest) (*http.Response, string) {
+	if req == nil {
+		t.Fatalf("CallChatCompletion: request cannot be nil")
+	}
+
+	client := NewAPIClientWithToken(baseURL, token)
+
+	resp, err := client.ChatCompletion(*req)
+	if err != nil {
+		t.Fatalf("CallChatCompletion: failed to send request: %v", err)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		resp.Body.Close()
+		t.Fatalf("CallChatCompletion: failed to read response body: %v", err)
+	}
+	resp.Body.Close()
+
+	// Re-wrap body so callers can still read/Close it if needed.
+	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+	return resp, string(bodyBytes)
 }
 
 // GetStatus retrieves the server status.
