@@ -646,16 +646,23 @@ func (s *BillingExceptionTestSuite) TestBA09_PackageNearExhaustion_StrictLimit()
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
 
+	// 记录用户初始余额，用于验证在严格月度限额 + 禁止Fallback的场景下不会从余额扣减。
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
+
 	// 手动设置已消耗99.5M
 	alreadyConsumed := int64(99500000) // 99.5M
 	sub.TotalConsumed = alreadyConsumed
-	err := model.DB.Save(sub).Error
+	err = model.DB.Save(sub).Error
 	s.Require().NoError(err)
 
 	s.T().Logf("Pre-set subscription consumed to: %d (99.5M)", alreadyConsumed)
 
-	// 配置Mock LLM响应：构造一个消耗1M的请求
-	// InputTokens=200000, OutputTokens=50000
+	// 配置Mock LLM响应：构造一个理论上消耗约1M的请求
+	// 注意：本用例的核心是验证「PreConsume 阶段的月度限额检查在 FallbackToBalance=false 时直接拒绝请求」，
+	// 因此我们额外通过 max_tokens 放大预估额度（QuotaToPreConsume），使
+	//   projected = alreadyConsumed + estimatedQuota > pkg.Quota，
+	// 从而触发 CheckAndReservePackageQuota 的月度限额分支。
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{
 		StatusCode:       http.StatusOK,
 		Content:          "Response for strict limit test",
@@ -666,7 +673,8 @@ func (s *BillingExceptionTestSuite) TestBA09_PackageNearExhaustion_StrictLimit()
 	// Act: 发起API请求
 	apiClient := s.client.WithToken(s.testToken)
 	resp, err := apiClient.ChatCompletion(testutil.ChatCompletionRequest{
-		Model: "gpt-4",
+		Model:     "gpt-4",
+		MaxTokens: 150000, // 放大预估额度，确保 PreConsume 阶段的月度总限额检查直接超限
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "test strict limit"},
 		},
@@ -674,24 +682,20 @@ func (s *BillingExceptionTestSuite) TestBA09_PackageNearExhaustion_StrictLimit()
 	s.Require().NoError(err)
 	defer resp.Body.Close()
 
-	// 等待异步更新完成
+	// 等待异步更新完成（即使被拒绝也保证无异步扣费）
 	time.Sleep(500 * time.Millisecond)
 
-	// Assert: 根据系统实现，可能是：
-	// 1. 拒绝请求（429），套餐未扣减
-	// 2. 允许请求但套餐扣减后触发月度限额检查
-	if resp.StatusCode == http.StatusTooManyRequests {
-		// 系统在PreConsume时检查月度限额，拒绝请求
-		testutil.AssertSubscriptionConsumed(s.T(), sub.Id, alreadyConsumed)
-		s.T().Log("BA-09-Strict: Request rejected by monthly quota check")
-	} else if resp.StatusCode == http.StatusOK {
-		// 系统允许微小超额
-		updatedSub, err := model.GetSubscriptionById(sub.Id)
-		s.Require().NoError(err)
-		s.T().Logf("BA-09-Strict: Request succeeded with minor overrun - consumed: %d", updatedSub.TotalConsumed)
-	}
+	// Assert: 在 FallbackToBalance=false 且月度限额已被预估超出的场景下：
+	// 1. 请求应被直接拒绝（429），
+	// 2. 套餐 total_consumed 维持在 alreadyConsumed，
+	// 3. 用户余额不应扣减（严格「不透支套餐且不fallback到余额」）。
+	assert.Equal(s.T(), http.StatusTooManyRequests, resp.StatusCode,
+		"Request should be rejected with 429 when monthly quota would be exceeded and fallback_to_balance is false")
 
-	s.T().Log("BA-09-Strict: Test completed - Boundary handling verified")
+	testutil.AssertSubscriptionConsumed(s.T(), sub.Id, alreadyConsumed)
+	testutil.AssertUserQuotaUnchanged(s.T(), s.testUserID, initialQuota)
+
+	s.T().Log("BA-09-Strict: Test completed - strictly enforced monthly limit without fallback")
 }
 
 // TestBA07_RateLimitError_NoCharge 测试BA-07扩展：429限流错误不扣费

@@ -283,8 +283,8 @@ go tool cover -html=coverage.out -o coverage.html
 | `TestBA07_RateLimitError_NoCharge` | BA-07-RateLimit | P0 | 429限流不扣费 |
 | `TestBA07_RequestTimeout_NoCharge` | BA-07-Timeout | P1 | 超时不扣费 |
 | `TestBA08_StreamingInterrupted_PartialCharge` | BA-08 | P1 | 流式中断部分扣费（简化） |
-| `TestBA09_PackageExactlyExhausted_BoundaryHandling` | BA-09 | P2 | 边界值处理 |
-| `TestBA09_PackageNearExhaustion_StrictLimit` | BA-09-Strict | P2 | 严格月度限额 |
+| `TestBA09_PackageExactlyExhausted_BoundaryHandling` | BA-09 | P2 | 套餐刚好用尽时，total_consumed 严格不超过配额（溢出部分不记入套餐） |
+| `TestBA09_PackageNearExhaustion_StrictLimit` | BA-09-Strict | P2 | 月度限额接近用尽且 FallbackToBalance=false 时，PreConsume 阶段直接 429 拒绝，请求既不透支套餐也不从余额扣减 |
 
 ### billing_integration_test.go（端到端）
 
