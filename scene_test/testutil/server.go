@@ -129,30 +129,43 @@ func executableName() string {
 	return "new-api-test"
 }
 
+// cached test server executable to avoid recompiling the main binary for
+// every scene test. Individual tests still run against isolated data
+// directories, so only build time is shared.
+var (
+	cachedTestServerExePath string
+	compileTestServerOnce   sync.Once
+	compileTestServerErr    error
+)
+
 // CompileTestServer compiles the NewAPI server for testing.
 // It returns the path to the compiled executable.
 func CompileTestServer(projectRoot string) (string, error) {
-	// Always compile into a dedicated temporary directory for isolation.
-	// This avoids stale binaries when tests modify the main application code
-	// between runs (e.g., during iterative debugging of scene tests).
-	tmpDir, err := os.MkdirTemp("", "newapi-test-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp dir for test server: %w", err)
-	}
+	compileTestServerOnce.Do(func() {
+		// Compile into a dedicated temporary directory for isolation.
+		tmpDir, err := os.MkdirTemp("", "newapi-test-*")
+		if err != nil {
+			compileTestServerErr = fmt.Errorf("failed to create temp dir for test server: %w", err)
+			return
+		}
 
-	exePath := filepath.Join(tmpDir, executableName())
+		exePath := filepath.Join(tmpDir, executableName())
 
-	// Compile the main package into the temporary path.
-	cmd := exec.Command("go", "build", "-o", exePath, ".")
-	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		// Compile the main package into the temporary path.
+		cmd := exec.Command("go", "build", "-o", exePath, ".")
+		cmd.Dir = projectRoot
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
-	}
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			compileTestServerErr = fmt.Errorf("failed to compile: %w\nOutput: %s", err, string(output))
+			return
+		}
 
-	return exePath, nil
+		cachedTestServerExePath = exePath
+	})
+
+	return cachedTestServerExePath, compileTestServerErr
 }
 
 // StartServer starts a new test server instance with the given configuration.

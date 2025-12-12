@@ -20,6 +20,8 @@ package channel_statistics
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,6 +31,43 @@ import (
 
 	"github.com/QuantumNous/new-api/scene_test/testutil"
 )
+
+// readEnvInt reads an int value from env with a sane default and basic validation.
+func readEnvInt(key string, defaultVal int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	return n
+}
+
+// waitForL1ToL2Flush waits for several L1→L2 flush intervals.
+// Tests set CHANNEL_STATS_FLUSH_INTERVAL_SECONDS to a small value (e.g. 2s),
+// so this helper keeps tests fast while still giving enough time for the
+// background worker pipeline to run at least once.
+func waitForL1ToL2Flush(t *testing.T) {
+	t.Helper()
+
+	flushSeconds := readEnvInt("CHANNEL_STATS_FLUSH_INTERVAL_SECONDS", 60)
+
+	// Wait for a few flush intervals; clamp to a reasonable range so that
+	// tests stay fast under accelerated settings but do not explode under
+	// default configs.
+	waitSeconds := flushSeconds * 3
+	if waitSeconds < 5 {
+		waitSeconds = 5
+	}
+	if waitSeconds > 65 {
+		waitSeconds = 65
+	}
+
+	t.Logf("Waiting ~%d seconds for L1 → L2 flush (flush_interval=%ds)", waitSeconds, flushSeconds)
+	time.Sleep(time.Duration(waitSeconds) * time.Second)
+}
 
 // CacheLayerSuite holds shared test resources for cache layer tests.
 type CacheLayerSuite struct {
@@ -273,8 +312,9 @@ func TestCL02_L1ToL2Flush(t *testing.T) {
 
 	t.Logf("CL-02: Request sent, waiting for L1 → L2 flush...")
 
-	// Wait for L1 → L2 flush (1 minute + buffer).
-	time.Sleep(65 * time.Second)
+	// Wait for L1 → L2 flush, scaled by configured flush interval so that
+	// tests remain fast when using accelerated settings.
+	waitForL1ToL2Flush(t)
 
 	t.Logf("CL-02: Flush period elapsed")
 
@@ -411,8 +451,8 @@ func TestCL03_HyperLogLogDeduplication(t *testing.T) {
 	t.Logf("CL-03: Sent 6 total requests (userA: 4, userB: 2)")
 	t.Logf("  Waiting for L1 → L2 flush...")
 
-	// Wait for flush.
-	time.Sleep(65 * time.Second)
+	// Wait for L1 → L2 flush using accelerated helper.
+	waitForL1ToL2Flush(t)
 
 	// Verify: Check logs to confirm both users accessed the channel.
 	logsA, _ := userAClient.GetUserLogs(userA.ID, 4)
@@ -519,7 +559,7 @@ func TestCL04_DirtyDataMarking(t *testing.T) {
 	t.Logf("  Waiting for L1 → L2 flush...")
 
 	// Wait for flush to mark channel as dirty.
-	time.Sleep(65 * time.Second)
+	waitForL1ToL2Flush(t)
 
 	// Verify: Check that request was logged for this user.
 	logs, err := userClient.GetUserLogs(user.ID, 1)

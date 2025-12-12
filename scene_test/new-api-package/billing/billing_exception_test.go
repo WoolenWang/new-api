@@ -216,7 +216,8 @@ func (s *BillingExceptionTestSuite) TestBA07_RequestFailed_NoCharge() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
 
 	// 配置Mock LLM返回500错误
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{
@@ -270,7 +271,8 @@ func (s *BillingExceptionTestSuite) TestBA07_RequestFailed_401_NoCharge() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
 
 	// 配置Mock LLM返回401错误
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{
@@ -571,7 +573,8 @@ func (s *BillingExceptionTestSuite) TestBA07_RequestTimeout_NoCharge() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
 
 	// 配置Mock服务器：超长延迟（模拟超时）
 	customMockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -710,7 +713,8 @@ func (s *BillingExceptionTestSuite) TestBA07_RateLimitError_NoCharge() {
 	})
 
 	sub := testutil.CreateAndActivateSubscription(s.T(), s.testUserID, pkg.Id)
-	initialQuota := 100000000
+	initialQuota, err := model.GetUserQuota(s.testUserID, true)
+	s.Require().NoError(err, "Failed to get initial user quota")
 
 	// 配置Mock LLM返回429错误
 	s.mockLLM.SetDefaultResponse(&testutil.MockLLMResponse{

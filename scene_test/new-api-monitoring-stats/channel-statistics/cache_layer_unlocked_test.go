@@ -75,7 +75,7 @@ func TestCL05_RedisTTLMechanism(t *testing.T) {
 
 	// Wait for L1 → L2 flush.
 	t.Logf("CL-05: Waiting for flush to create Redis key...")
-	time.Sleep(65 * time.Second)
+	waitForL1ToL2Flush(t)
 
 	// Note: Full test would:
 	// 1. Use RedisStatsInspector to check TTL of channel_stats key
@@ -638,7 +638,7 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 
 	t.Logf("CON-02: Sent 100 requests")
 
-	// Wait for flush.
+	// Wait for L1 → L2 flush.
 	// Note: In real test, we would:
 	// 1. Manually trigger multiple Flush Workers concurrently
 	// 2. Verify only one executes (via locks)
@@ -646,7 +646,7 @@ func TestCON02_FlushConcurrencySafety(t *testing.T) {
 	//
 	// For simplified test, we verify the system handles concurrent requests.
 
-	time.Sleep(65 * time.Second)
+	waitForL1ToL2Flush(t)
 
 	// Verify logs for this user.
 	logs, _ := userClient.GetUserLogs(user.ID, 100)

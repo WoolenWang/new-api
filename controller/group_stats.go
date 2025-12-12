@@ -41,7 +41,7 @@ func GetP2PGroupStats(c *gin.Context) {
 
 	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
 		// 非管理员，检查是否为分组成员
-		isMember, err := isGroupMember(userId, groupId)
+		isMember, err := checkGroupMember(userId, groupId)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -167,7 +167,7 @@ func GetP2PGroupStatsLatest(c *gin.Context) {
 	userRole := c.GetInt("role")
 
 	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
-		isMember, err := isGroupMember(userId, groupId)
+		isMember, err := checkGroupMember(userId, groupId)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -243,7 +243,7 @@ func GetP2PGroupStatsHistory(c *gin.Context) {
 	userRole := c.GetInt("role")
 
 	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
-		isMember, err := isGroupMember(userId, groupId)
+		isMember, err := checkGroupMember(userId, groupId)
 		if err != nil {
 			common.ApiError(c, err)
 			return
@@ -293,8 +293,15 @@ func GetP2PGroupStatsHistory(c *gin.Context) {
 
 // ========== 辅助函数 ==========
 
-// isGroupMember 检查用户是否为分组成员
-func isGroupMember(userId, groupId int) (bool, error) {
+// checkGroupMember 检查用户是否为分组成员
+func checkGroupMember(userId, groupId int) (bool, error) {
+	// 将分组 Owner 视为天然成员，避免因为缺少 user_groups 记录导致权限误拒绝。
+	if isOwner, err := model.IsGroupOwner(userId, groupId); err != nil {
+		return false, err
+	} else if isOwner {
+		return true, nil
+	}
+
 	memberInfo, err := model.GetMemberInfo(groupId, userId)
 	if err != nil {
 		// 如果找不到记录，返回false

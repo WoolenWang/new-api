@@ -64,6 +64,10 @@ func SetupConcurrentWriteSuite(t *testing.T) (*ConcurrentWriteSuite, func()) {
 	cfg.CustomEnv["CHANNEL_STATS_FLUSH_INTERVAL_SECONDS"] = "2"
 	cfg.CustomEnv["CHANNEL_STATS_WINDOW_SECONDS"] = "10"
 	cfg.CustomEnv["CHANNEL_STATS_SYNC_INTERVAL_SECONDS"] = "2"
+	// Disable global/critical rate limits so high-concurrency tests are not
+	// throttled by rate limiting logic, which would make them slow/flaky.
+	cfg.CustomEnv["GLOBAL_API_RATE_LIMIT_ENABLE"] = "false"
+	cfg.CustomEnv["CRITICAL_RATE_LIMIT_ENABLE"] = "false"
 
 	server, err := testutil.StartServer(cfg)
 	if err != nil {

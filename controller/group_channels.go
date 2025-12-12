@@ -2,6 +2,8 @@ package controller
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,27 +20,58 @@ func GetPublicGroupChannels(c *gin.Context) {
 	// 1. 解析参数
 	groupIdStr := c.Query("group_id")
 	if groupIdStr == "" {
-		common.ApiError(c, errors.New("group_id is required"))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "group_id is required",
+		})
 		return
 	}
 
+	// 支持 WQuant 侧传入的浮点形式 group_id（如 "4.0"），向下兼容整型字符串。
 	groupId, err := strconv.Atoi(groupIdStr)
 	if err != nil {
-		common.ApiError(c, errors.New("invalid group_id"))
-		return
+		if f, ferr := strconv.ParseFloat(groupIdStr, 64); ferr == nil {
+			rounded := int(math.Round(f))
+			// 仅接受类似 4.0 这种“看起来是整数”的浮点值
+			if rounded > 0 && math.Abs(f-float64(rounded)) < 1e-9 {
+				groupId = rounded
+				common.SysLog("[GetPublicGroupChannels] tolerate float group_id param: raw=%s -> id=%d", groupIdStr, groupId)
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error":   "invalid group_id",
+				})
+				return
+			}
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   "invalid group_id",
+			})
+			return
+		}
 	}
 
 	period := c.DefaultQuery("period", "1h")
 
+	common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] group_id=%d, period=%s, user_id=%d", groupId, period, c.GetInt("id")))
+
 	// 2. 验证分组是否存在且为公开分组
 	group, err := model.GetGroupById(groupId)
 	if err != nil {
-		common.ApiError(c, errors.New("分组不存在"))
+		common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] 分组不存在: group_id=%d, error=%s", groupId, err.Error()))
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "分组不存在",
+		})
 		return
 	}
 
+	common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] 分组信息: id=%d, type=%d, join_method=%d", group.Id, group.Type, group.JoinMethod))
+
 	// 检查是否为公开分组 (Type=Shared 且 JoinMethod != 0)
 	if group.Type != model.GroupTypeShared || group.JoinMethod == model.JoinMethodInvite {
+		common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] 不是公开分组: type=%d, join_method=%d", group.Type, group.JoinMethod))
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error":   "该分组不是公开分组",
@@ -49,9 +82,15 @@ func GetPublicGroupChannels(c *gin.Context) {
 	// 3. 获取分组内的渠道列表
 	channels, err := getGroupChannelsWithStats(groupId, period, true) // true = 脱敏
 	if err != nil {
-		common.ApiError(c, err)
+		common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] 查询渠道列表失败: %s", err.Error()))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
 		return
 	}
+
+	common.SysLog(fmt.Sprintf("[GetPublicGroupChannels] 查询成功, 返回 %d 个渠道", len(channels)))
 
 	// 4. 返回结果
 	c.JSON(http.StatusOK, gin.H{
@@ -75,10 +114,22 @@ func GetJoinedGroupChannels(c *gin.Context) {
 		return
 	}
 
+	// 支持 WQuant 侧传入的浮点形式 group_id（如 "4.0"）
 	groupId, err := strconv.Atoi(groupIdStr)
 	if err != nil {
-		common.ApiError(c, errors.New("invalid group_id"))
-		return
+		if f, ferr := strconv.ParseFloat(groupIdStr, 64); ferr == nil {
+			rounded := int(math.Round(f))
+			if rounded > 0 && math.Abs(f-float64(rounded)) < 1e-9 {
+				groupId = rounded
+				common.SysLog("[GetJoinedGroupChannels] tolerate float group_id param: raw=%s -> id=%d", groupIdStr, groupId)
+			} else {
+				common.ApiError(c, errors.New("invalid group_id"))
+				return
+			}
+		} else {
+			common.ApiError(c, errors.New("invalid group_id"))
+			return
+		}
 	}
 
 	period := c.DefaultQuery("period", "1h")
@@ -94,7 +145,7 @@ func GetJoinedGroupChannels(c *gin.Context) {
 	// 3. 验证用户是否为分组成员
 	userRole := c.GetInt("role")
 	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
-		isMember, err := isGroupMember(userId, groupId)
+		isMember, err := checkGroupMember(userId, groupId)
 		if err != nil {
 			common.ApiError(c, err)
 			return

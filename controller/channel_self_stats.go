@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -86,10 +87,23 @@ func GetUserChannelStatsHistory(c *gin.Context) {
 		return
 	}
 
+	// 支持 WQuant 侧传入的浮点形式 channel_id（如 "3.0"），向下兼容整型字符串。
 	channelId, err := strconv.Atoi(channelIdStr)
 	if err != nil {
-		common.ApiError(c, errors.New("invalid channel_id"))
-		return
+		if f, ferr := strconv.ParseFloat(channelIdStr, 64); ferr == nil {
+			rounded := int(math.Round(f))
+			// 仅接受类似 3.0 这种“看起来是整数”的浮点值
+			if rounded > 0 && math.Abs(f-float64(rounded)) < 1e-9 {
+				channelId = rounded
+				common.SysLog("[GetUserChannelStatsHistory] tolerate float channel_id param: raw=%s -> id=%d", channelIdStr, channelId)
+			} else {
+				common.ApiError(c, errors.New("invalid channel_id"))
+				return
+			}
+		} else {
+			common.ApiError(c, errors.New("invalid channel_id"))
+			return
+		}
 	}
 
 	period := c.DefaultQuery("period", "7d")

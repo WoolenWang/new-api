@@ -10,7 +10,7 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 
 	"github.com/QuantumNous/new-api/scene_test/testutil"
-	
+	"github.com/QuantumNous/new-api/service"
 )
 
 // TestCL06_L2L3SchedulingUsingRedisInspector verifies that the Redis-level
