@@ -214,6 +214,19 @@ type AggregatedGroupStats struct {
 	UniqueUsers        int64   `json:"unique_users"`
 }
 
+// GroupModelStats 聚合后的分组按模型统计结构（用于API响应）
+type GroupModelStats struct {
+	GroupId            int     `json:"group_id"`
+	ModelName          string  `json:"model_name"`
+	TPM                float64 `json:"tpm"`
+	RPM                float64 `json:"rpm"`
+	TotalTokens        int64   `json:"total_tokens"`
+	TotalQuota         int64   `json:"total_quota"`
+	AvgResponseTimeMs  float64 `json:"avg_response_time_ms"`
+	FailRate           float64 `json:"fail_rate"`
+	DowntimePercentage float64 `json:"downtime_percentage"`
+}
+
 // AggregateGroupStatisticsByTime 按时间范围聚合分组统计数据
 // 将多个时间窗口的数据聚合为一个总体视图
 func AggregateGroupStatisticsByTime(groupId int, modelName string, startTime, endTime int64) (*AggregatedGroupStats, error) {
@@ -264,6 +277,52 @@ func AggregateGroupStatisticsByTime(groupId int, modelName string, startTime, en
 	return &result, nil
 }
 
+// AggregateGroupModelStats 按模型维度聚合分组统计数据
+//
+// 用途：为 P2P 分组提供按模型维度的聚合视图（Token/Quota/TPM/RPM/延迟/失败率/停服占比）
+//
+// 参数：
+//   - groupId: 分组ID
+//   - startTime, endTime: 时间范围（Unix时间戳）
+//   - modelName: 可选，指定模型名；为空则聚合该分组的所有模型
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.3.1 / 11.3.3
+func AggregateGroupModelStats(groupId int, startTime, endTime int64, modelName string) ([]GroupModelStats, error) {
+	query := DB.Table("group_statistics").
+		Select(`
+			group_id,
+			model_name,
+			COALESCE(SUM(total_tokens), 0)        AS total_tokens,
+			COALESCE(SUM(total_quota), 0)         AS total_quota,
+			COALESCE(AVG(tpm), 0)                 AS tpm,
+			COALESCE(AVG(rpm), 0)                 AS rpm,
+			COALESCE(AVG(avg_response_time_ms),0) AS avg_response_time_ms,
+			COALESCE(AVG(fail_rate), 0)           AS fail_rate,
+			COALESCE(AVG(downtime_percentage),0)  AS downtime_percentage
+		`).
+		Where("group_id = ?", groupId)
+
+	if startTime > 0 {
+		query = query.Where("time_window_start >= ?", startTime)
+	}
+	if endTime > 0 {
+		query = query.Where("time_window_start <= ?", endTime)
+	}
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var results []GroupModelStats
+	if err := query.
+		Group("group_id, model_name").
+		Order("model_name ASC").
+		Scan(&results).Error; err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
 // BatchUpsertGroupStatistics 批量插入或更新分组统计数据
 func BatchUpsertGroupStatistics(stats []*GroupStatistics) error {
 	if len(stats) == 0 {
@@ -306,6 +365,61 @@ func GetGroupStatisticsByGroupId(groupId int) ([]*GroupStatistics, error) {
 		Order("time_window_start DESC, model_name ASC").
 		Find(&stats).Error
 	return stats, err
+}
+
+// GroupModelDailyUsage 分组按模型每日使用量结构
+// 用于 P2P 分组按模型每日消耗曲线
+type GroupModelDailyUsage struct {
+	GroupId   int    `json:"group_id"`
+	Day       string `json:"day"`        // YYYY-MM-DD
+	ModelName string `json:"model_name"` // 模型名称
+	Tokens    int64  `json:"tokens"`     // 当日 Token 数
+	Quota     int64  `json:"quota"`      // 当日额度消耗
+}
+
+// GetGroupModelDailyUsage 获取分组按模型的每日 Token/Quota 消耗曲线
+//
+// 参数：
+//   - groupId: 分组ID
+//   - days: 向前多少天（默认 30，最大 90）
+//   - modelName: 可选，指定模型名
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.3.2 / 11.3.4
+func GetGroupModelDailyUsage(groupId int, days int, modelName string) ([]GroupModelDailyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	now := common.GetTimestamp()
+	startTime := now - int64(days*24*60*60)
+
+	query := DB.Table("group_statistics").
+		Select(`
+			group_id,
+			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+			model_name,
+			SUM(total_tokens) AS tokens,
+			SUM(total_quota)  AS quota
+		`).
+		Where("group_id = ?", groupId).
+		Where("time_window_start >= ?", startTime)
+
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var results []GroupModelDailyUsage
+	if err := query.
+		Group("group_id, day, model_name").
+		Order("day ASC, model_name ASC").
+		Scan(&results).Error; err != nil {
+		return nil, err
+	}
+
+	return results, nil
 }
 
 // ========== Public Group Ranking Operations ==========

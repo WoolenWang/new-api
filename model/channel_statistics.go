@@ -387,6 +387,32 @@ type DailyTokenUsage struct {
 	Quota  int64  `json:"quota"`  // 当天总额度消耗
 }
 
+// GlobalModelStats 系统级按模型聚合统计结构
+// 用于 /api/system/stats/models 接口返回
+type GlobalModelStats struct {
+	ModelName         string  `json:"model_name"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalQuota        int64   `json:"total_quota"`
+	RequestCount      int64   `json:"request_count"`
+	TPM               int     `json:"tpm"`
+	RPM               int     `json:"rpm"`
+	AvgResponseTimeMs float64 `json:"avg_response_time_ms"`
+	FailRate          float64 `json:"fail_rate"`
+}
+
+// BillingGroupModelStats 计费分组（系统分组）按模型聚合统计结构
+// 用于 /api/groups/system/model_stats 接口返回
+type BillingGroupModelStats struct {
+	UserGroup         string  `json:"user_group"`
+	ModelName         string  `json:"model_name"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalQuota        int64   `json:"total_quota"`
+	TPM               int     `json:"tpm"`
+	RPM               int     `json:"rpm"`
+	AvgResponseTimeMs float64 `json:"avg_response_time_ms"`
+	FailRate          float64 `json:"fail_rate"`
+}
+
 // AggregateGlobalChannelStatsByTime 聚合全局（所有渠道）在指定时间范围内的统计
 //
 // 用途：为系统级统计提供汇总指标，支持管理员查看整个 NewAPI 实例的全局性能
@@ -464,6 +490,88 @@ func AggregateGlobalChannelStatsByTime(startTime, endTime int64) (*AggregatedSta
 	return &result, nil
 }
 
+// AggregateGlobalModelStats 按模型聚合全局统计数据
+//
+// 用途：为系统级按模型统计提供汇总指标（Token/Quota/TPM/RPM/延迟/失败率）
+//
+// 参数：
+//   - startTime: 起始时间戳
+//   - endTime: 结束时间戳
+//   - modelName: 可选，指定模型名，空字符串表示聚合所有模型并按模型分组
+//
+// 返回：
+//   - []GlobalModelStats: 每个模型一条记录
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.2.1 / 11.1.3
+func AggregateGlobalModelStats(startTime, endTime int64, modelName string) ([]GlobalModelStats, error) {
+	if endTime <= startTime {
+		return []GlobalModelStats{}, nil
+	}
+
+	// 基础查询：按模型聚合 Token / Quota / 请求数 / 失败数 / 延迟和
+	type rawModelAgg struct {
+		ModelName      string
+		TotalTokens    int64
+		TotalQuota     int64
+		RequestCount   int64
+		FailCount      int64
+		TotalLatencyMs int64
+	}
+
+	query := DB.Table("channel_statistics").
+		Select(`
+			model_name,
+			SUM(total_tokens)       AS total_tokens,
+			SUM(total_quota)        AS total_quota,
+			SUM(request_count)      AS request_count,
+			SUM(fail_count)         AS fail_count,
+			SUM(total_latency_ms)   AS total_latency_ms
+		`).
+		Where("time_window_start BETWEEN ? AND ?", startTime, endTime)
+
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var rawResults []rawModelAgg
+	if err := query.Group("model_name").Scan(&rawResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to aggregate global model stats: %w", err)
+	}
+
+	if len(rawResults) == 0 {
+		return []GlobalModelStats{}, nil
+	}
+
+	minutes := float64(endTime-startTime) / 60.0
+	if minutes <= 0 {
+		minutes = 1.0
+	}
+
+	results := make([]GlobalModelStats, 0, len(rawResults))
+	for _, r := range rawResults {
+		stat := GlobalModelStats{
+			ModelName:    r.ModelName,
+			TotalTokens:  r.TotalTokens,
+			TotalQuota:   r.TotalQuota,
+			RequestCount: r.RequestCount,
+		}
+
+		// TPM/RPM
+		stat.TPM = int(float64(r.TotalTokens) / minutes)
+		stat.RPM = int(float64(r.RequestCount) / minutes)
+
+		// 平均延迟与失败率
+		if r.RequestCount > 0 {
+			stat.AvgResponseTimeMs = float64(r.TotalLatencyMs) / float64(r.RequestCount)
+			stat.FailRate = float64(r.FailCount) * 100.0 / float64(r.RequestCount)
+		}
+
+		results = append(results, stat)
+	}
+
+	return results, nil
+}
+
 // GetGlobalDailyTokenUsage 获取全局按日聚合的 Token/Quota 消耗曲线
 //
 // 用途：为系统级统计提供日均消耗趋势图
@@ -486,15 +594,24 @@ func GetGlobalDailyTokenUsage(days int) ([]DailyTokenUsage, error) {
 	now := common.GetTimestamp()
 	startTime := now - int64(days*24*60*60)
 
-	// 按自然日聚合全局的 Token 和 Quota
-	// 使用 DATE(FROM_UNIXTIME(...)) 确保跨数据库兼容性
+	// 按自然日聚合全局的 Token 和 Quota。
+	// 为兼容 MySQL 与 SQLite，这里根据实际使用的数据库类型选择不同的日期表达式：
+	//   - MySQL:   DATE(FROM_UNIXTIME(time_window_start))
+	//   - SQLite:  DATE(datetime(time_window_start, 'unixepoch'))
+	dateExpr := "DATE(FROM_UNIXTIME(time_window_start))"
+	if common.UsingSQLite {
+		dateExpr = "DATE(datetime(time_window_start, 'unixepoch'))"
+	}
+
+	selectExpr := fmt.Sprintf(`
+		%s AS day,
+		SUM(total_tokens) AS tokens,
+		SUM(total_quota) AS quota
+	`, dateExpr)
+
 	var results []DailyTokenUsage
 	err := DB.Table("channel_statistics").
-		Select(`
-			DATE(FROM_UNIXTIME(time_window_start)) AS day,
-			SUM(total_tokens) AS tokens,
-			SUM(total_quota) AS quota
-		`).
+		Select(selectExpr).
 		Where("time_window_start >= ?", startTime).
 		Group("day").
 		Order("day ASC").
@@ -502,6 +619,217 @@ func GetGlobalDailyTokenUsage(days int) ([]DailyTokenUsage, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get global daily token usage: %w", err)
+	}
+
+	return results, nil
+}
+
+// GlobalModelDailyUsage 系统级按模型每日使用量结构
+// 用于 /api/system/stats/models/daily_tokens 接口返回
+type GlobalModelDailyUsage struct {
+	Day       string `json:"day"`        // YYYY-MM-DD
+	ModelName string `json:"model_name"` // 模型名称
+	Tokens    int64  `json:"tokens"`     // 当日 Token 数
+	Quota     int64  `json:"quota"`      // 当日额度消耗
+}
+
+// GetGlobalModelDailyUsage 获取系统级按模型的每日 Token/Quota 消耗曲线
+//
+// 参数：
+//   - days: 向前多少天（默认 30，最大 90）
+//   - modelName: 可选，指定模型名，为空则返回所有模型
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.2.2 / 11.1.4
+func GetGlobalModelDailyUsage(days int, modelName string) ([]GlobalModelDailyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	now := common.GetTimestamp()
+	startTime := now - int64(days*24*60*60)
+
+	query := DB.Table("channel_statistics").
+		Select(`
+			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+			model_name,
+			SUM(total_tokens) AS tokens,
+			SUM(total_quota)  AS quota
+		`).
+		Where("time_window_start >= ?", startTime)
+
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var results []GlobalModelDailyUsage
+	if err := query.
+		Group("day, model_name").
+		Order("day ASC, model_name ASC").
+		Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get global model daily usage: %w", err)
+	}
+
+	return results, nil
+}
+
+// BillingGroupModelDailyUsage 系统分组按模型每日使用量结构
+// 用于计费分组按模型每日消耗曲线
+type BillingGroupModelDailyUsage struct {
+	UserGroup string `json:"user_group"`
+	Day       string `json:"day"`
+	ModelName string `json:"model_name"`
+	Tokens    int64  `json:"tokens"`
+	Quota     int64  `json:"quota"`
+}
+
+// AggregateBillingGroupModelStats 按系统分组 + 模型聚合统计数据
+//
+// 用途：为计费分组（系统分组）按模型维度提供汇总视图
+//
+// 参数：
+//   - userGroup: 系统分组名（如 default/vip/svip）
+//   - startTime, endTime: 时间范围
+//   - modelName: 可选，指定模型名
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.4.1 / 11.2.2
+func AggregateBillingGroupModelStats(userGroup string, startTime, endTime int64, modelName string) ([]BillingGroupModelStats, error) {
+	if endTime <= startTime {
+		return []BillingGroupModelStats{}, nil
+	}
+
+	// 1. 查询属于该系统分组的所有渠道 ID
+	var channelIds []int
+	err := DB.Table("channels").
+		Select("channels.id").
+		Joins("LEFT JOIN users ON channels.owner_user_id = users.id").
+		Where("users.group = ?", userGroup).
+		Pluck("channels.id", &channelIds).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to query channels for billing group %s: %w", userGroup, err)
+	}
+	if len(channelIds) == 0 {
+		return []BillingGroupModelStats{}, nil
+	}
+
+	// 2. 按模型维度聚合 channel_statistics
+	type rawAgg struct {
+		ModelName      string
+		TotalTokens    int64
+		TotalQuota     int64
+		RequestCount   int64
+		FailCount      int64
+		TotalLatencyMs int64
+	}
+
+	query := DB.Table("channel_statistics").
+		Select(`
+			model_name,
+			SUM(total_tokens)       AS total_tokens,
+			SUM(total_quota)        AS total_quota,
+			SUM(request_count)      AS request_count,
+			SUM(fail_count)         AS fail_count,
+			SUM(total_latency_ms)   AS total_latency_ms
+		`).
+		Where("channel_id IN ?", channelIds).
+		Where("time_window_start BETWEEN ? AND ?", startTime, endTime)
+
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var raws []rawAgg
+	if err := query.Group("model_name").Scan(&raws).Error; err != nil {
+		return nil, fmt.Errorf("failed to aggregate billing group model stats: %w", err)
+	}
+	if len(raws) == 0 {
+		return []BillingGroupModelStats{}, nil
+	}
+
+	minutes := float64(endTime-startTime) / 60.0
+	if minutes <= 0 {
+		minutes = 1.0
+	}
+
+	results := make([]BillingGroupModelStats, 0, len(raws))
+	for _, r := range raws {
+		stat := BillingGroupModelStats{
+			UserGroup:   userGroup,
+			ModelName:   r.ModelName,
+			TotalTokens: r.TotalTokens,
+			TotalQuota:  r.TotalQuota,
+		}
+		stat.TPM = int(float64(r.TotalTokens) / minutes)
+		stat.RPM = int(float64(r.RequestCount) / minutes)
+		if r.RequestCount > 0 {
+			stat.AvgResponseTimeMs = float64(r.TotalLatencyMs) / float64(r.RequestCount)
+			stat.FailRate = float64(r.FailCount) * 100.0 / float64(r.RequestCount)
+		}
+		results = append(results, stat)
+	}
+
+	return results, nil
+}
+
+// GetBillingGroupModelDailyUsage 获取系统分组按模型的每日 Token/Quota 消耗曲线
+//
+// 参数：
+//   - userGroup: 系统分组名
+//   - days: 向前多少天（默认 30，最大 90）
+//   - modelName: 可选，指定模型名
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.4.2 / 11.2.3
+func GetBillingGroupModelDailyUsage(userGroup string, days int, modelName string) ([]BillingGroupModelDailyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	// 1. 获取该系统分组的渠道 ID
+	var channelIds []int
+	err := DB.Table("channels").
+		Select("channels.id").
+		Joins("LEFT JOIN users ON channels.owner_user_id = users.id").
+		Where("users.group = ?", userGroup).
+		Pluck("channels.id", &channelIds).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to query channels for billing group %s: %w", userGroup, err)
+	}
+	if len(channelIds) == 0 {
+		return []BillingGroupModelDailyUsage{}, nil
+	}
+
+	now := common.GetTimestamp()
+	startTime := now - int64(days*24*60*60)
+
+	query := DB.Table("channel_statistics").
+		Select(`
+			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+			model_name,
+			SUM(total_tokens) AS tokens,
+			SUM(total_quota)  AS quota
+		`).
+		Where("channel_id IN ?", channelIds).
+		Where("time_window_start >= ?", startTime)
+
+	if modelName != "" {
+		query = query.Where("model_name = ?", modelName)
+	}
+
+	var results []BillingGroupModelDailyUsage
+	if err := query.
+		Group("day, model_name").
+		Order("day ASC, model_name ASC").
+		Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get billing group model daily usage: %w", err)
+	}
+
+	for i := range results {
+		results[i].UserGroup = userGroup
 	}
 
 	return results, nil

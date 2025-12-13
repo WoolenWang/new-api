@@ -337,7 +337,9 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsRoute.GET("/self/joined", controller.GetSelfJoinedGroups) // Get current user's joined groups
 
 			// System Groups Statistics (for dashboard)
-			p2pGroupsRoute.GET("/system/stats", controller.GetSystemGroupsStats) // Get system groups (default, vip, svip) stats
+			p2pGroupsRoute.GET("/system/stats", controller.GetSystemGroupsStats)                        // Get system groups (billing groups) stats
+			p2pGroupsRoute.GET("/system/model_stats", controller.GetSystemGroupModelStats)              // Get system group per-model stats
+			p2pGroupsRoute.GET("/system/model_daily_tokens", controller.GetSystemGroupModelDailyTokens) // Get system group per-model daily tokens
 
 			// Public and Joined Group Channel List Routes
 			p2pGroupsRoute.GET("/public/channels", controller.GetPublicGroupChannels) // Get public group channels (desensitized)
@@ -351,9 +353,11 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsRoute.POST("/leave", controller.LeaveGroup)          // Leave group
 
 			// Group Statistics Routes (Phase 10: P2P Group Statistics)
-			p2pGroupsRoute.GET("/:id/stats", controller.GetP2PGroupStats)                // Get aggregated stats with time range or latest snapshot
-			p2pGroupsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest)   // Get latest stats snapshot
-			p2pGroupsRoute.GET("/:id/stats/history", controller.GetP2PGroupStatsHistory) // Get historical time-series stats
+			p2pGroupsRoute.GET("/:id/stats", controller.GetP2PGroupStats)                                // Get aggregated stats with time range or latest snapshot
+			p2pGroupsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest)                   // Get latest stats snapshot
+			p2pGroupsRoute.GET("/:id/stats/history", controller.GetP2PGroupStatsHistory)                 // Get historical time-series stats
+			p2pGroupsRoute.GET("/:id/stats/models", controller.GetP2PGroupModelStats)                    // Get per-model aggregated stats for a group
+			p2pGroupsRoute.GET("/:id/stats/models/daily_tokens", controller.GetP2PGroupModelDailyTokens) // Get per-model daily token usage for a group
 		}
 
 		// Backward-compatible alias for group statistics under /api/p2p_groups/*
@@ -363,6 +367,8 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsStatsRoute.GET("/:id/stats", controller.GetP2PGroupStats)
 			p2pGroupsStatsRoute.GET("/:id/stats/latest", controller.GetP2PGroupStatsLatest)
 			p2pGroupsStatsRoute.GET("/:id/stats/history", controller.GetP2PGroupStatsHistory)
+			p2pGroupsStatsRoute.GET("/:id/stats/models", controller.GetP2PGroupModelStats)
+			p2pGroupsStatsRoute.GET("/:id/stats/models/daily_tokens", controller.GetP2PGroupModelDailyTokens)
 		}
 
 		// P2P Group Admin Routes (for querying any user's groups)
@@ -378,8 +384,10 @@ func SetApiRouter(router *gin.Engine) {
 		systemStatsRoute := apiRouter.Group("/system/stats")
 		systemStatsRoute.Use(middleware.AdminAuth())
 		{
-			systemStatsRoute.GET("/summary", controller.GetSystemStatsSummary)     // Get global system summary statistics
-			systemStatsRoute.GET("/daily_tokens", controller.GetSystemDailyTokens) // Get global daily token usage curve
+			systemStatsRoute.GET("/summary", controller.GetSystemStatsSummary)                 // Get global system summary statistics
+			systemStatsRoute.GET("/daily_tokens", controller.GetSystemDailyTokens)             // Get global daily token usage curve
+			systemStatsRoute.GET("/models", controller.GetSystemModelStats)                    // Get global per-model statistics
+			systemStatsRoute.GET("/models/daily_tokens", controller.GetSystemModelDailyTokens) // Get global per-model daily token usage
 		}
 
 		// User Billing Group Statistics Routes (User self-service) - Phase 11: System Dashboard

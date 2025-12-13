@@ -548,13 +548,16 @@ func AggregateUserBillingGroupStats(userId int, startTime, endTime int64) ([]Use
 		RequestCount int
 	}
 
+	// 使用 logGroupCol 而非直接引用 "group" 避免在不同数据库（MySQL/PostgreSQL）下的保留字兼容问题。
+	selectExpr := fmt.Sprintf(`
+		%s AS billing_group,
+		SUM(prompt_tokens + completion_tokens) AS total_tokens,
+		SUM(quota) AS total_quota,
+		COUNT(*) AS request_count
+	`, logGroupCol)
+
 	err := LOG_DB.Table("logs").
-		Select(`
-			logs.group AS billing_group,
-			SUM(logs.prompt_tokens + logs.completion_tokens) AS total_tokens,
-			SUM(logs.quota) AS total_quota,
-			COUNT(*) AS request_count
-		`).
+		Select(selectExpr).
 		Where("user_id = ?", userId).
 		Where("type = ?", LogTypeConsume).
 		Where("created_at BETWEEN ? AND ?", startTime, endTime).
@@ -613,20 +616,22 @@ func GetUserBillingGroupDailyUsage(userId int, days int, billingGroup string) ([
 	startTime := now - int64(days*24*60*60)
 
 	// 按自然日 + 计费分组聚合用户的 Token 和 Quota
+	selectExpr := fmt.Sprintf(`
+		DATE(FROM_UNIXTIME(created_at)) AS day,
+		%s AS billing_group,
+		SUM(prompt_tokens + completion_tokens) AS tokens,
+		SUM(quota) AS quota
+	`, logGroupCol)
+
 	query := LOG_DB.Table("logs").
-		Select(`
-			DATE(FROM_UNIXTIME(created_at)) AS day,
-			logs.group AS billing_group,
-			SUM(prompt_tokens + completion_tokens) AS tokens,
-			SUM(quota) AS quota
-		`).
+		Select(selectExpr).
 		Where("user_id = ?", userId).
 		Where("type = ?", LogTypeConsume).
 		Where("created_at >= ?", startTime)
 
 	// 可选：按指定计费分组过滤
 	if billingGroup != "" {
-		query = query.Where("logs.group = ?", billingGroup)
+		query = query.Where(logGroupCol+" = ?", billingGroup)
 	}
 
 	var results []UserBillingGroupDailyUsage

@@ -341,3 +341,126 @@ func calculateStartTime(endTime int64, period string) (int64, error) {
 	startTime := now.Add(-duration).Unix()
 	return startTime, nil
 }
+
+// GetP2PGroupModelStats 获取 P2P 分组按模型聚合的统计数据
+// GET /api/p2p_groups/:id/stats/models?period=7d
+// 权限：分组成员或管理员
+func GetP2PGroupModelStats(c *gin.Context) {
+	// 1. 获取分组ID
+	idStr := c.Param("id")
+	if idStr == "" {
+		common.ApiError(c, errors.New("group id is required"))
+		return
+	}
+	groupId, err := strconv.Atoi(idStr)
+	if err != nil {
+		common.ApiError(c, errors.New("invalid group id"))
+		return
+	}
+
+	// 2. 验证分组是否存在
+	if _, err := model.GetGroupById(groupId); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// 3. 权限检查（成员或管理员）
+	userId := c.GetInt("id")
+	userRole := c.GetInt("role")
+	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
+		isMember, err := checkGroupMember(userId, groupId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "您不是该分组的成员，无权查看统计数据",
+			})
+			return
+		}
+	}
+
+	// 4. 解析 period 参数
+	period := c.DefaultQuery("period", "7d")
+	endTime := time.Now().Unix()
+	startTime, err := calculateStartTime(endTime, period)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// 5. 可选模型过滤
+	modelName := c.Query("model_name")
+
+	// 6. 聚合按模型统计
+	stats, err := model.AggregateGroupModelStats(groupId, startTime, endTime, modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, stats)
+}
+
+// GetP2PGroupModelDailyTokens 获取 P2P 分组按模型的每日 Token/Quota 消耗曲线
+// GET /api/p2p_groups/:id/stats/models/daily_tokens?days=30&model_name=gpt-4
+// 权限：分组成员或管理员
+func GetP2PGroupModelDailyTokens(c *gin.Context) {
+	// 1. 获取分组ID
+	idStr := c.Param("id")
+	if idStr == "" {
+		common.ApiError(c, errors.New("group id is required"))
+		return
+	}
+	groupId, err := strconv.Atoi(idStr)
+	if err != nil {
+		common.ApiError(c, errors.New("invalid group id"))
+		return
+	}
+
+	// 2. 验证分组是否存在
+	if _, err := model.GetGroupById(groupId); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// 3. 权限检查
+	userId := c.GetInt("id")
+	userRole := c.GetInt("role")
+	if userRole != common.RoleRootUser && userRole != common.RoleAdminUser {
+		isMember, err := checkGroupMember(userId, groupId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "您不是该分组的成员，无权查看统计数据",
+			})
+			return
+		}
+	}
+
+	// 4. days 参数
+	daysStr := c.DefaultQuery("days", "30")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days < 1 {
+		common.ApiError(c, errors.New("invalid days parameter"))
+		return
+	}
+
+	// 5. 模型过滤
+	modelName := c.Query("model_name")
+
+	// 6. 聚合每日曲线
+	usage, err := model.GetGroupModelDailyUsage(groupId, days, modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, usage)
+}

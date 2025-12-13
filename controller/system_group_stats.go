@@ -1,12 +1,16 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,7 +35,9 @@ func GetSystemGroupsStats(c *gin.Context) {
 	)
 
 	// 3. 定义系统分组列表
-	systemGroups := []string{"default", "vip", "svip"}
+	// 设计目标：按“全部计费分组”进行统计，而不是硬编码 default/vip/svip。
+	// 当前实现：从 GroupRatio 配置中动态枚举分组名称，并过滤掉 "auto" 等非计费组。
+	systemGroups := getAllBillingGroups()
 
 	// 4. 为每个系统分组查询统计数据
 	var results []map[string]interface{}
@@ -54,6 +60,8 @@ func GetSystemGroupsStats(c *gin.Context) {
 				"tpm":                 stats.TPM,
 				"rpm":                 stats.RPM,
 				"quota_pm":            stats.QuotaPM,
+				"total_tokens":        stats.TotalTokens,
+				"total_quota":         stats.TotalQuota,
 				"avg_response_time":   stats.AvgResponseTimeMs,
 				"fail_rate":           stats.FailRate,
 				"total_sessions":      stats.TotalSessions,
@@ -76,4 +84,70 @@ func GetSystemGroupsStats(c *gin.Context) {
 		"success": true,
 		"data":    results,
 	})
+}
+
+// GetSystemGroupModelStats 获取系统分组按模型聚合的统计数据
+// GET /api/groups/system/model_stats?group=default&period=7d&model_name=gpt-4
+// 权限：仅管理员（通过 Admin 调用或后端服务透传）
+func GetSystemGroupModelStats(c *gin.Context) {
+	groupName := c.DefaultQuery("group", "default")
+	period := c.DefaultQuery("period", "7d")
+	modelName := c.Query("model_name")
+
+	endTime := time.Now().Unix()
+	startTime, err := calculateStartTime(endTime, period)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	stats, err := model.AggregateBillingGroupModelStats(groupName, startTime, endTime, modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, stats)
+}
+
+// GetSystemGroupModelDailyTokens 获取系统分组按模型的每日 Token/Quota 消耗曲线
+// GET /api/groups/system/model_daily_tokens?group=default&days=30&model_name=gpt-4
+// 权限：仅管理员
+func GetSystemGroupModelDailyTokens(c *gin.Context) {
+	groupName := c.DefaultQuery("group", "default")
+
+	daysStr := c.DefaultQuery("days", "30")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days < 1 {
+		common.ApiError(c, errors.New("invalid days parameter"))
+		return
+	}
+
+	modelName := c.Query("model_name")
+
+	usage, err := model.GetBillingGroupModelDailyUsage(groupName, days, modelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, usage)
+}
+
+// getAllBillingGroups 从分组倍率配置中动态枚举“计费分组”列表。
+// 说明：
+//   - 使用 ratio_setting.GetGroupRatioCopy() 作为计费分组来源；
+//   - 过滤掉 "auto" 等非计费分组；
+//   - 返回按名称排序后的列表，保证响应顺序稳定。
+func getAllBillingGroups() []string {
+	ratioMap := ratio_setting.GetGroupRatioCopy()
+	groups := make([]string, 0, len(ratioMap))
+	for name := range ratioMap {
+		if name == "" || name == "auto" {
+			continue
+		}
+		groups = append(groups, name)
+	}
+	sort.Strings(groups)
+	return groups
 }

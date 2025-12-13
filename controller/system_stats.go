@@ -119,3 +119,94 @@ func GetSystemDailyTokens(c *gin.Context) {
 		"data":    dailyUsage,
 	})
 }
+
+// GetSystemModelStats 处理 GET /api/system/stats/models
+//
+// 用途：返回整个系统在指定时间范围内按模型聚合的统计信息（Token/Quota/TPM/RPM/延迟/失败率）
+// 权限：仅管理员（middleware.AdminAuth()）
+//
+// 查询参数：
+//   - period (可选): 时间窗口，默认 "7d"，支持 1d/7d/30d
+//   - model_name (可选): 指定模型名，为空则返回所有模型
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.2.3 / 11.1.3
+func GetSystemModelStats(c *gin.Context) {
+	period := c.DefaultQuery("period", "7d")
+	modelName := c.Query("model_name")
+
+	validPeriods := []string{"1d", "7d", "30d"}
+	if !contains(validPeriods, period) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "invalid period: must be one of 1d, 7d, 30d",
+		})
+		return
+	}
+
+	endTime := time.Now().Unix()
+	startTime, err := calculateStartTime(endTime, period)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "invalid period format: " + err.Error(),
+		})
+		return
+	}
+
+	stats, err := model.AggregateGlobalModelStats(startTime, endTime, modelName)
+	if err != nil {
+		common.SysError("failed to aggregate global model stats: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to fetch system model statistics: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    stats,
+	})
+}
+
+// GetSystemModelDailyTokens 处理 GET /api/system/stats/models/daily_tokens
+//
+// 用途：返回整个系统按模型 + 自然日聚合的 Token/Quota 消耗曲线
+// 权限：仅管理员（middleware.AdminAuth()）
+//
+// 查询参数：
+//   - days (可选): 向前多少天，默认 30，最大 90
+//   - model_name (可选): 指定模型名，为空则返回所有模型
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 10.2.3 / 11.1.4
+func GetSystemModelDailyTokens(c *gin.Context) {
+	daysStr := c.DefaultQuery("days", "30")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "invalid days parameter: must be a positive integer",
+		})
+		return
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	modelName := c.Query("model_name")
+
+	dailyUsage, err := model.GetGlobalModelDailyUsage(days, modelName)
+	if err != nil {
+		common.SysError("failed to get global model daily usage: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to fetch system model daily token usage: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    dailyUsage,
+	})
+}
