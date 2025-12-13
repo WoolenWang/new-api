@@ -293,10 +293,11 @@ func CountChannelStatistics() (int64, error) {
 func AggregateChannelStatsByUserGroup(userGroup string, startTime, endTime int64) (*AggregatedStats, error) {
 	// 1. 查询属于该系统分组的所有渠道ID
 	var channelIds []int
+	userGroupCol := "users." + commonGroupCol
 	err := DB.Table("channels").
 		Select("channels.id").
 		Joins("LEFT JOIN users ON channels.owner_user_id = users.id").
-		Where("users.group = ?", userGroup).
+		Where(userGroupCol+" = ?", userGroup).
 		Pluck("channels.id", &channelIds).Error
 
 	if err != nil {
@@ -651,13 +652,18 @@ func GetGlobalModelDailyUsage(days int, modelName string) ([]GlobalModelDailyUsa
 	now := common.GetTimestamp()
 	startTime := now - int64(days*24*60*60)
 
+	dateExpr := "DATE(FROM_UNIXTIME(time_window_start))"
+	if common.UsingSQLite {
+		dateExpr = "DATE(datetime(time_window_start, 'unixepoch'))"
+	}
+
 	query := DB.Table("channel_statistics").
-		Select(`
-			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+		Select(fmt.Sprintf(`
+			%s AS day,
 			model_name,
 			SUM(total_tokens) AS tokens,
 			SUM(total_quota)  AS quota
-		`).
+		`, dateExpr)).
 		Where("time_window_start >= ?", startTime)
 
 	if modelName != "" {
@@ -702,10 +708,11 @@ func AggregateBillingGroupModelStats(userGroup string, startTime, endTime int64,
 
 	// 1. 查询属于该系统分组的所有渠道 ID
 	var channelIds []int
+	userGroupCol := "users." + commonGroupCol
 	err := DB.Table("channels").
 		Select("channels.id").
 		Joins("LEFT JOIN users ON channels.owner_user_id = users.id").
-		Where("users.group = ?", userGroup).
+		Where(userGroupCol+" = ?", userGroup).
 		Pluck("channels.id", &channelIds).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to query channels for billing group %s: %w", userGroup, err)
@@ -791,10 +798,11 @@ func GetBillingGroupModelDailyUsage(userGroup string, days int, modelName string
 
 	// 1. 获取该系统分组的渠道 ID
 	var channelIds []int
+	userGroupCol := "users." + commonGroupCol
 	err := DB.Table("channels").
 		Select("channels.id").
 		Joins("LEFT JOIN users ON channels.owner_user_id = users.id").
-		Where("users.group = ?", userGroup).
+		Where(userGroupCol+" = ?", userGroup).
 		Pluck("channels.id", &channelIds).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to query channels for billing group %s: %w", userGroup, err)
@@ -806,13 +814,18 @@ func GetBillingGroupModelDailyUsage(userGroup string, days int, modelName string
 	now := common.GetTimestamp()
 	startTime := now - int64(days*24*60*60)
 
+	dateExpr := "DATE(FROM_UNIXTIME(time_window_start))"
+	if common.UsingSQLite {
+		dateExpr = "DATE(datetime(time_window_start, 'unixepoch'))"
+	}
+
 	query := DB.Table("channel_statistics").
-		Select(`
-			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+		Select(fmt.Sprintf(`
+			%s AS day,
 			model_name,
 			SUM(total_tokens) AS tokens,
 			SUM(total_quota)  AS quota
-		`).
+		`, dateExpr)).
 		Where("channel_id IN ?", channelIds).
 		Where("time_window_start >= ?", startTime)
 

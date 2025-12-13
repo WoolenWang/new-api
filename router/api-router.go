@@ -398,6 +398,13 @@ func SetApiRouter(router *gin.Engine) {
 			billingGroupsSelfRoute.GET("/daily_tokens", controller.GetUserBillingGroupDailyTokens) // Get user's daily token usage by billing group
 		}
 
+		// System Billing Group Statistics Routes (System-wide view, visible to logged-in users)
+		billingGroupsSystemRoute := apiRouter.Group("/billing_groups/system")
+		billingGroupsSystemRoute.Use(middleware.UserAuth())
+		{
+			billingGroupsSystemRoute.GET("/stats", controller.GetSystemBillingGroupStats) // Get system-wide billing group consumption stats
+		}
+
 		// Model Monitoring Routes (Admin only) - Phase 9: Model Intelligence & Drift Monitoring
 		monitorRoute := apiRouter.Group("/monitor")
 		monitorRoute.Use(middleware.AdminAuth())

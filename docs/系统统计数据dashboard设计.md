@@ -1649,3 +1649,58 @@ ORDER BY day ASC, `group` ASC;
 - `GET /api/admin/billing_groups/user/:id/daily_tokens?days=30&billing_group=vip`
 
 其实现与 `self` 版本完全相同，只是将 `user_id` 从 path 参数读取，并使用 `AdminAuth()` 进行权限控制。
+
+#### 11.5.4 系统计费分组汇总：`GET /api/billing_groups/system/stats`
+
+- **用途**
+  - 从“整系统视角”统计所有用户在各计费分组下的总体消耗情况，用于让普通用户感知系统整体运行状况（例如各计费分组的整体 Token/额度占比、相对繁忙程度等）。
+  - 返回结构与 `/api/billing_groups/self/stats` 完全一致，只是统计范围从「当前用户」扩展为「全体用户」。
+- **权限**
+  - 任何已登录用户（`UserAuth()`），不要求管理员权限。
+- **参数**
+  - `period`（query，可选）：同 `/api/billing_groups/self/stats`，默认 `7d`，支持 `1d/7d/30d`，复用 `calculateStartTime` 逻辑。
+- **返回格式**
+  - `data` 字段为 `[]UserBillingGroupStats` 列表，字段定义与 `/api/billing_groups/self/stats` 完全一致：
+    - `billing_group`：计费分组名。
+    - `total_tokens`：该分组在指定周期内的总 Token 消耗。
+    - `total_quota`：该分组在指定周期内的总额度消耗。
+    - `request_count`：该分组在指定周期内的总请求次数。
+    - `tpm` / `rpm`：在指定周期内按分钟计算的平均 TPM / RPM。
+- **使用表**
+  - `logs`（`LOG_DB`）：消费日志表 `Log`，不再按 `user_id` 过滤，聚合范围为全体用户。
+- **过滤与聚合伪代码**
+
+```go
+startTime, endTime := calculateStartTime(period)
+
+// 与 AggregateUserBillingGroupStats 的唯一区别：不按 user_id 过滤，直接做全局聚合
+SELECT
+    `group`                                AS billing_group,
+    SUM(prompt_tokens + completion_tokens) AS total_tokens,
+    SUM(quota)                             AS total_quota,
+    COUNT(*)                               AS request_count
+FROM logs
+WHERE type      = :LogTypeConsume         -- 仅统计消费日志
+  AND created_at BETWEEN :startTime AND :endTime
+GROUP BY `group`;
+
+// Go 层：沿用 UserBillingGroupStats 结构，保持与 /api/billing_groups/self/stats 完全一致
+timeRangeMinutes := float64(endTime-startTime) / 60.0
+if timeRangeMinutes <= 0 {
+    timeRangeMinutes = 1.0
+}
+
+for each row in rawResults {
+    stat := UserBillingGroupStats{
+        BillingGroup: row.BillingGroup,
+        TotalTokens:  row.TotalTokens,
+        TotalQuota:   row.TotalQuota,
+        RequestCount: row.RequestCount,
+        TPM:          int(float64(row.TotalTokens) / timeRangeMinutes),
+        RPM:          int(float64(row.RequestCount) / timeRangeMinutes),
+    }
+    results = append(results, stat)
+}
+```
+
+> 模型层可新增 `AggregateSystemBillingGroupStats(startTime, endTime)`，内部实现与 `AggregateUserBillingGroupStats` 相同，仅去掉 `user_id` 过滤条件；Controller 层新增 `/api/billing_groups/system/stats` 路由，调用该函数并直接返回 `[]UserBillingGroupStats`，从而保证前端在消费系统级与个人级计费分组统计时可以复用同一套渲染逻辑。

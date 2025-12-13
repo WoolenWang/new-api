@@ -72,6 +72,58 @@ func GetUserBillingGroupStats(c *gin.Context) {
 	})
 }
 
+// GetSystemBillingGroupStats 处理 GET /api/billing_groups/system/stats
+//
+// 用途：返回整个系统在不同计费分组下的总体消耗统计
+// 权限：任何已登录用户（middleware.UserAuth()），无需管理员权限
+//
+// 查询参数：
+//   - period (可选): 时间窗口，默认 "7d"，支持 1d/7d/30d
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 11.5.4
+func GetSystemBillingGroupStats(c *gin.Context) {
+	// 1. 解析查询参数
+	period := c.DefaultQuery("period", "7d")
+
+	// 2. 验证 period 参数
+	validPeriods := []string{"1d", "7d", "30d"}
+	if !contains(validPeriods, period) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "invalid period: must be one of 1d, 7d, 30d",
+		})
+		return
+	}
+
+	// 3. 计算时间范围
+	endTime := time.Now().Unix()
+	startTime, err := calculateStartTime(endTime, period)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "invalid period format: " + err.Error(),
+		})
+		return
+	}
+
+	// 4. 调用 Model 层聚合系统级计费分组统计
+	stats, err := model.AggregateSystemBillingGroupStats(startTime, endTime)
+	if err != nil {
+		common.SysError("failed to aggregate system billing group stats: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to fetch system billing group statistics: " + err.Error(),
+		})
+		return
+	}
+
+	// 5. 返回响应，与 /api/billing_groups/self/stats 保持相同 data 结构
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    stats,
+	})
+}
+
 // GetUserBillingGroupDailyTokens 处理 GET /api/billing_groups/self/daily_tokens
 //
 // 用途：返回当前登录用户按计费分组的每日 Token/Quota 消耗曲线

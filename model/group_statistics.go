@@ -396,14 +396,19 @@ func GetGroupModelDailyUsage(groupId int, days int, modelName string) ([]GroupMo
 	now := common.GetTimestamp()
 	startTime := now - int64(days*24*60*60)
 
+	dateExpr := "DATE(FROM_UNIXTIME(time_window_start))"
+	if common.UsingSQLite {
+		dateExpr = "DATE(datetime(time_window_start, 'unixepoch'))"
+	}
+
 	query := DB.Table("group_statistics").
-		Select(`
+		Select(fmt.Sprintf(`
 			group_id,
-			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+			%s AS day,
 			model_name,
 			SUM(total_tokens) AS tokens,
 			SUM(total_quota)  AS quota
-		`).
+		`, dateExpr)).
 		Where("group_id = ?", groupId).
 		Where("time_window_start >= ?", startTime)
 

@@ -572,6 +572,8 @@ func mapExternalChannelType(typeStr string) (int, error) {
 		return constant.ChannelTypeAzure, nil
 	case "claude", "anthropic":
 		return constant.ChannelTypeAnthropic, nil
+	case "aws_claude", "aws-claude", "awsclaude":
+		return constant.ChannelTypeAws, nil
 	case "gemini":
 		return constant.ChannelTypeGemini, nil
 	case "cliproxy", "cli_proxy":
@@ -1758,7 +1760,7 @@ func CreateUserChannel(c *gin.Context) {
 		return
 	}
 
-	// P2P用户创建渠道时，必须选择分组且不能选择default分组
+	// P2P用户创建渠道时，必须选择分组
 	if strings.TrimSpace(channel.Group) == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1766,15 +1768,19 @@ func CreateUserChannel(c *gin.Context) {
 		})
 		return
 	}
-	// 检查是否包含default分组
-	groups := strings.Split(channel.Group, ",")
-	for _, g := range groups {
-		if strings.TrimSpace(g) == "default" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "不能选择default分组",
-			})
-			return
+
+	// 对非管理员用户，不允许选择系统保留分组 default
+	// 管理员（包括 Root）保留使用 default 等系统分组的能力，用于创建平台级渠道。
+	if !common.IsAdmin(c) {
+		groups := strings.Split(channel.Group, ",")
+		for _, g := range groups {
+			if strings.TrimSpace(g) == "default" {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "不能选择default分组",
+				})
+				return
+			}
 		}
 	}
 
@@ -1850,6 +1856,43 @@ func UpdateUserChannel(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	// 兼容 WQuant 前端：其在编辑渠道时会将 type 作为字符串（如 "openai"）回传，
+	// 而 PatchChannel.Channel.Type 字段是 int。这里预处理原始 JSON，
+	// 将字符串类型名映射为内部整型常量，避免出现
+	// "json: cannot unmarshal string into Go struct field PatchChannel.Channel.type of type int" 错误。
+	var bodyMap map[string]interface{}
+	if err := json.Unmarshal(rawBody, &bodyMap); err == nil {
+		if v, ok := bodyMap["type"]; ok {
+			switch vv := v.(type) {
+			case string:
+				tt := strings.TrimSpace(vv)
+				if tt != "" {
+					mappedType, mapErr := mapExternalChannelType(tt)
+					if mapErr != nil {
+						c.JSON(http.StatusOK, gin.H{
+							"success": false,
+							"message": mapErr.Error(),
+						})
+						return
+					}
+					bodyMap["type"] = mappedType
+				} else {
+					// 空字符串等价于“不修改类型”，从 map 中移除字段，避免覆盖原值。
+					delete(bodyMap, "type")
+				}
+			case float64:
+				// JSON 数字默认解析为 float64，这里显式转换为 int，保证类型一致。
+				bodyMap["type"] = int(vv)
+			}
+		}
+		if patchedBody, err := json.Marshal(bodyMap); err == nil {
+			rawBody = patchedBody
+		} else {
+			common.ApiError(c, err)
+			return
+		}
 	}
 
 	channel := PatchChannel{}

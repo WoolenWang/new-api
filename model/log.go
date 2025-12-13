@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -561,7 +562,7 @@ func AggregateUserBillingGroupStats(userId int, startTime, endTime int64) ([]Use
 		Where("user_id = ?", userId).
 		Where("type = ?", LogTypeConsume).
 		Where("created_at BETWEEN ? AND ?", startTime, endTime).
-		Group("logs.group").
+		Group("logs." + logGroupCol).
 		Scan(&rawResults).Error
 
 	if err != nil {
@@ -584,6 +585,92 @@ func AggregateUserBillingGroupStats(userId int, startTime, endTime int64) ([]Use
 			RequestCount: raw.RequestCount,
 			TPM:          int(float64(raw.TotalTokens) / timeRangeMinutes),
 			RPM:          int(float64(raw.RequestCount) / timeRangeMinutes),
+		}
+		results = append(results, stat)
+	}
+
+	return results, nil
+}
+
+// AggregateSystemBillingGroupStats 按计费分组聚合系统整体消耗
+//
+// 用途：为系统视角提供“各计费分组在指定时间窗口内的总体消耗”视图，
+//
+//	返回结构与 AggregateUserBillingGroupStats 保持一致，便于前端复用渲染逻辑。
+//
+// 参数：
+//   - startTime: 起始时间戳（Unix）
+//   - endTime: 结束时间戳（Unix）
+//
+// 返回：
+//   - []UserBillingGroupStats: 按计费分组聚合的统计数据列表（系统级）
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 11.5.4
+func AggregateSystemBillingGroupStats(startTime, endTime int64) ([]UserBillingGroupStats, error) {
+	// 全局范围内，从 logs 表按计费分组聚合（不再按 user_id 过滤）
+	var rawResults []struct {
+		BillingGroup string
+		TotalTokens  int64
+		TotalQuota   int64
+		RequestCount int
+	}
+
+	selectExpr := fmt.Sprintf(`
+		%s AS billing_group,
+		SUM(prompt_tokens + completion_tokens) AS total_tokens,
+		SUM(quota) AS total_quota,
+		COUNT(*) AS request_count
+	`, logGroupCol)
+
+	query := LOG_DB.Table("logs").
+		Select(selectExpr).
+		Where("type = ?", LogTypeConsume).
+		Where("created_at BETWEEN ? AND ?", startTime, endTime)
+
+	if err := query.Group("logs." + logGroupCol).Scan(&rawResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to aggregate system billing group stats: %w", err)
+	}
+
+	// 计算时间范围（分钟数）
+	timeRangeMinutes := float64(endTime-startTime) / 60.0
+	if timeRangeMinutes <= 0 {
+		timeRangeMinutes = 1.0
+	}
+
+	// 1) 先将实际有消耗的分组聚合到 map 中，计算 TPM/RPM。
+	aggregated := make(map[string]UserBillingGroupStats, len(rawResults))
+	for _, raw := range rawResults {
+		stat := UserBillingGroupStats{
+			BillingGroup: raw.BillingGroup,
+			TotalTokens:  raw.TotalTokens,
+			TotalQuota:   raw.TotalQuota,
+			RequestCount: raw.RequestCount,
+			TPM:          int(float64(raw.TotalTokens) / timeRangeMinutes),
+			RPM:          int(float64(raw.RequestCount) / timeRangeMinutes),
+		}
+		aggregated[raw.BillingGroup] = stat
+	}
+
+	// 2) 将系统配置的 UserUsableGroups 中的计费分组全部纳入结果，
+	//    即便某些分组在当前时间窗口内没有任何消费（填充为 0），
+	//    以便前端能感知“系统支持的全部计费分组”。
+	results := make([]UserBillingGroupStats, 0, len(aggregated)+8)
+	usableGroups := setting.GetUserUsableGroupsCopy()
+	for groupName := range usableGroups {
+		if stat, ok := aggregated[groupName]; ok {
+			results = append(results, stat)
+		} else {
+			results = append(results, UserBillingGroupStats{
+				BillingGroup: groupName,
+			})
+		}
+	}
+
+	// 3) 将日志中出现但不在 UserUsableGroups 配置内的分组（例如 user_default 等）
+	//    也一并追加，避免丢失实际存在的计费分组。
+	for groupName, stat := range aggregated {
+		if _, ok := usableGroups[groupName]; ok {
+			continue
 		}
 		results = append(results, stat)
 	}
@@ -616,12 +703,17 @@ func GetUserBillingGroupDailyUsage(userId int, days int, billingGroup string) ([
 	startTime := now - int64(days*24*60*60)
 
 	// 按自然日 + 计费分组聚合用户的 Token 和 Quota
+	dateExpr := "DATE(FROM_UNIXTIME(created_at))"
+	if common.UsingSQLite {
+		dateExpr = "DATE(datetime(created_at, 'unixepoch'))"
+	}
+
 	selectExpr := fmt.Sprintf(`
-		DATE(FROM_UNIXTIME(created_at)) AS day,
+		%s AS day,
 		%s AS billing_group,
 		SUM(prompt_tokens + completion_tokens) AS tokens,
 		SUM(quota) AS quota
-	`, logGroupCol)
+	`, dateExpr, logGroupCol)
 
 	query := LOG_DB.Table("logs").
 		Select(selectExpr).
@@ -636,8 +728,8 @@ func GetUserBillingGroupDailyUsage(userId int, days int, billingGroup string) ([
 
 	var results []UserBillingGroupDailyUsage
 	err := query.
-		Group("day, logs.group").
-		Order("day ASC, logs.group ASC").
+		Group("day, " + logGroupCol).
+		Order("day ASC, " + logGroupCol + " ASC").
 		Scan(&results).Error
 
 	if err != nil {
