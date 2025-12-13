@@ -307,3 +307,194 @@ func GetGroupStatisticsByGroupId(groupId int) ([]*GroupStatistics, error) {
 		Find(&stats).Error
 	return stats, err
 }
+
+// ========== Public Group Ranking Operations ==========
+
+// GroupRankingRow 公开分组排名数据行
+// 用于分组广场的排行榜展示
+// 设计文档: docs/系统统计数据dashboard设计.md Section 5
+type GroupRankingRow struct {
+	GroupId            int     `json:"group_id"`
+	GroupName          string  `json:"group_name"`
+	DisplayName        string  `json:"display_name"`
+	MemberCount        int64   `json:"member_count"`
+	ChannelCount       int64   `json:"channel_count"`
+	Tokens7d           int64   `json:"tokens_7d"`
+	Tokens30d          int64   `json:"tokens_30d"`
+	AvgTPM             float64 `json:"tpm"`
+	AvgRPM             float64 `json:"rpm"`
+	AvgLatencyMs       float64 `json:"avg_response_time_ms"`
+	AvgFailRate        float64 `json:"fail_rate"`
+	AvgDowntimePercent float64 `json:"downtime_percentage"`
+}
+
+// RankPublicGroups 对所有公开共享分组进行聚合与排名
+//
+// 参数说明：
+//   - metric: 排名指标 (tokens_7d, tokens_30d, tpm, rpm, latency, fail_rate, downtime)
+//   - period: 用于计算 tpm/rpm/latency/fail_rate/downtime 的时间窗口（如 "7d"）
+//   - order: 排序方向 ("asc" 或 "desc")，实际排序在 Controller 层完成，此函数只返回原始聚合数据
+//
+// 返回值：
+//   - 未排序的分组排名数据列表，排序逻辑在 Controller 层实现以提供更灵活的多指标排序
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 5.3
+func RankPublicGroups(metric string, period string) ([]GroupRankingRow, error) {
+	// 1. 计算时间范围
+	now := common.GetTimestamp()
+	start7d := now - 7*24*60*60
+	start30d := now - 30*24*60*60
+
+	// 根据 period 计算 startTime（用于 tpm/rpm 等指标）
+	var startTimeForPeriod int64
+	switch period {
+	case "1h":
+		startTimeForPeriod = now - 60*60
+	case "6h":
+		startTimeForPeriod = now - 6*60*60
+	case "24h", "1d":
+		startTimeForPeriod = now - 24*60*60
+	case "7d":
+		startTimeForPeriod = start7d
+	case "30d":
+		startTimeForPeriod = start30d
+	default:
+		startTimeForPeriod = start7d // 默认 7 天
+	}
+
+	// 2. 构建主查询：聚合所有公开共享分组的统计数据
+	// 注意：这里不进行排序，排序在 Controller 层完成
+	type AggResult struct {
+		GroupId     int
+		Tokens7d    int64
+		Tokens30d   int64
+		AvgTPM      float64
+		AvgRPM      float64
+		AvgLatency  float64
+		AvgFailRate float64
+		AvgDowntime float64
+	}
+
+	// 构建聚合查询
+	// 使用 LEFT JOIN 确保即使没有统计数据的分组也能出现在结果中
+	var aggResults []AggResult
+	err := DB.Table("groups g").
+		Select(`
+			g.id AS group_id,
+			COALESCE(SUM(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.total_tokens ELSE 0
+			END), 0) AS tokens_7d,
+			COALESCE(SUM(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.total_tokens ELSE 0
+			END), 0) AS tokens_30d,
+			COALESCE(AVG(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.tpm ELSE NULL
+			END), 0) AS avg_tpm,
+			COALESCE(AVG(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.rpm ELSE NULL
+			END), 0) AS avg_rpm,
+			COALESCE(AVG(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.avg_response_time_ms ELSE NULL
+			END), 0) AS avg_latency,
+			COALESCE(AVG(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.fail_rate ELSE NULL
+			END), 0) AS avg_fail_rate,
+			COALESCE(AVG(CASE
+				WHEN gs.time_window_start BETWEEN ? AND ?
+				THEN gs.downtime_percentage ELSE NULL
+			END), 0) AS avg_downtime
+		`, start7d, now, start30d, now,
+			startTimeForPeriod, now,
+			startTimeForPeriod, now,
+			startTimeForPeriod, now,
+			startTimeForPeriod, now,
+			startTimeForPeriod, now).
+		Joins("LEFT JOIN group_statistics gs ON gs.group_id = g.id").
+		Where("g.type = ?", GroupTypeShared).
+		Where("g.join_method != ?", JoinMethodInvite).
+		Group("g.id").
+		Scan(&aggResults).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate group statistics: %w", err)
+	}
+
+	// 3. 如果没有公开分组，直接返回空列表
+	if len(aggResults) == 0 {
+		return []GroupRankingRow{}, nil
+	}
+
+	// 4. 批量获取分组基础信息
+	var groupIds []int
+	for _, r := range aggResults {
+		groupIds = append(groupIds, r.GroupId)
+	}
+
+	var groups []Group
+	err = DB.Where("id IN ?", groupIds).Find(&groups).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch group details: %w", err)
+	}
+
+	// 构建 groupId -> Group 映射
+	groupMap := make(map[int]*Group)
+	for i := range groups {
+		groupMap[groups[i].Id] = &groups[i]
+	}
+
+	// 5. 批量获取成员数统计
+	type MemberCount struct {
+		GroupId int
+		Count   int64
+	}
+	var memberCounts []MemberCount
+	err = DB.Table("user_groups").
+		Select("group_id, COUNT(*) as count").
+		Where("group_id IN ?", groupIds).
+		Where("status = ?", MemberStatusActive).
+		Group("group_id").
+		Scan(&memberCounts).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to count group members: %w", err)
+	}
+
+	memberCountMap := make(map[int]int64)
+	for _, mc := range memberCounts {
+		memberCountMap[mc.GroupId] = mc.Count
+	}
+
+	// 6. 组装最终结果
+	// 注意：channel_count 暂时设为 0，因为需要解析 channels.allowed_groups JSON 字段
+	// 可以在后续迭代中优化
+	var results []GroupRankingRow
+	for _, aggResult := range aggResults {
+		group := groupMap[aggResult.GroupId]
+		if group == nil {
+			continue // 跳过未找到的分组（理论上不应该发生）
+		}
+
+		row := GroupRankingRow{
+			GroupId:            aggResult.GroupId,
+			GroupName:          group.Name,
+			DisplayName:        group.DisplayName,
+			MemberCount:        memberCountMap[aggResult.GroupId],
+			ChannelCount:       0, // TODO: 从 channels.allowed_groups 解析（后续优化）
+			Tokens7d:           aggResult.Tokens7d,
+			Tokens30d:          aggResult.Tokens30d,
+			AvgTPM:             aggResult.AvgTPM,
+			AvgRPM:             aggResult.AvgRPM,
+			AvgLatencyMs:       aggResult.AvgLatency,
+			AvgFailRate:        aggResult.AvgFailRate,
+			AvgDowntimePercent: aggResult.AvgDowntime,
+		}
+		results = append(results, row)
+	}
+
+	return results, nil
+}

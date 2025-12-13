@@ -374,3 +374,135 @@ func AggregateChannelStatsByUserGroup(userGroup string, startTime, endTime int64
 
 	return &result, nil
 }
+
+// ========== Global System Statistics Operations ==========
+// 全局系统统计操作
+// 设计文档: docs/系统统计数据dashboard设计.md Section 7
+
+// DailyTokenUsage 日均 Token 使用量结构
+// 用于全局/分组/系统分组的日均消耗曲线
+type DailyTokenUsage struct {
+	Day    string `json:"day"`    // YYYY-MM-DD
+	Tokens int64  `json:"tokens"` // 当天总 Token 数
+	Quota  int64  `json:"quota"`  // 当天总额度消耗
+}
+
+// AggregateGlobalChannelStatsByTime 聚合全局（所有渠道）在指定时间范围内的统计
+//
+// 用途：为系统级统计提供汇总指标，支持管理员查看整个 NewAPI 实例的全局性能
+//
+// 参数：
+//   - startTime: 起始时间戳（Unix）
+//   - endTime: 结束时间戳（Unix）
+//
+// 返回：
+//   - AggregatedStats: 包含全局的 TPM/RPM/FailRate/AvgLatency 等指标
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 7.1
+func AggregateGlobalChannelStatsByTime(startTime, endTime int64) (*AggregatedStats, error) {
+	// 聚合所有渠道的统计数据（不加 channel_id 过滤）
+	query := DB.Table("channel_statistics").
+		Select(`
+			SUM(request_count) as request_count,
+			SUM(fail_count) as fail_count,
+			SUM(total_tokens) as total_tokens,
+			SUM(total_quota) as total_quota,
+			SUM(total_latency_ms) as total_latency_ms,
+			SUM(stream_req_count) as stream_req_count,
+			SUM(cache_hit_count) as cache_hit_count,
+			SUM(downtime_seconds) as downtime_seconds,
+			SUM(unique_users) as unique_users,
+			CASE
+				WHEN SUM(request_count) > 0 THEN (SUM(fail_count) * 100.0 / SUM(request_count))
+				ELSE 0
+			END as fail_rate,
+			CASE
+				WHEN SUM(request_count) > 0 THEN (SUM(total_latency_ms) / SUM(request_count))
+				ELSE 0
+			END as avg_response_time_ms,
+			CASE
+				WHEN SUM(request_count) > 0 THEN (SUM(cache_hit_count) * 100.0 / SUM(request_count))
+				ELSE 0
+			END as cache_hit_rate,
+			CASE
+				WHEN SUM(request_count) > 0 THEN (SUM(stream_req_count) * 100.0 / SUM(request_count))
+				ELSE 0
+			END as stream_req_ratio
+		`)
+
+	if startTime > 0 {
+		query = query.Where("time_window_start >= ?", startTime)
+	}
+
+	if endTime > 0 {
+		query = query.Where("time_window_start <= ?", endTime)
+	}
+
+	var result AggregatedStats
+	err := query.Scan(&result).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate global channel statistics: %w", err)
+	}
+
+	// 计算时间范围（分钟数）
+	timeRangeMinutes := float64(endTime-startTime) / 60.0
+	if timeRangeMinutes <= 0 {
+		timeRangeMinutes = 1.0
+	}
+
+	// 计算 TPM、RPM、QuotaPM
+	result.TPM = int(float64(result.TotalTokens) / timeRangeMinutes)
+	result.RPM = int(float64(result.RequestCount) / timeRangeMinutes)
+	result.QuotaPM = int64(float64(result.TotalQuota) / timeRangeMinutes)
+
+	// 计算停服时间占比
+	totalSeconds := endTime - startTime
+	if totalSeconds > 0 {
+		result.DowntimePercentage = float64(result.DowntimeSeconds) * 100.0 / float64(totalSeconds)
+	}
+
+	return &result, nil
+}
+
+// GetGlobalDailyTokenUsage 获取全局按日聚合的 Token/Quota 消耗曲线
+//
+// 用途：为系统级统计提供日均消耗趋势图
+//
+// 参数：
+//   - days: 向前多少天，默认 30，最大 90
+//
+// 返回：
+//   - []DailyTokenUsage: 按日聚合的 Token/Quota 数据列表
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 7.2
+func GetGlobalDailyTokenUsage(days int) ([]DailyTokenUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	now := common.GetTimestamp()
+	startTime := now - int64(days*24*60*60)
+
+	// 按自然日聚合全局的 Token 和 Quota
+	// 使用 DATE(FROM_UNIXTIME(...)) 确保跨数据库兼容性
+	var results []DailyTokenUsage
+	err := DB.Table("channel_statistics").
+		Select(`
+			DATE(FROM_UNIXTIME(time_window_start)) AS day,
+			SUM(total_tokens) AS tokens,
+			SUM(total_quota) AS quota
+		`).
+		Where("time_window_start >= ?", startTime).
+		Group("day").
+		Order("day ASC").
+		Scan(&results).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get global daily token usage: %w", err)
+	}
+
+	return results, nil
+}

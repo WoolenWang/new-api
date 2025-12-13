@@ -500,3 +500,144 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 
 	return total, nil
 }
+
+// ========== User Billing Group Statistics Operations ==========
+// 用户计费分组统计操作
+// 设计文档: docs/系统统计数据dashboard设计.md Section 6.3
+
+// UserBillingGroupStats 用户计费分组统计结构
+// 用于展示用户在不同计费分组下的消耗情况
+type UserBillingGroupStats struct {
+	BillingGroup string `json:"billing_group"` // 计费分组名（来自 logs.group）
+	TotalTokens  int64  `json:"total_tokens"`  // 总 Token 数
+	TotalQuota   int64  `json:"total_quota"`   // 总额度消耗
+	RequestCount int    `json:"request_count"` // 请求次数
+	TPM          int    `json:"tpm"`           // 平均每分钟 Token 数
+	RPM          int    `json:"rpm"`           // 平均每分钟请求数
+}
+
+// UserBillingGroupDailyUsage 用户计费分组每日使用量结构
+// 用于展示用户在不同计费分组下的日均消耗曲线
+type UserBillingGroupDailyUsage struct {
+	Day          string `json:"day"`           // YYYY-MM-DD
+	BillingGroup string `json:"billing_group"` // 计费分组名
+	Tokens       int64  `json:"tokens"`        // 当天 Token 数
+	Quota        int64  `json:"quota"`         // 当天额度消耗
+}
+
+// AggregateUserBillingGroupStats 按计费分组聚合用户消耗
+//
+// 用途：为用户提供"我在不同计费分组下分别消耗了多少"的视图
+//
+// 参数：
+//   - userId: 用户ID
+//   - startTime: 起始时间戳（Unix）
+//   - endTime: 结束时间戳（Unix）
+//
+// 返回：
+//   - []UserBillingGroupStats: 按计费分组聚合的统计数据列表
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 6.3.1
+func AggregateUserBillingGroupStats(userId int, startTime, endTime int64) ([]UserBillingGroupStats, error) {
+	// 从 logs 表按计费分组聚合
+	// logs.group 记录的是实际使用的 BillingGroup（已考虑 Token.billing_group 覆盖）
+	var rawResults []struct {
+		BillingGroup string
+		TotalTokens  int64
+		TotalQuota   int64
+		RequestCount int
+	}
+
+	err := LOG_DB.Table("logs").
+		Select(`
+			logs.group AS billing_group,
+			SUM(logs.prompt_tokens + logs.completion_tokens) AS total_tokens,
+			SUM(logs.quota) AS total_quota,
+			COUNT(*) AS request_count
+		`).
+		Where("user_id = ?", userId).
+		Where("type = ?", LogTypeConsume).
+		Where("created_at BETWEEN ? AND ?", startTime, endTime).
+		Group("logs.group").
+		Scan(&rawResults).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate user billing group stats: %w", err)
+	}
+
+	// 计算时间范围（分钟数）
+	timeRangeMinutes := float64(endTime-startTime) / 60.0
+	if timeRangeMinutes <= 0 {
+		timeRangeMinutes = 1.0
+	}
+
+	// 组装结果并计算 TPM、RPM
+	results := make([]UserBillingGroupStats, 0, len(rawResults))
+	for _, raw := range rawResults {
+		stat := UserBillingGroupStats{
+			BillingGroup: raw.BillingGroup,
+			TotalTokens:  raw.TotalTokens,
+			TotalQuota:   raw.TotalQuota,
+			RequestCount: raw.RequestCount,
+			TPM:          int(float64(raw.TotalTokens) / timeRangeMinutes),
+			RPM:          int(float64(raw.RequestCount) / timeRangeMinutes),
+		}
+		results = append(results, stat)
+	}
+
+	return results, nil
+}
+
+// GetUserBillingGroupDailyUsage 获取用户按计费分组的每日消耗曲线
+//
+// 用途：为用户提供日均消耗趋势图，可按计费分组分色展示
+//
+// 参数：
+//   - userId: 用户ID
+//   - days: 向前多少天
+//   - billingGroup: 可选，指定则只返回该计费分组；为空则返回所有计费分组
+//
+// 返回：
+//   - []UserBillingGroupDailyUsage: 按日、按计费分组聚合的数据列表
+//
+// 设计文档: docs/系统统计数据dashboard设计.md Section 6.3.1
+func GetUserBillingGroupDailyUsage(userId int, days int, billingGroup string) ([]UserBillingGroupDailyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	now := common.GetTimestamp()
+	startTime := now - int64(days*24*60*60)
+
+	// 按自然日 + 计费分组聚合用户的 Token 和 Quota
+	query := LOG_DB.Table("logs").
+		Select(`
+			DATE(FROM_UNIXTIME(created_at)) AS day,
+			logs.group AS billing_group,
+			SUM(prompt_tokens + completion_tokens) AS tokens,
+			SUM(quota) AS quota
+		`).
+		Where("user_id = ?", userId).
+		Where("type = ?", LogTypeConsume).
+		Where("created_at >= ?", startTime)
+
+	// 可选：按指定计费分组过滤
+	if billingGroup != "" {
+		query = query.Where("logs.group = ?", billingGroup)
+	}
+
+	var results []UserBillingGroupDailyUsage
+	err := query.
+		Group("day, logs.group").
+		Order("day ASC, logs.group ASC").
+		Scan(&results).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user billing group daily usage: %w", err)
+	}
+
+	return results, nil
+}

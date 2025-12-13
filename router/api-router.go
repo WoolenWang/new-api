@@ -326,10 +326,11 @@ func SetApiRouter(router *gin.Engine) {
 		p2pGroupsRoute.Use(middleware.UserAuth())
 		{
 			// P2P Group CRUD
-			p2pGroupsRoute.POST("", controller.CreateP2PGroup)        // Create group
-			p2pGroupsRoute.GET("/public", controller.GetPublicGroups) // Get public shared groups
-			p2pGroupsRoute.PUT("", controller.UpdateP2PGroup)         // Update group
-			p2pGroupsRoute.DELETE("", controller.DeleteP2PGroup)      // Delete group
+			p2pGroupsRoute.POST("", controller.CreateP2PGroup)                        // Create group
+			p2pGroupsRoute.GET("/public", controller.GetPublicGroups)                 // Get public shared groups
+			p2pGroupsRoute.GET("/public/rankings", controller.GetPublicGroupRankings) // Get public group rankings (Phase 11: System Dashboard)
+			p2pGroupsRoute.PUT("", controller.UpdateP2PGroup)                         // Update group
+			p2pGroupsRoute.DELETE("", controller.DeleteP2PGroup)                      // Delete group
 
 			// User Self-Service Routes (automatically use authenticated user ID)
 			p2pGroupsRoute.GET("/self/owned", controller.GetSelfOwnedGroups)   // Get current user's owned groups
@@ -371,6 +372,22 @@ func SetApiRouter(router *gin.Engine) {
 			p2pGroupsAdminRoute.POST("", controller.CreateP2PGroup)            // Create group
 			p2pGroupsAdminRoute.GET("/owned", controller.GetUserOwnedGroups)   // Get specific user's owned groups (requires user_id param)
 			p2pGroupsAdminRoute.GET("/joined", controller.GetUserJoinedGroups) // Get specific user's joined groups (requires user_id param)
+		}
+
+		// System Statistics Routes (Admin only) - Phase 11: System Dashboard
+		systemStatsRoute := apiRouter.Group("/system/stats")
+		systemStatsRoute.Use(middleware.AdminAuth())
+		{
+			systemStatsRoute.GET("/summary", controller.GetSystemStatsSummary)     // Get global system summary statistics
+			systemStatsRoute.GET("/daily_tokens", controller.GetSystemDailyTokens) // Get global daily token usage curve
+		}
+
+		// User Billing Group Statistics Routes (User self-service) - Phase 11: System Dashboard
+		billingGroupsSelfRoute := apiRouter.Group("/billing_groups/self")
+		billingGroupsSelfRoute.Use(middleware.UserAuth())
+		{
+			billingGroupsSelfRoute.GET("/stats", controller.GetUserBillingGroupStats)              // Get user's billing group consumption stats
+			billingGroupsSelfRoute.GET("/daily_tokens", controller.GetUserBillingGroupDailyTokens) // Get user's daily token usage by billing group
 		}
 
 		// Model Monitoring Routes (Admin only) - Phase 9: Model Intelligence & Drift Monitoring
